@@ -44,6 +44,7 @@ file_put_contents($config['fm_root'] . '/site/index.txt', 'ok');
 $check(fm_resolve('site/index.txt') === realpath($config['fm_root'] . '/site/index.txt'), 'valid file-manager path was rejected');
 $check(fm_resolve('../outside') === null, 'file-manager traversal was accepted');
 $check(is_page_route('dashboard') && !is_page_route('../config'), 'page route whitelist failed');
+$check(is_file(APP_ROOT . '/api/provision.php'), 'provisioning API endpoint is missing');
 $check(human_bytes(1048576) === '1 MB', 'byte formatting failed');
 
 @unlink($config['fm_root'] . '/site/index.txt');
