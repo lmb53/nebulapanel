@@ -56,4 +56,60 @@
     </div>
   </div>
 </div>
+
+<div class="card" style="margin-bottom:16px">
+  <div class="card-header">
+    <h3>System health</h3>
+    <span class="badge badge-slate" id="healthStatus"><span class="bdot"></span>Checking</span>
+  </div>
+  <div class="card-pad" id="healthItems">
+    <div class="text-tertiary" style="font-size:13px">Running operational checks…</div>
+  </div>
+</div>
+
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+  const { apiGet } = window.Nebula;
+  const box = document.getElementById('healthItems');
+  const status = document.getElementById('healthStatus');
+  const levelMap = {
+    critical: ['badge-red', 'Critical', 'var(--red-400)'],
+    warning: ['badge-orange', 'Needs attention', 'var(--orange-400)'],
+    healthy: ['badge-emerald', 'Healthy', 'var(--emerald-400)'],
+  };
+  apiGet('health').then((res) => {
+    const [cls, label] = levelMap[res.status] || ['badge-slate', 'Unknown'];
+    status.className = 'badge ' + cls;
+    status.innerHTML = '<span class="bdot"></span>';
+    status.append(document.createTextNode(label));
+    box.replaceChildren();
+    if (!res.items.length) {
+      const empty = document.createElement('div');
+      empty.className = 'flex items-center gap-3';
+      const icon = document.createElement('i'); icon.dataset.lucide = 'circle-check-big'; icon.style.color = 'var(--emerald-400)';
+      const copy = document.createElement('div'); copy.textContent = 'No operational issues detected.'; copy.style.fontSize = '13px';
+      empty.append(icon, copy); box.appendChild(empty);
+    } else {
+      res.items.forEach((item) => {
+        const row = document.createElement('a');
+        row.className = 'service-row'; row.href = <?= json_encode(base_url() . '/?r=') ?> + encodeURIComponent(item.route);
+        row.style.textDecoration = 'none'; row.style.marginBottom = '8px';
+        const iconWrap = document.createElement('div'); iconWrap.className = 'svc-icon';
+        const icon = document.createElement('i'); icon.dataset.lucide = item.icon; icon.style.color = (levelMap[item.level] || [null, null, 'var(--blue-400)'])[2];
+        iconWrap.appendChild(icon);
+        const copy = document.createElement('div'); copy.style.flex = '1';
+        const title = document.createElement('div'); title.style.fontWeight = '600'; title.style.fontSize = '13px'; title.textContent = item.title;
+        const detail = document.createElement('div'); detail.className = 'text-tertiary'; detail.style.fontSize = '12px'; detail.style.marginTop = '2px'; detail.textContent = item.detail;
+        copy.append(title, detail);
+        const arrow = document.createElement('i'); arrow.dataset.lucide = 'chevron-right'; arrow.style.color = 'var(--text-tertiary)';
+        row.append(iconWrap, copy, arrow); box.appendChild(row);
+      });
+    }
+    if (window.lucide) lucide.createIcons();
+  }).catch((error) => {
+    status.className = 'badge badge-red'; status.textContent = 'Check failed';
+    box.textContent = error.message || 'Could not load system health.';
+  });
+});
+</script>
 <script>window.NEBULA_PAGE = 'dashboard';</script>

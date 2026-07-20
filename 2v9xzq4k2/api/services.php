@@ -7,6 +7,7 @@ require APP_ROOT . '/lib/mod_apps.php';
 $allowed = array_values(array_unique(array_merge($config['services'], manageable_units())));
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    require_post();
     csrf_check();
     $body = read_json_body();
     $res = service_action(

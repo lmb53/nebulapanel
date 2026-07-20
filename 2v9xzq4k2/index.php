@@ -44,16 +44,29 @@ switch ($route) {
         $error = null;
         if ($method === 'POST') {
             csrf_check();
-            if (attempt_login($_POST['username'] ?? '', $_POST['password'] ?? '')) {
+            $retry = reserve_login_attempt();
+            if ($retry > 0) {
+                http_response_code(429);
+                header('Retry-After: ' . $retry);
+                audit('login', 'rate limited');
+                $error = 'Too many login attempts. Try again in ' . (int) ceil($retry / 60) . ' minute(s).';
+            } elseif (attempt_login($_POST['username'] ?? '', $_POST['password'] ?? '')) {
                 redirect('dashboard');
+            } else {
+                audit('login', 'failed for ' . ($_POST['username'] ?? '?'));
+                $error = 'Invalid username or password.';
             }
-            audit('login', 'failed for ' . ($_POST['username'] ?? '?'));
-            $error = 'Invalid username or password.';
         }
         render('login', ['error' => $error], false);
         return;
 
     case 'logout':
+        if ($method !== 'POST') {
+            http_response_code(405);
+            header('Allow: POST');
+            exit('POST required');
+        }
+        csrf_check();
         logout_user();
         redirect('login');
         return;
@@ -76,6 +89,11 @@ if ($route === 'setup-wizard') {
 // JSON API routes: api/<name> -> api/<name>.php
 // --------------------------------------------------------------------------
 if (strpos($route, 'api/') === 0) {
+    // API calls can be concurrent (metrics + health + page actions). Release
+    // PHP's per-session file lock once authentication/timeout checks are done.
+    if (session_status() === PHP_SESSION_ACTIVE) {
+        session_write_close();
+    }
     $name = substr($route, 4);
     $file = APP_ROOT . '/api/' . $name . '.php';
     if (preg_match('/^[a-z0-9_-]+$/', $name) && is_file($file)) {

@@ -7,16 +7,21 @@
 
   async function apiGet(endpoint) {
     const r = await fetch(api(endpoint), { headers: { Accept: 'application/json' } });
-    if (!r.ok) throw new Error('HTTP ' + r.status);
-    return r.json();
+    const data = await r.json().catch(() => ({ ok: false, error: `Invalid server response (HTTP ${r.status})` }));
+    if (!r.ok) throw new Error(data.error || 'HTTP ' + r.status);
+    return data;
   }
   async function apiPost(endpoint, body) {
-    const r = await fetch(api(endpoint), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': CSRF, Accept: 'application/json' },
-      body: JSON.stringify(body || {}),
-    });
-    return r.json();
+    try {
+      const r = await fetch(api(endpoint), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': CSRF, Accept: 'application/json' },
+        body: JSON.stringify(body || {}),
+      });
+      return await r.json().catch(() => ({ ok: false, error: `Invalid server response (HTTP ${r.status})` }));
+    } catch (e) {
+      return { ok: false, error: e?.message || 'Network request failed' };
+    }
   }
 
   function fmtBytes(b) {
@@ -37,7 +42,13 @@
     const colors = { success: 'var(--emerald-400)', error: 'var(--red-400)', warning: 'var(--orange-400)', info: 'var(--blue-400)' };
     const el = document.createElement('div');
     el.className = 'toast';
-    el.innerHTML = `<i data-lucide="${icons[type] || 'info'}" style="color:${colors[type] || colors.info}"></i><div style="font-size:13px">${msg}</div>`;
+    const icon = document.createElement('i');
+    icon.dataset.lucide = icons[type] || 'info';
+    icon.style.color = colors[type] || colors.info;
+    const copy = document.createElement('div');
+    copy.style.fontSize = '13px';
+    copy.textContent = String(msg);
+    el.append(icon, copy);
     stack.appendChild(el);
     if (window.lucide) lucide.createIcons();
     setTimeout(() => { el.style.opacity = '0'; el.style.transition = '.3s'; setTimeout(() => el.remove(), 300); }, 3500);
@@ -137,6 +148,15 @@
     const badge = tr.querySelector('[data-svc-badge]');
     if (badge) { badge.className = 'badge ' + cls; badge.innerHTML = '<span class="bdot"></span>' + label; }
   }
+  function updateSvcEnabled(tr, enabled) {
+    const badge = tr.querySelector('[data-svc-enabled]');
+    if (badge) {
+      badge.className = 'badge ' + (enabled === true ? 'badge-blue' : 'badge-slate');
+      badge.textContent = enabled === true ? 'Enabled' : (enabled === false ? 'Disabled' : 'N/A');
+    }
+    const toggle = tr.querySelector('[data-enable-toggle]');
+    if (toggle && enabled !== null) toggle.dataset.action = enabled ? 'disable' : 'enable';
+  }
 
   function wireServices() {
     document.querySelectorAll('#svcBody [data-action]').forEach((btn) => {
@@ -150,6 +170,7 @@
         if (res.ok) {
           toast(`${name}: ${action} ok`, 'success');
           updateSvcBadge(tr, res.status);
+          updateSvcEnabled(tr, res.enabled);
         } else {
           toast(res.error || 'Action failed', 'error');
         }
@@ -158,8 +179,10 @@
     document.getElementById('svcRefresh')?.addEventListener('click', async () => {
       const res = await apiGet('services');
       if (res.ok) res.services.forEach((s) => {
-        const tr = document.querySelector(`#svcBody [data-svc="${s.name}"]`);
+        const tr = Array.from(document.querySelectorAll('#svcBody [data-svc]'))
+          .find((row) => row.dataset.svc === s.name);
         if (tr) updateSvcBadge(tr, s.status);
+        if (tr) updateSvcEnabled(tr, s.enabled);
       });
       toast('Services refreshed', 'info');
     });
@@ -176,9 +199,19 @@
         const [cls, label] = SVC_BADGE[s.status] || ['badge-slate', s.status];
         const row = document.createElement('div');
         row.className = 'service-row';
-        row.innerHTML = `<div class="svc-icon"><i data-lucide="server" style="color:var(--text-secondary)"></i></div>
-          <div style="flex:1"><div style="font-weight:600;font-size:13px">${s.name}</div></div>
-          <span class="badge ${cls}"><span class="bdot"></span>${label}</span>`;
+        const iconWrap = document.createElement('div');
+        iconWrap.className = 'svc-icon';
+        iconWrap.innerHTML = '<i data-lucide="server" style="color:var(--text-secondary)"></i>';
+        const nameWrap = document.createElement('div');
+        nameWrap.style.flex = '1';
+        const name = document.createElement('div');
+        name.style.fontWeight = '600'; name.style.fontSize = '13px'; name.textContent = s.name;
+        nameWrap.appendChild(name);
+        const badge = document.createElement('span');
+        badge.className = `badge ${cls}`;
+        badge.innerHTML = '<span class="bdot"></span>';
+        badge.append(document.createTextNode(label));
+        row.append(iconWrap, nameWrap, badge);
         box.appendChild(row);
       });
       if (!box.children.length) box.innerHTML = '<div class="text-tertiary" style="font-size:13px">No known services installed.</div>';

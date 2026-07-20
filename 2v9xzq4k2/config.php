@@ -33,6 +33,18 @@ return [
     // Session idle timeout in seconds (default 30 min).
     'session_timeout' => 1800,
 
+    // Login throttling. Failed attempts are tracked per remote IP in data/.
+    'login_max_attempts' => 5,
+    'login_window'       => 600,
+
+    // Only trust X-Forwarded-Proto / X-Forwarded-For from these proxy IPs.
+    // Leave empty when Nginx talks directly to PHP-FPM (the normal install).
+    'trusted_proxies' => [],
+
+    // Resource thresholds used by the dashboard health summary.
+    'health_warn_percent'     => 80,
+    'health_critical_percent' => 90,
+
     // Self-update source: the GitHub repo + ref the panel updates itself from.
     'repo'     => getenv('NEBULA_REPO') ?: 'lmb53/nebulapanel',
     'repo_ref' => getenv('NEBULA_REPO_REF') ?: 'main',

@@ -70,7 +70,8 @@ trap cleanup EXIT
 log "Installing packages (Nginx, PHP-FPM, tooling)…"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
-apt-get install -y -qq nginx php-fpm php-cli php-mysql rsync ufw curl ca-certificates tar \
+apt-get install -y -qq nginx php-fpm php-cli php-mysql php-curl php-mbstring php-xml php-zip \
+  rsync ufw curl ca-certificates tar \
   certbot python3-certbot-nginx >/dev/null
 ok "Packages installed"
 
@@ -228,7 +229,8 @@ server {
     index index.php index.html;
 
     # Never serve the panel's private directories.
-    location ~ ^/${PANEL_PREFIX}/(data|lib|views|bin)/ { deny all; return 404; }
+    location ~ ^/${PANEL_PREFIX}/(api|data|lib|views|bin)/ { deny all; return 404; }
+    location = /${PANEL_PREFIX}/config.php { deny all; return 404; }
 
     location /${PANEL_PREFIX}/ {
 ${ACCESS_RULES}
@@ -239,6 +241,9 @@ ${ACCESS_RULES}
         include snippets/fastcgi-php.conf;
         fastcgi_pass unix:${FPM_SOCK};
     }
+
+    # Do not serve dotfiles from the panel or hosted websites.
+    location ~ /\.(?!well-known).* { deny all; return 404; }
 }
 EOF
 
@@ -263,9 +268,9 @@ SUDOERS=/etc/sudoers.d/nebula-panel
   echo "# commands the panel uses. Keep the panel behind HTTPS + IP allow-list."
 } > "$SUDOERS"
 
-# systemctl: only start/stop/restart.
+# systemctl: lifecycle actions exposed by the Services page.
 SC="$(command -v systemctl || true)"
-[[ -n "$SC" ]] && echo "www-data ALL=(root) NOPASSWD: $SC start *, $SC stop *, $SC restart *" >> "$SUDOERS"
+[[ -n "$SC" ]] && echo "www-data ALL=(root) NOPASSWD: $SC start *, $SC stop *, $SC restart *, $SC enable *, $SC disable *" >> "$SUDOERS"
 
 # A binary usable with any args (only added if the binary exists).
 sudo_line() {

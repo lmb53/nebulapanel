@@ -37,9 +37,42 @@ function e($s): string
 function json_out($data, int $code = 200): void
 {
     http_response_code($code);
-    header('Content-Type: application/json');
-    echo json_encode($data);
+    header('Content-Type: application/json; charset=UTF-8');
+    header('Cache-Control: no-store');
+    echo json_encode($data, JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
     exit;
+}
+
+/** Safely replace a JSON file in-place, never exposing a partial write. */
+function write_json_file(string $path, array $data, int $mode = 0600): bool
+{
+    $dir = dirname($path);
+    if (!is_dir($dir) && !@mkdir($dir, 0700, true)) {
+        return false;
+    }
+    $json = json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
+    if ($json === false) {
+        return false;
+    }
+    $tmp = @tempnam($dir, '.nebula-');
+    if ($tmp === false) {
+        return false;
+    }
+    $ok = @file_put_contents($tmp, $json . "\n", LOCK_EX) !== false;
+    if ($ok) {
+        @chmod($tmp, $mode);
+        $ok = @rename($tmp, $path);
+        // Windows cannot atomically replace an existing file with rename().
+        // Keep a locked overwrite fallback for local development there.
+        if (!$ok && PHP_OS_FAMILY === 'Windows') {
+            $ok = @file_put_contents($path, $json . "\n", LOCK_EX) !== false;
+            if ($ok) { @chmod($path, $mode); }
+        }
+    }
+    if (is_file($tmp)) {
+        @unlink($tmp);
+    }
+    return $ok;
 }
 
 /** Redirect within the app and stop. */
@@ -140,8 +173,29 @@ function require_post(): void
 /** Append an entry to the audit log. */
 function audit(string $action, string $detail = ''): void
 {
-    $user = $_SESSION['username'] ?? 'anon';
-    $ip = $_SERVER['REMOTE_ADDR'] ?? '-';
+    $clean = static function (string $value, int $max): string {
+        $value = preg_replace('/[\r\n\x00-\x1F\x7F]+/', ' ', $value) ?? '';
+        return substr(trim($value), 0, $max);
+    };
+    $user = $clean((string) ($_SESSION['username'] ?? 'anon'), 100);
+    $ip = $clean(client_ip(), 64);
+    $action = $clean($action, 120);
+    $detail = $clean($detail, 2000);
     $line = sprintf("[%s] %s (%s) %s %s\n", date('c'), $user, $ip, $action, $detail);
     @file_put_contents(DATA_DIR . '/audit.log', $line, FILE_APPEND | LOCK_EX);
+}
+
+/** Client address, honoring forwarding headers only from configured proxies. */
+function client_ip(): string
+{
+    global $config;
+    $remote = (string) ($_SERVER['REMOTE_ADDR'] ?? '-');
+    if (in_array($remote, (array) ($config['trusted_proxies'] ?? []), true)) {
+        $forwarded = explode(',', (string) ($_SERVER['HTTP_X_FORWARDED_FOR'] ?? ''));
+        $candidate = trim($forwarded[0] ?? '');
+        if (filter_var($candidate, FILTER_VALIDATE_IP)) {
+            return $candidate;
+        }
+    }
+    return $remote;
 }

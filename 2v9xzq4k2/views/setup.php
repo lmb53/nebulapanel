@@ -27,9 +27,9 @@
       <form method="post" action="<?= e(url('setup')) ?>">
         <?= csrf_field() ?>
         <label class="field-label">Username</label>
-        <input class="input" type="text" name="username" required minlength="3" autofocus style="margin-bottom:14px">
-        <label class="field-label">Password <span style="color:var(--text-tertiary);font-weight:400">(min 8 characters)</span></label>
-        <input class="input" type="password" name="password" required minlength="8" style="margin-bottom:18px">
+        <input class="input" type="text" name="username" required minlength="3" maxlength="64" pattern="[A-Za-z0-9_.-]+" autocomplete="username" autofocus style="margin-bottom:14px">
+        <label class="field-label">Password <span style="color:var(--text-tertiary);font-weight:400">(min 12 characters)</span></label>
+        <input class="input" type="password" name="password" required minlength="12" maxlength="1024" autocomplete="new-password" style="margin-bottom:18px">
         <button class="btn btn-primary" type="submit" style="width:100%;justify-content:center"><i data-lucide="user-plus"></i>Create account &amp; sign in</button>
       </form>
     </div>

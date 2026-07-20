@@ -17,6 +17,7 @@ foreach ($services as $s) {
 <?php else: ?>
   <?php
     $status = service_status($name);
+    $enabled = service_enabled($name);
     $badge = [
         'active'   => ['badge-emerald', 'Running'],
         'inactive' => ['badge-slate',   'Stopped'],
@@ -35,9 +36,11 @@ foreach ($services as $s) {
     </div>
     <div class="page-actions" data-svc="<?= e($name) ?>">
       <span class="badge <?= e($badge[0]) ?>" data-svc-badge style="align-self:center"><span class="bdot"></span><?= e($badge[1]) ?></span>
+      <span class="badge <?= $enabled === true ? 'badge-blue' : 'badge-slate' ?>" data-svc-enabled><?= $enabled === true ? 'Boot enabled' : ($enabled === false ? 'Boot disabled' : 'Boot N/A') ?></span>
       <button class="btn btn-secondary" data-action="start"><i data-lucide="play"></i>Start</button>
       <button class="btn btn-secondary" data-action="restart"><i data-lucide="rotate-cw"></i>Restart</button>
       <button class="btn btn-danger" data-action="stop"><i data-lucide="square"></i>Stop</button>
+      <?php if ($enabled !== null): ?><button class="btn btn-secondary" data-action="<?= $enabled ? 'disable' : 'enable' ?>" data-enable-toggle><i data-lucide="power"></i><?= $enabled ? 'Disable at boot' : 'Enable at boot' ?></button><?php endif; ?>
     </div>
   </div>
 
@@ -61,7 +64,11 @@ foreach ($services as $s) {
           toast(name + ': ' + btn.dataset.action + ' ok', 'success');
           const b = wrap.querySelector('[data-svc-badge]');
           const [cls, label] = map[res.status] || ['badge-slate', res.status];
-          if (b) { b.className = 'badge ' + cls; b.innerHTML = '<span class="bdot"></span>' + label; b.style.alignSelf = 'center'; }
+          if (b) { b.className = 'badge ' + cls; b.replaceChildren(); const dot = document.createElement('span'); dot.className = 'bdot'; b.append(dot, document.createTextNode(label)); b.style.alignSelf = 'center'; }
+          const boot = wrap.querySelector('[data-svc-enabled]');
+          if (boot) { boot.className = 'badge ' + (res.enabled === true ? 'badge-blue' : 'badge-slate'); boot.textContent = res.enabled === true ? 'Boot enabled' : (res.enabled === false ? 'Boot disabled' : 'Boot N/A'); }
+          const toggle = wrap.querySelector('[data-enable-toggle]');
+          if (toggle && res.enabled !== null) { toggle.dataset.action = res.enabled ? 'disable' : 'enable'; toggle.lastChild.textContent = res.enabled ? 'Disable at boot' : 'Enable at boot'; }
         } else toast(res.error || 'Action failed', 'error');
       });
     });

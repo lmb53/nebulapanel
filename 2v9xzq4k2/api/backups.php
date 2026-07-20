@@ -11,6 +11,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $res = backup_create((string) ($body['source'] ?? ''), (string) ($body['label'] ?? ''));
     } elseif ($action === 'delete') {
         $res = backup_delete((string) ($body['file'] ?? ''));
+    } elseif ($action === 'verify') {
+        $res = backup_verify((string) ($body['file'] ?? ''));
     } else {
         $res = ['ok' => false, 'error' => 'Unknown action.'];
     }

@@ -34,10 +34,10 @@ account and run the provisioning wizard. Options (env vars): `PANEL_PREFIX`,
 | Feature | Status |
 |---|---|
 | First-run admin setup (bcrypt) + login/logout | ✅ |
-| Session auth, idle timeout, CSRF on all writes, audit log | ✅ |
-| **Dashboard** — live CPU / memory / disk / load (3s poll) + chart | ✅ |
+| Session auth, idle timeout, POST-only logout, CSRF, login throttling, audit log | ✅ |
+| **Dashboard** — live resources + actionable health, update, service, reboot, and backup alerts | ✅ |
 | **Monitoring** — live charts + top processes (`ps`) | ✅ |
-| **Services** — start / stop / restart via `systemctl` | ✅ sudo |
+| **Services** — start / stop / restart + enable at boot via `systemctl` | ✅ sudo |
 | **Install Apps** — install apache2/redis/mariadb/fail2ban + extra PHP versions | ✅ sudo/helper |
 | **Updates** — list upgradable + `apt-get update`/`upgrade` | ✅ sudo |
 | **Users** — system accounts from `/etc/passwd` (read-only) | ✅ |
@@ -52,7 +52,7 @@ account and run the provisioning wizard. Options (env vars): `PANEL_PREFIX`,
 | **Docker** — containers (start/stop/restart/rm) + images | ✅ sudo |
 | **File Manager** — 3-pane (tree/list/properties), grid+list, drag-drop upload, multi-select, edit / mkdir / rename / chmod / delete | ✅ |
 | **Diagnostics** — environment + per-privilege sudo checks with fix hints | ✅ |
-| **Backups** — create / list / download / delete `.tar.gz` | ✅ |
+| **Backups** — create / verify / list / download / delete `.tar.gz` | ✅ |
 | **Terminal** — audited non-interactive command runner | ✅ |
 | **System Info** — OS, kernel, CPU, RAM, disk, network | ✅ |
 | **Panel Updates** — self-update from GitHub (check + apply) | ✅ |
@@ -70,6 +70,16 @@ On macOS/Windows the pages load but most metrics show `n/a`.
 - Linux VPS (Ubuntu/Debian assumed)
 - PHP 8.0+ with FPM, and `proc_open` enabled (default)
 - Nginx or Apache
+
+## Development checks
+
+Run the cross-platform smoke test and syntax checks before deploying:
+
+```bash
+php tests/smoke.php
+find 2v9xzq4k2 -name '*.php' -print0 | xargs -0 -n1 php -l
+bash -n install.sh 2v9xzq4k2/bin/nebula-helper
+```
 
 ## Install
 
@@ -93,7 +103,8 @@ location /2v9xzq4k2/ {
     index index.php;
     try_files $uri $uri/ /2v9xzq4k2/index.php$is_args$args;
 }
-location ~ ^/2v9xzq4k2/(data|lib|views)/ { deny all; return 404; }
+location ~ ^/2v9xzq4k2/(api|data|lib|views|bin)/ { deny all; return 404; }
+location = /2v9xzq4k2/config.php { deny all; return 404; }
 location ~ \.php$ {
     include snippets/fastcgi-php.conf;
     fastcgi_pass unix:/run/php/php8.3-fpm.sock;
@@ -102,8 +113,9 @@ location ~ \.php$ {
 
 ### Apache
 
-`mod_php` or PHP-FPM + the bundled `.htaccess` files already deny `data/`, `lib/`,
-`views/`. Ensure `AllowOverride All` for the directory.
+`mod_php` or PHP-FPM + the bundled `.htaccess` files deny direct access to
+`api/`, `data/`, `bin/`, `lib/`, `views/`, and `config.php`. Ensure
+`AllowOverride All` for the directory.
 
 ## Privileges (sudoers)
 
@@ -111,7 +123,7 @@ Several modules drive tools that need root. **The installer writes these rules
 for you** to `/etc/sudoers.d/nebula-panel` (only for binaries that exist):
 
 ```
-www-data ALL=(root) NOPASSWD: /usr/bin/systemctl start *, /usr/bin/systemctl stop *, /usr/bin/systemctl restart *
+www-data ALL=(root) NOPASSWD: /usr/bin/systemctl start *, /usr/bin/systemctl stop *, /usr/bin/systemctl restart *, /usr/bin/systemctl enable *, /usr/bin/systemctl disable *
 www-data ALL=(root) NOPASSWD: /usr/sbin/ufw *
 www-data ALL=(root) NOPASSWD: /usr/bin/docker *
 www-data ALL=(root) NOPASSWD: /usr/bin/mysql *
@@ -167,6 +179,8 @@ To reset the admin account, delete `data/admin.json` and reload.
 - **Change the secret prefix** — rename the directory to your own random string.
 - **IP allow-list** the location block to your admin IPs.
 - **Rate-limit** `/2v9xzq4k2/?r=login` (nginx `limit_req` or fail2ban).
+- If TLS terminates at a reverse proxy, add only that proxy's IP to
+  `trusted_proxies` in `config.php`; forwarded headers are ignored otherwise.
 - Keep `'debug' => false` in `config.php`.
 
 ## Architecture

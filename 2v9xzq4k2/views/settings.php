@@ -3,6 +3,8 @@
 require_once APP_ROOT . '/lib/mod_settings.php';
 $panelName = $config['panel_name'];
 $timeout = (int) ($config['session_timeout'] ?? 1800);
+$healthWarn = (int) ($config['health_warn_percent'] ?? 80);
+$healthCritical = (int) ($config['health_critical_percent'] ?? 90);
 $auditLog = audit_tail(100);
 ?>
 <div class="page-header">
@@ -20,6 +22,10 @@ $auditLog = audit_tail(100);
       <input class="input" id="setPanelName" value="<?= e($panelName) ?>" style="margin-bottom:14px">
       <label class="field-label">Session timeout (seconds)</label>
       <input class="input mono" id="setTimeout" type="number" min="60" max="86400" value="<?= e($timeout) ?>" style="margin-bottom:18px">
+      <div class="grid grid-2" style="gap:12px;margin-bottom:18px">
+        <div><label class="field-label">Health warning %</label><input class="input mono" id="setHealthWarn" type="number" min="50" max="95" value="<?= e($healthWarn) ?>"></div>
+        <div><label class="field-label">Health critical %</label><input class="input mono" id="setHealthCritical" type="number" min="60" max="100" value="<?= e($healthCritical) ?>"></div>
+      </div>
       <button class="btn btn-primary" id="setSaveGeneral"><i data-lucide="save"></i>Save changes</button>
     </div>
   </div>
@@ -29,8 +35,8 @@ $auditLog = audit_tail(100);
     <div class="card-pad">
       <label class="field-label">Current password</label>
       <input class="input" id="setCurPw" type="password" autocomplete="current-password" style="margin-bottom:14px">
-      <label class="field-label">New password <span style="color:var(--text-tertiary);font-weight:400">(min 8)</span></label>
-      <input class="input" id="setNewPw" type="password" autocomplete="new-password" style="margin-bottom:14px">
+      <label class="field-label">New password <span style="color:var(--text-tertiary);font-weight:400">(min 12)</span></label>
+      <input class="input" id="setNewPw" type="password" minlength="12" maxlength="1024" autocomplete="new-password" style="margin-bottom:14px">
       <label class="field-label">Confirm new password</label>
       <input class="input" id="setNewPw2" type="password" autocomplete="new-password" style="margin-bottom:18px">
       <button class="btn btn-primary" id="setSavePw"><i data-lucide="key-round"></i>Update password</button>
@@ -52,6 +58,8 @@ document.addEventListener('DOMContentLoaded', () => {
       action: 'general',
       panel_name: document.getElementById('setPanelName').value,
       session_timeout: document.getElementById('setTimeout').value,
+      health_warn_percent: document.getElementById('setHealthWarn').value,
+      health_critical_percent: document.getElementById('setHealthCritical').value,
     });
     if (res.ok) { toast('Settings saved', 'success'); setTimeout(() => location.reload(), 600); }
     else toast(res.error || 'Failed', 'error');

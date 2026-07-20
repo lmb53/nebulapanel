@@ -42,6 +42,7 @@ $backups = backup_list();
             <td class="text-tertiary"><?= e(date('Y-m-d H:i', $b['mtime'])) ?></td>
             <td style="text-align:right;white-space:nowrap">
               <a class="btn btn-secondary btn-sm" href="<?= e(url('backup-download', ['file' => $b['file']])) ?>" title="Download"><i data-lucide="download"></i></a>
+              <button class="btn btn-secondary btn-sm" data-bk-verify="<?= e($b['file']) ?>" title="Verify integrity"><i data-lucide="shield-check"></i></button>
               <button class="btn btn-danger btn-sm" data-bk-del="<?= e($b['file']) ?>" title="Delete"><i data-lucide="trash-2"></i></button>
             </td>
           </tr>
@@ -70,6 +71,15 @@ document.addEventListener('DOMContentLoaded', () => {
       const res = await apiPost('backups', { action: 'delete', file: btn.dataset.bkDel });
       if (res.ok) { toast('Deleted', 'success'); btn.closest('tr').remove(); }
       else toast(res.error || 'Failed', 'error');
+    });
+  });
+  document.querySelectorAll('[data-bk-verify]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      btn.disabled = true;
+      const res = await apiPost('backups', { action: 'verify', file: btn.dataset.bkVerify });
+      btn.disabled = false;
+      if (res.ok) toast(`Archive verified: ${res.entries} entries`, 'success');
+      else toast(res.error || 'Integrity check failed', 'error');
     });
   });
 });

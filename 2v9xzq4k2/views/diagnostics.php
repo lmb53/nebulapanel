@@ -34,10 +34,11 @@ if ($helper) {
         $hc === 0 ? 'sudo -n nebula-helper works' : 'sudo rejected the helper — check /etc/sudoers.d/nebula-panel'];
 }
 
-// systemctl: probe with a benign restart of a non-existent unit.
-$rows[] = ['systemctl sudo (Services)',
-    diag_sudo_denied('systemctl restart nebula-diagnostic-nonexistent.service') ? 'bad' : 'ok',
-    'Controls start/stop/restart of services'];
+// systemctl: probe lifecycle and boot-state rules with a non-existent unit.
+$systemctlDenied = diag_sudo_denied('systemctl restart nebula-diagnostic-nonexistent.service')
+    || diag_sudo_denied('systemctl enable nebula-diagnostic-nonexistent.service');
+$rows[] = ['systemctl sudo (Services)', $systemctlDenied ? 'bad' : 'ok',
+    'Controls start/stop/restart and enable/disable at boot'];
 
 // Wildcard-rule binaries — only meaningful if the tool is installed.
 $sudoBins = [

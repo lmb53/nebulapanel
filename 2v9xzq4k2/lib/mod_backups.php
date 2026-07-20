@@ -88,3 +88,22 @@ function backup_delete(string $file): array
     audit('backup.delete', basename($abs) . ($ok ? '' : ' FAILED'));
     return $ok ? ['ok' => true] : ['ok' => false, 'error' => 'Delete failed.'];
 }
+
+/** Test gzip/tar integrity and return the number of archived entries. */
+function backup_verify(string $file): array
+{
+    $abs = backup_resolve($file);
+    if ($abs === null) {
+        return ['ok' => false, 'error' => 'Not found.'];
+    }
+    [$code, $out, $err] = run_cmd('tar -tzf ' . escapeshellarg($abs), 120);
+    if ($code !== 0) {
+        [$code, $out, $err] = sudo_cmd('tar -tzf ' . escapeshellarg($abs), 120);
+    }
+    $entries = $out === '' ? 0 : count(preg_split('/\r?\n/', trim($out)));
+    audit('backup.verify', basename($abs) . ' (exit ' . $code . ', entries ' . $entries . ')');
+    if ($code !== 0) {
+        return ['ok' => false, 'error' => trim($out . ' ' . $err) ?: 'Archive integrity check failed.'];
+    }
+    return ['ok' => true, 'entries' => $entries, 'size' => @filesize($abs) ?: 0];
+}

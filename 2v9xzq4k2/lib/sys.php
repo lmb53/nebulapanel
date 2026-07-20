@@ -20,26 +20,51 @@ function run_cmd(string $cmd, int $timeout = 15): array
     stream_set_blocking($pipes[2], false);
     $out = '';
     $err = '';
-    $start = time();
+    $maxBytes = 2 * 1024 * 1024;
+    $truncated = false;
+    $timedOut = false;
+    $start = microtime(true);
+    $append = static function (string &$target, string $chunk) use ($maxBytes, &$truncated): void {
+        $left = $maxBytes - strlen($target);
+        if ($left <= 0) {
+            $truncated = true;
+            return;
+        }
+        if (strlen($chunk) > $left) {
+            $target .= substr($chunk, 0, $left);
+            $truncated = true;
+            return;
+        }
+        $target .= $chunk;
+    };
+    $status = ['running' => true, 'exitcode' => -1];
     do {
-        $out .= stream_get_contents($pipes[1]);
-        $err .= stream_get_contents($pipes[2]);
+        $append($out, (string) stream_get_contents($pipes[1]));
+        $append($err, (string) stream_get_contents($pipes[2]));
         $status = proc_get_status($proc);
         if (!$status['running']) {
             break;
         }
-        if (time() - $start > $timeout) {
+        if (microtime(true) - $start >= max(1, $timeout)) {
+            $timedOut = true;
             proc_terminate($proc);
             break;
         }
         usleep(50000);
     } while (true);
-    $out .= stream_get_contents($pipes[1]);
-    $err .= stream_get_contents($pipes[2]);
+    $append($out, (string) stream_get_contents($pipes[1]));
+    $append($err, (string) stream_get_contents($pipes[2]));
     fclose($pipes[1]);
     fclose($pipes[2]);
-    $code = proc_close($proc);
-    return [$status['exitcode'] ?? $code, trim($out), trim($err)];
+    $closeCode = proc_close($proc);
+    $code = $timedOut ? 124 : (($status['exitcode'] ?? -1) >= 0 ? $status['exitcode'] : $closeCode);
+    if ($timedOut) {
+        $err .= ($err === '' ? '' : "\n") . 'Command timed out after ' . max(1, $timeout) . ' seconds.';
+    }
+    if ($truncated) {
+        $err .= ($err === '' ? '' : "\n") . 'Command output was truncated at 2 MB.';
+    }
+    return [$code, trim($out), trim($err)];
 }
 
 function is_linux(): bool
@@ -216,6 +241,9 @@ function format_uptime(?int $s): string
 /** Load averages [1m, 5m, 15m]. */
 function load_avg(): array
 {
+    if (!function_exists('sys_getloadavg')) {
+        return [0, 0, 0];
+    }
     $l = @sys_getloadavg();
     return $l ?: [0, 0, 0];
 }
@@ -300,13 +328,30 @@ function services_overview(array $whitelist): array
 {
     $rows = [];
     foreach ($whitelist as $svc) {
-        $rows[] = ['name' => $svc, 'status' => service_status($svc)];
+        $rows[] = ['name' => $svc, 'status' => service_status($svc), 'enabled' => service_enabled($svc)];
     }
     return $rows;
 }
 
+/** Whether a unit is enabled at boot. Null for missing/unsupported units. */
+function service_enabled(string $name): ?bool
+{
+    if (!is_linux()) {
+        return null;
+    }
+    [$code, $out] = run_cmd('systemctl is-enabled ' . escapeshellarg($name) . ' 2>/dev/null');
+    $state = trim($out);
+    if ($code === 0 || in_array($state, ['enabled', 'enabled-runtime', 'static', 'indirect', 'alias'], true)) {
+        return in_array($state, ['enabled', 'enabled-runtime'], true);
+    }
+    if (in_array($state, ['disabled', 'masked'], true)) {
+        return false;
+    }
+    return null;
+}
+
 /**
- * Perform a service action. $action in start|stop|restart.
+ * Perform a service action. $action in start|stop|restart|enable|disable.
  * Requires the web user to have a sudoers rule for systemctl (see README).
  */
 function service_action(string $name, string $action, array $whitelist): array
@@ -314,7 +359,7 @@ function service_action(string $name, string $action, array $whitelist): array
     if (!in_array($name, $whitelist, true)) {
         return ['ok' => false, 'error' => 'Service not allowed.'];
     }
-    if (!in_array($action, ['start', 'stop', 'restart'], true)) {
+    if (!in_array($action, ['start', 'stop', 'restart', 'enable', 'disable'], true)) {
         return ['ok' => false, 'error' => 'Invalid action.'];
     }
     $cmd = sprintf('sudo -n systemctl %s %s 2>&1', escapeshellarg($action), escapeshellarg($name));
@@ -327,5 +372,5 @@ function service_action(string $name, string $action, array $whitelist): array
         }
         return ['ok' => false, 'error' => $msg ?: 'Command failed (exit ' . $code . ').'];
     }
-    return ['ok' => true, 'status' => service_status($name)];
+    return ['ok' => true, 'status' => service_status($name), 'enabled' => service_enabled($name)];
 }

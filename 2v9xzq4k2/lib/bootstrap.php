@@ -28,17 +28,30 @@ if (!is_dir(DATA_DIR)) {
     @mkdir(DATA_DIR, 0700, true);
 }
 
+// Baseline browser protections for every dynamic response.
+header('X-Content-Type-Options: nosniff');
+header('X-Frame-Options: DENY');
+header('Referrer-Policy: same-origin');
+header('Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=()');
+header("Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline' https://unpkg.com https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'");
+header('Cache-Control: no-store');
+
 // --- Secure session ---------------------------------------------------------
-// Scope the cookie to the panel's own path so the secret prefix is required.
-$cookiePath = rtrim(dirname($_SERVER['SCRIPT_NAME'] ?? '/'), '/') . '/';
-if ($cookiePath === '') {
-    $cookiePath = '/';
-}
+// Scope the cookie to the panel's URL path. Avoid filesystem dirname(), whose
+// separator is OS-dependent and can produce an invalid `\/` cookie path.
+$scriptPath = str_replace('\\', '/', (string) ($_SERVER['SCRIPT_NAME'] ?? '/'));
+$lastSlash = strrpos($scriptPath, '/');
+$scriptDir = $lastSlash === false ? '' : substr($scriptPath, 0, $lastSlash);
+$cookiePath = $scriptDir === '' ? '/' : rtrim($scriptDir, '/') . '/';
+$remote = (string) ($_SERVER['REMOTE_ADDR'] ?? '');
+$trustProxy = in_array($remote, (array) ($config['trusted_proxies'] ?? []), true);
 $https = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off')
       || (($_SERVER['SERVER_PORT'] ?? null) == 443)
-      || (($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '') === 'https');
+      || ($trustProxy && strtolower((string) ($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '')) === 'https');
 
 session_name('nebula_sess');
+ini_set('session.use_strict_mode', '1');
+ini_set('session.use_only_cookies', '1');
 session_set_cookie_params([
     'lifetime' => 0,
     'path'     => $cookiePath,

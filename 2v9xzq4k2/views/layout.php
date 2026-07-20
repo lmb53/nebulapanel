@@ -58,9 +58,12 @@ function nav_link(string $route, string $icon, string $label, string $active): s
       <?php endif; ?>
     </div>
     <div class="sidebar-footer">
-      <a class="collapse-btn" href="<?= e(url('logout')) ?>" style="text-decoration:none">
-        <i data-lucide="log-out"></i><span class="nav-label">Sign out</span>
-      </a>
+      <form method="post" action="<?= e(url('logout')) ?>" style="margin:0">
+        <?= csrf_field() ?>
+        <button class="collapse-btn" type="submit" style="width:100%">
+          <i data-lucide="log-out"></i><span class="nav-label">Sign out</span>
+        </button>
+      </form>
       <button class="collapse-btn" id="collapseBtn"><i data-lucide="panel-left-close"></i><span class="nav-label">Collapse</span></button>
     </div>
   </aside>
