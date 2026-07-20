@@ -13,6 +13,8 @@ function nebula_modules(): array
         'monitoring' => ['activity',         'Monitoring',   'Overview'],
 
         'websites'   => ['globe',            'Websites',     'Hosting'],
+        'ssl'        => ['shield-check',     'SSL',          'Hosting'],
+        'php'        => ['code-2',           'PHP',          'Hosting'],
         'databases'  => ['database',         'Databases',    'Hosting'],
         'phpmyadmin' => ['table-properties', 'phpMyAdmin',   'Hosting'],
 
@@ -31,6 +33,7 @@ function nebula_modules(): array
 
         'terminal'   => ['square-terminal',  'Terminal',     'Tools'],
         'sysinfo'    => ['cpu',              'System Info',  'Tools'],
+        'diagnostics'=> ['stethoscope',      'Diagnostics',  'Tools'],
         'selfupdate' => ['git-branch',       'Panel Updates','Tools'],
         'settings'   => ['settings',         'Settings',     'Tools'],
     ];

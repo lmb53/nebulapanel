@@ -145,6 +145,58 @@ EOF
     echo "removed $TARGET"
     ;;
 
+  # cert-list  -> raw `certbot certificates` output (parsed by the panel)
+  cert-list)
+    command -v certbot >/dev/null || die "certbot not installed"
+    certbot certificates 2>/dev/null
+    ;;
+
+  # cert-renew [name]  -> renew all, or one certificate by name
+  cert-renew)
+    NAME="${1:-}"
+    command -v certbot >/dev/null || die "certbot not installed"
+    if [[ -n "$NAME" ]]; then
+      valid_domain "$NAME"
+      certbot renew --cert-name "$NAME" --non-interactive
+    else
+      certbot renew --non-interactive
+    fi
+    echo "renew complete"
+    ;;
+
+  # cert-delete <name>
+  cert-delete)
+    NAME="${1:-}"; valid_domain "$NAME"
+    command -v certbot >/dev/null || die "certbot not installed"
+    certbot delete --cert-name "$NAME" --non-interactive
+    echo "deleted $NAME"
+    ;;
+
+  # php-ini <version> <key> <value>  (whitelisted keys; sets fpm+cli, reloads fpm)
+  php-ini)
+    VER="${1:-}"; KEY="${2:-}"; VAL="${3:-}"
+    valid_php "$VER"
+    case "$KEY" in
+      memory_limit|upload_max_filesize|post_max_size|max_execution_time|max_input_time|max_input_vars|display_errors) ;;
+      *) die "ini key not allowed" ;;
+    esac
+    [[ "$VAL" =~ ^[A-Za-z0-9_.]+$ ]] || die "invalid value"
+    changed=0
+    for SAPI in fpm cli; do
+      INI="/etc/php/${VER}/${SAPI}/php.ini"
+      [[ -f "$INI" ]] || continue
+      if grep -qE "^;?[[:space:]]*${KEY}[[:space:]]*=" "$INI"; then
+        sed -i -E "s|^;?[[:space:]]*(${KEY})[[:space:]]*=.*|\1 = ${VAL}|" "$INI"
+      else
+        echo "${KEY} = ${VAL}" >> "$INI"
+      fi
+      changed=1
+    done
+    [[ "$changed" == 1 ]] || die "no php.ini found for ${VER}"
+    systemctl reload "php${VER}-fpm" 2>/dev/null || systemctl restart "php${VER}-fpm" 2>/dev/null || true
+    echo "set ${KEY}=${VAL} for php ${VER}"
+    ;;
+
   *)
     die "unknown command: $CMD"
     ;;
