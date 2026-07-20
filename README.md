@@ -44,13 +44,15 @@ directory; `random` or an unset value generates a new one. Options (env vars):
 | **Dashboard** — live resources + actionable health, update, service, reboot, and backup alerts | ✅ |
 | **Monitoring** — live charts + top processes (`ps`) | ✅ |
 | **Services** — start / stop / restart + enable at boot via `systemctl` | ✅ sudo |
-| **Install Apps** — install apache2/redis/mariadb/fail2ban + extra PHP versions | ✅ sudo/helper |
-| **Updates** — list upgradable + `apt-get update`/`upgrade` | ✅ sudo |
+| **Install Apps** — install apache2/redis/mariadb/fail2ban + extra PHP versions with live output | ✅ sudo/helper |
+| **Updates** — list upgradable, update one/all, with persistent streaming apt output | ✅ sudo |
 | **Users** — system accounts from `/etc/passwd` (read-only) | ✅ |
+| **SSH Keys** — list/add/revoke authorized keys for interactive users | ✅ helper |
 | **Cron** — full CRUD on the web user's crontab | ✅ |
 | **Firewall** — UFW status, enable/disable, add/delete rules | ✅ sudo |
 | **Logs** — journalctl per-unit + `/var/log` file tails | ✅ |
 | **Websites** — create/delete Nginx vhosts, docroot, PHP ver, Let's Encrypt | ✅ helper |
+| **Domains + DNS** — compare hosted domains with server IPs and inspect live public records | ✅ |
 | **SSL** — list / issue / renew / delete certbot certificates | ✅ helper |
 | **PHP** — per-version ini settings (memory_limit, upload size…) + modules | ✅ helper |
 | **Databases** — MariaDB/MySQL: DBs + users CRUD (`sudo mysql`) | ✅ sudo |
@@ -63,6 +65,8 @@ directory; `random` or an unset value generates a new one. Options (env vars):
 | **System Info** — OS, kernel, CPU, RAM, disk, network | ✅ |
 | **Panel Updates** — self-update from GitHub (check + apply) | ✅ |
 | **Settings** — panel name, timeout, change password, audit log | ✅ |
+| **Notifications** — live operational alerts with read state | ✅ |
+| **API** — hashed bearer keys for authenticated JSON automation | ✅ |
 
 Rows marked **sudo** require the passwordless sudoers rules the installer sets up
 (see below). The panel is modular: each feature is `lib/mod_<x>.php` +
@@ -100,6 +104,11 @@ curl -fsSL https://raw.githubusercontent.com/lmb53/nebulapanel/main/install.sh \
 
 Use the prefix from your current `/var/www/html/<prefix>/` path. Omitting it
 intentionally creates a separate random installation.
+
+Re-running also repairs the panel's Nginx block as the explicit
+`default_server`. This matters after adding a hosted website: requests made by
+bare server IP continue to reach the panel instead of whichever domain vhost
+Nginx loaded first.
 
 ## Install
 
@@ -203,6 +212,8 @@ To reset the admin account, delete `data/admin.json` and reload.
 - If TLS terminates at a reverse proxy, add only that proxy's IP to
   `trusted_proxies` in `config.php`; forwarded headers are ignored otherwise.
 - Keep `'debug' => false` in `config.php`.
+- Treat API bearer keys like admin passwords. They grant the same control as a
+  signed-in administrator, are shown once, and are stored only as SHA-256 hashes.
 
 ## Architecture
 
@@ -256,7 +267,8 @@ needed to self-update. Notes:
 
 ## Still to build (natural next steps)
 
-- **DNS & Email** — the remaining mockup pages
+- **Authoritative DNS & Email hosting** — public DNS inspection is implemented;
+  safely operating a nameserver/mail stack remains intentionally separate
 - **PHP** — install additional versions (ondrej PPA), extensions, per-site `php.ini`
 - **Websites** — per-site logs viewer, clone/staging, wildcard certs, Apache mode
 - **Live PTY terminal** — real interactive shell (needs a WebSocket sidecar)
