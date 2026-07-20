@@ -1,5 +1,6 @@
 <?php
 require_once APP_ROOT . '/lib/mod_sites.php';
+require_once APP_ROOT . '/lib/files.php';
 $available = sites_available();
 $sites = sites_list();
 $phpv = $available ? php_versions() : [];
@@ -80,6 +81,7 @@ $phpv = $available ? php_versions() : [];
           $php = (string) ($s['php'] ?? '');
           $ssl = !empty($s['ssl']);
           $url = ($ssl ? 'https://' : 'http://') . $domain;
+          $filesPath = fm_link_path($docroot);
         ?>
         <div class="card" data-ws-card data-ws-ssl-state="<?= $ssl ? 'ssl' : 'nossl' ?>" style="padding:16px">
           <div class="flex items-center gap-3" style="margin-bottom:12px">
@@ -101,6 +103,11 @@ $phpv = $available ? php_versions() : [];
           </div>
           <div class="flex items-center gap-1" style="border-top:1px solid var(--border-subtle);padding-top:10px">
             <a class="icon-btn" href="<?= e($url) ?>" target="_blank" rel="noopener" title="Visit"><i data-lucide="external-link"></i></a>
+            <?php if ($filesPath !== null): ?>
+              <a class="icon-btn" href="<?= e(url('files', ['path' => $filesPath])) ?>" title="Explore website files"><i data-lucide="folder-open"></i></a>
+            <?php else: ?>
+              <button class="icon-btn" disabled title="Document root is outside the File Manager root or does not exist"><i data-lucide="folder-x"></i></button>
+            <?php endif; ?>
             <?php if (!$ssl): ?>
               <button class="icon-btn" data-ws-ssl="<?= e($domain) ?>" title="Issue SSL"><i data-lucide="shield"></i></button>
             <?php endif; ?>

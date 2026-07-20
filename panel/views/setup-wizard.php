@@ -98,7 +98,7 @@ $items[] = ['key' => 'phpmyadmin', 'label' => 'phpMyAdmin', 'desc' => 'Web-based
 <script src="<?= e(asset('app.js')) ?>"></script>
 <script>
 document.addEventListener('DOMContentLoaded', () => {
-  const { apiPost, toast } = window.Nebula;
+  const { apiPost, streamPost, toast } = window.Nebula;
   const installBtn = document.getElementById('wizInstall');
   const finishBtn = document.getElementById('wizFinish');
   const logCard = document.getElementById('wizLogCard');
@@ -125,7 +125,12 @@ document.addEventListener('DOMContentLoaded', () => {
       statusFor(cb, 'installing…', 'var(--blue-400)');
       log('Installing ' + label + ' …');
       let res;
-      try { res = await apiPost('provision', { action: 'install', key }); }
+      try { res = await streamPost('provision', { action: 'install', key }, (event) => {
+        if (event.type === 'output' && event.text) {
+          logEl.textContent += event.text;
+          logEl.scrollTop = logEl.scrollHeight;
+        }
+      }); }
       catch (e) { res = { ok: false, error: 'request failed' }; }
       if (res.ok) {
         statusFor(cb, 'done', 'var(--emerald-400)');

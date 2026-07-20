@@ -63,27 +63,36 @@ $helper = helper_available();
 </div>
 
 <div class="card hidden" id="appLogCard">
-  <div class="card-header"><h3>Output</h3></div>
+  <div class="card-header"><h3>Output</h3><button class="btn btn-secondary btn-sm" id="appReload"><i data-lucide="refresh-cw"></i>Reload status</button></div>
   <pre class="mono" id="appLog" style="margin:0;padding:16px;font-size:12px;line-height:1.55;white-space:pre-wrap;max-height:40vh;overflow:auto"></pre>
 </div>
 
 <script>
 document.addEventListener('DOMContentLoaded', () => {
-  const { apiPost, toast } = window.Nebula;
+  const { streamPost, toast } = window.Nebula;
   const logCard = document.getElementById('appLogCard');
   const logEl = document.getElementById('appLog');
-  function showLog(text) { logCard.classList.remove('hidden'); logEl.textContent = text || ''; }
+  function resetLog() { logCard.classList.remove('hidden'); logEl.textContent = ''; }
+  function appendLog(text) {
+    if (!text) return;
+    logCard.classList.remove('hidden');
+    logEl.textContent += text;
+    logEl.scrollTop = logEl.scrollHeight;
+  }
 
   async function run(btn, body, verb) {
     const orig = btn.innerHTML;
+    resetLog();
     btn.disabled = true; btn.innerHTML = verb + '…';
     if (window.lucide) lucide.createIcons();
     let res;
-    try { res = await apiPost('apps', body); }
+    try { res = await streamPost('apps', body, (event) => {
+      if (event.type === 'output') appendLog(event.text);
+    }); }
     catch (e) { toast('Request failed', 'error'); btn.disabled = false; btn.innerHTML = orig; return; }
-    if (res.output) showLog(res.output);
-    if (res.ok) { toast('Done', 'success'); setTimeout(() => location.reload(), 1200); }
-    else { toast(res.error || 'Failed', 'error'); if (res.error) showLog(res.error); btn.disabled = false; btn.innerHTML = orig; }
+    if (res.output && !logEl.textContent.trim()) appendLog(res.output + '\n');
+    if (res.ok) { toast('Done — output will remain here', 'success'); btn.innerHTML = '<i data-lucide="check"></i>Done'; if (window.lucide) lucide.createIcons(); }
+    else { toast(res.error || 'Failed', 'error'); if (res.error && !logEl.textContent.includes(String(res.error).trim())) appendLog('\n' + res.error + '\n'); btn.disabled = false; btn.innerHTML = orig; }
   }
 
   document.querySelectorAll('[data-app-install]').forEach((b) =>
@@ -93,5 +102,6 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('phpInstall')?.addEventListener('click', function () {
     run(this, { action: 'php-install', version: document.getElementById('phpVer').value }, 'Installing');
   });
+  document.getElementById('appReload')?.addEventListener('click', () => location.reload());
 });
 </script>

@@ -79,6 +79,7 @@ function nav_link(string $route, string $icon, string $label, string $active): s
         <div class="mh-item"><i data-lucide="hard-drive" style="width:12px;height:12px"></i><span data-mh="disk">–</span><div class="mh-bar"><div class="mh-fill" data-mh-bar="disk" style="width:0;background:var(--blue-500)"></div></div></div>
       </div>
       <button class="icon-btn" id="themeToggle" title="Toggle theme"><i data-lucide="moon"></i></button>
+      <a class="icon-btn" href="<?= e(url('notifications')) ?>" title="Notifications"><i data-lucide="bell"></i></a>
       <div class="avatar" title="<?= e(current_user() ?? '') ?>"><?= e(strtoupper(substr(current_user() ?? 'U', 0, 2))) ?></div>
     </header>
 
