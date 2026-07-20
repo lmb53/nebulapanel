@@ -1,0 +1,203 @@
+#!/usr/bin/env bash
+#
+# nebula-helper — the ONLY privileged surface of Nebula Panel.
+# Installed root-owned to /usr/local/bin/nebula-helper with a single sudoers
+# rule (www-data ALL=(root) NOPASSWD: /usr/local/bin/nebula-helper *).
+#
+# It performs a fixed, validated set of operations so the panel never needs a
+# broad `tee`/`ln`/`mkdir`/`certbot` sudo grant. Every argument is validated
+# here before use. Keep this file root-owned and NOT writable by the web user.
+#
+set -euo pipefail
+
+NGINX_AV=/etc/nginx/sites-available
+NGINX_EN=/etc/nginx/sites-enabled
+
+die() { echo "$*" >&2; exit 2; }
+valid_domain() { [[ "$1" =~ ^[a-zA-Z0-9]([a-zA-Z0-9.-]{0,251}[a-zA-Z0-9])?$ ]] || die "invalid domain"; }
+valid_path()   { [[ "$1" =~ ^/[a-zA-Z0-9._/-]+$ && "$1" != *".."* ]] || die "invalid path"; }
+valid_php()    { [[ "$1" =~ ^[0-9]+\.[0-9]+$ ]] || die "invalid php version"; }
+valid_email()  { [[ -z "$1" || "$1" =~ ^[^@[:space:]]+@[^@[:space:]]+$ ]] || die "invalid email"; }
+
+CMD="${1:-}"; shift || true
+
+case "$CMD" in
+
+  # List installed PHP-FPM versions (one per line, e.g. 8.1).
+  php-versions)
+    ls /run/php/ 2>/dev/null | grep -oE 'php[0-9.]+-fpm\.sock' \
+      | sed -E 's/php([0-9.]+)-fpm\.sock/\1/' | sort -uV
+    ;;
+
+  # site-create <domain> <docroot> <phpversion>
+  site-create)
+    DOMAIN="${1:-}"; DOCROOT="${2:-}"; PHPVER="${3:-}"
+    valid_domain "$DOMAIN"; valid_path "$DOCROOT"; valid_php "$PHPVER"
+    SOCK="/run/php/php${PHPVER}-fpm.sock"
+    [[ -S "$SOCK" ]] || die "PHP-FPM $PHPVER not installed ($SOCK missing)"
+    [[ -e "$NGINX_AV/$DOMAIN" ]] && die "site already exists"
+    mkdir -p "$DOCROOT"
+    if [[ -z "$(ls -A "$DOCROOT" 2>/dev/null)" ]]; then
+      printf '<!doctype html><html><body style="font-family:sans-serif"><h1>%s</h1><p>Provisioned by Nebula Panel. PHP %s.</p></body></html>\n' \
+        "$DOMAIN" "$PHPVER" > "$DOCROOT/index.html"
+    fi
+    chown -R www-data:www-data "$DOCROOT"
+    cat > "$NGINX_AV/$DOMAIN" <<EOF
+server {
+    listen 80;
+    listen [::]:80;
+    server_name $DOMAIN www.$DOMAIN;
+    root $DOCROOT;
+    index index.php index.html index.htm;
+    access_log /var/log/nginx/${DOMAIN}.access.log;
+    error_log  /var/log/nginx/${DOMAIN}.error.log;
+    location / { try_files \$uri \$uri/ /index.php\$is_args\$args; }
+    location ~ \.php\$ {
+        include snippets/fastcgi-php.conf;
+        fastcgi_pass unix:$SOCK;
+    }
+    location ~ /\.(?!well-known).* { deny all; }
+}
+EOF
+    ln -sf "$NGINX_AV/$DOMAIN" "$NGINX_EN/$DOMAIN"
+    nginx -t || { rm -f "$NGINX_EN/$DOMAIN" "$NGINX_AV/$DOMAIN"; die "nginx config test failed"; }
+    systemctl reload nginx
+    echo "created $DOMAIN -> $DOCROOT (PHP $PHPVER)"
+    ;;
+
+  # site-delete <domain> [purge] [docroot]
+  site-delete)
+    DOMAIN="${1:-}"; PURGE="${2:-no}"; DOCROOT="${3:-}"
+    valid_domain "$DOMAIN"
+    rm -f "$NGINX_EN/$DOMAIN" "$NGINX_AV/$DOMAIN"
+    nginx -t && systemctl reload nginx || true
+    if [[ "$PURGE" == "purge" && -n "$DOCROOT" ]]; then
+      valid_path "$DOCROOT"
+      [[ "$DOCROOT" == "/" || "$DOCROOT" == "/var/www" || "$DOCROOT" == "/etc" ]] && die "refusing to delete $DOCROOT"
+      rm -rf "$DOCROOT"
+    fi
+    echo "deleted $DOMAIN"
+    ;;
+
+  # site-ssl <domain> [email]
+  site-ssl)
+    DOMAIN="${1:-}"; EMAIL="${2:-}"
+    valid_domain "$DOMAIN"; valid_email "$EMAIL"
+    command -v certbot >/dev/null || die "certbot not installed"
+    if [[ -n "$EMAIL" ]]; then
+      certbot --nginx -d "$DOMAIN" -d "www.$DOMAIN" --non-interactive --agree-tos -m "$EMAIL" --redirect
+    else
+      certbot --nginx -d "$DOMAIN" -d "www.$DOMAIN" --non-interactive --agree-tos --register-unsafely-without-email --redirect
+    fi
+    echo "ssl issued for $DOMAIN"
+    ;;
+
+  # php-install <version>  (adds ondrej/php PPA on Ubuntu, installs php<ver>-fpm + common extensions)
+  php-install)
+    VER="${1:-}"
+    [[ "$VER" =~ ^[0-9]+\.[0-9]+$ ]] || die "invalid php version"
+    export DEBIAN_FRONTEND=noninteractive
+    if ! command -v add-apt-repository >/dev/null 2>&1; then
+      apt-get update -qq
+      apt-get install -y -qq software-properties-common
+    fi
+    if ! grep -rqs 'ondrej/php' /etc/apt/sources.list.d 2>/dev/null; then
+      add-apt-repository -y ppa:ondrej/php
+    fi
+    apt-get update -qq
+    apt-get install -y "php${VER}-fpm" "php${VER}-cli" "php${VER}-mysql" "php${VER}-curl" \
+      "php${VER}-mbstring" "php${VER}-xml" "php${VER}-gd" "php${VER}-zip" \
+      || die "apt install failed for php ${VER}"
+    systemctl enable --now "php${VER}-fpm" || true
+    echo "installed php ${VER}"
+    ;;
+
+  # pma-install <targetdir>
+  pma-install)
+    TARGET="${1:-}"
+    valid_path "$TARGET"
+    command -v curl >/dev/null || die "curl not installed"
+    TMP="$(mktemp -d)"
+    trap 'rm -rf "$TMP"' EXIT
+    curl -fsSL -o "$TMP/pma.tar.gz" \
+      "https://www.phpmyadmin.net/downloads/phpMyAdmin-latest-all-languages.tar.gz" || die "download failed"
+    tar -xzf "$TMP/pma.tar.gz" -C "$TMP" || die "extract failed"
+    SRC="$(find "$TMP" -maxdepth 1 -type d -name 'phpMyAdmin-*' | head -1)"
+    [[ -n "$SRC" ]] || die "archive layout unexpected"
+    mkdir -p "$TARGET"
+    cp -a "$SRC"/. "$TARGET"/
+    SECRET="$(tr -dc 'a-zA-Z0-9' </dev/urandom | head -c 32)"
+    sed "s|\$cfg\['blowfish_secret'\] = '';|\$cfg['blowfish_secret'] = '${SECRET}';|" \
+      "$TARGET/config.sample.inc.php" > "$TARGET/config.inc.php"
+    mkdir -p "$TARGET/tmp"
+    chown -R www-data:www-data "$TARGET"
+    chmod 700 "$TARGET/tmp"
+    echo "phpMyAdmin installed at $TARGET"
+    ;;
+
+  # pma-remove <targetdir>
+  pma-remove)
+    TARGET="${1:-}"
+    valid_path "$TARGET"
+    [[ "$TARGET" == "/" || "$TARGET" == "/var/www" ]] && die "refusing"
+    [[ -f "$TARGET/config.inc.php" ]] || die "not a phpMyAdmin dir"
+    rm -rf "$TARGET"
+    echo "removed $TARGET"
+    ;;
+
+  # cert-list  -> raw `certbot certificates` output (parsed by the panel)
+  cert-list)
+    command -v certbot >/dev/null || die "certbot not installed"
+    certbot certificates 2>/dev/null
+    ;;
+
+  # cert-renew [name]  -> renew all, or one certificate by name
+  cert-renew)
+    NAME="${1:-}"
+    command -v certbot >/dev/null || die "certbot not installed"
+    if [[ -n "$NAME" ]]; then
+      valid_domain "$NAME"
+      certbot renew --cert-name "$NAME" --non-interactive
+    else
+      certbot renew --non-interactive
+    fi
+    echo "renew complete"
+    ;;
+
+  # cert-delete <name>
+  cert-delete)
+    NAME="${1:-}"; valid_domain "$NAME"
+    command -v certbot >/dev/null || die "certbot not installed"
+    certbot delete --cert-name "$NAME" --non-interactive
+    echo "deleted $NAME"
+    ;;
+
+  # php-ini <version> <key> <value>  (whitelisted keys; sets fpm+cli, reloads fpm)
+  php-ini)
+    VER="${1:-}"; KEY="${2:-}"; VAL="${3:-}"
+    valid_php "$VER"
+    case "$KEY" in
+      memory_limit|upload_max_filesize|post_max_size|max_execution_time|max_input_time|max_input_vars|display_errors) ;;
+      *) die "ini key not allowed" ;;
+    esac
+    [[ "$VAL" =~ ^[A-Za-z0-9_.]+$ ]] || die "invalid value"
+    changed=0
+    for SAPI in fpm cli; do
+      INI="/etc/php/${VER}/${SAPI}/php.ini"
+      [[ -f "$INI" ]] || continue
+      if grep -qE "^;?[[:space:]]*${KEY}[[:space:]]*=" "$INI"; then
+        sed -i -E "s|^;?[[:space:]]*(${KEY})[[:space:]]*=.*|\1 = ${VAL}|" "$INI"
+      else
+        echo "${KEY} = ${VAL}" >> "$INI"
+      fi
+      changed=1
+    done
+    [[ "$changed" == 1 ]] || die "no php.ini found for ${VER}"
+    systemctl reload "php${VER}-fpm" 2>/dev/null || systemctl restart "php${VER}-fpm" 2>/dev/null || true
+    echo "set ${KEY}=${VAL} for php ${VER}"
+    ;;
+
+  *)
+    die "unknown command: $CMD"
+    ;;
+esac
