@@ -27,7 +27,7 @@ switch ($route) {
             $res = create_admin($_POST['username'] ?? '', $_POST['password'] ?? '');
             if ($res['ok']) {
                 attempt_login($_POST['username'], $_POST['password']);
-                redirect('dashboard');
+                redirect('setup-wizard');
             }
             $error = $res['error'];
         }
@@ -63,6 +63,14 @@ switch ($route) {
 // Everything below requires authentication.
 // --------------------------------------------------------------------------
 require_auth();
+
+// --------------------------------------------------------------------------
+// First-run provisioning wizard (standalone full-screen, auth required).
+// --------------------------------------------------------------------------
+if ($route === 'setup-wizard') {
+    render('setup-wizard', [], false);
+    return;
+}
 
 // --------------------------------------------------------------------------
 // JSON API routes: api/<name> -> api/<name>.php
