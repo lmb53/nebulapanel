@@ -61,7 +61,12 @@ die()  { printf '\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 
 # Clean up any downloaded temp files on exit.
 TMP_DL=""
-cleanup() { [[ -n "$TMP_DL" && -d "$TMP_DL" ]] && rm -rf "$TMP_DL"; }
+SUDOERS_TMP=""
+cleanup() {
+  [[ -n "$TMP_DL" && -d "$TMP_DL" ]] && rm -rf "$TMP_DL"
+  [[ -n "$SUDOERS_TMP" && -f "$SUDOERS_TMP" ]] && rm -f "$SUDOERS_TMP"
+  return 0
+}
 trap cleanup EXIT
 
 # --------------------------------------------------------------------------
@@ -71,7 +76,7 @@ log "Installing packages (Nginx, PHP-FPM, tooling)…"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
 apt-get install -y -qq nginx php-fpm php-cli php-mysql php-curl php-mbstring php-xml php-zip \
-  rsync ufw curl ca-certificates tar \
+  rsync ufw sudo curl ca-certificates tar \
   certbot python3-certbot-nginx >/dev/null
 ok "Packages installed"
 
@@ -173,6 +178,11 @@ for _guard in .htaccess .gitignore; do
   [[ -f "$PANEL_SRC/data/$_guard" ]] && cp -f "$PANEL_SRC/data/$_guard" "$DEST/data/$_guard"
 done
 ok "Files copied"
+
+# Fail before configuring the server if a release archive is incomplete.
+for _required in index.php lib/bootstrap.php api/apps.php api/provision.php assets/app.js assets/style.css; do
+  [[ -f "$DEST/$_required" ]] || die "Deployed source is incomplete: missing $_required"
+done
 
 # Integrity check: catch a stale/incomplete source (the usual cause of
 # "View not found" errors in the panel). Every routed view must be present.
@@ -282,37 +292,51 @@ ok "Nginx configured and reloaded"
 # behind the obscured prefix + HTTPS + an IP allow-list.
 log "Granting www-data scoped root via sudoers…"
 SUDOERS=/etc/sudoers.d/nebula-panel
+SUDOERS_TMP="$(mktemp)"
 {
   echo "# Nebula Panel — passwordless root for the web user, scoped to the"
   echo "# commands the panel uses. Keep the panel behind HTTPS + IP allow-list."
-} > "$SUDOERS"
+} > "$SUDOERS_TMP"
 
 # systemctl: lifecycle actions exposed by the Services page.
 SC="$(command -v systemctl || true)"
-[[ -n "$SC" ]] && echo "www-data ALL=(root) NOPASSWD: $SC start *, $SC stop *, $SC restart *, $SC enable *, $SC disable *" >> "$SUDOERS"
+[[ -n "$SC" ]] && echo "www-data ALL=(root) NOPASSWD: $SC start *, $SC stop *, $SC restart *, $SC enable *, $SC disable *" >> "$SUDOERS_TMP"
 
-# A binary usable with any args (only added if the binary exists).
+# Add a rule for an installed binary, or its standard Ubuntu path so apps
+# installed later by the panel are immediately manageable.
 sudo_line() {
-  local p; p="$(command -v "$1" 2>/dev/null || true)"
-  [[ -n "$p" ]] && echo "www-data ALL=(root) NOPASSWD:${2:+$2:} $p *" >> "$SUDOERS"
+  local bin="$1" fallback="$2" tag="${3:-}" p
+  p="$(command -v "$bin" 2>/dev/null || true)"
+  [[ -n "$p" ]] || p="$fallback"
+  echo "www-data ALL=(root) NOPASSWD:${tag:+$tag:} $p *" >> "$SUDOERS_TMP"
+  return 0
 }
-sudo_line ufw
-sudo_line docker
-sudo_line mysql
-sudo_line journalctl
-sudo_line tar
-sudo_line apt-get SETENV   # SETENV so DEBIAN_FRONTEND=... is permitted
+sudo_line ufw        /usr/sbin/ufw
+sudo_line docker     /usr/bin/docker
+sudo_line mysql      /usr/bin/mysql
+sudo_line journalctl /usr/bin/journalctl
+sudo_line tar        /usr/bin/tar
+sudo_line apt-get    /usr/bin/apt-get SETENV   # SETENV permits DEBIAN_FRONTEND
 
 # The privileged helper: a single tight entry that covers vhost/SSL/phpMyAdmin
 # operations, instead of granting tee/ln/mkdir/certbot broadly.
 [[ -x /usr/local/bin/nebula-helper ]] && \
-  echo "www-data ALL=(root) NOPASSWD: /usr/local/bin/nebula-helper *" >> "$SUDOERS"
+  echo "www-data ALL=(root) NOPASSWD: /usr/local/bin/nebula-helper *" >> "$SUDOERS_TMP"
 
-chmod 440 "$SUDOERS"
-if ! visudo -cf "$SUDOERS" >/dev/null 2>&1; then
-  rm -f "$SUDOERS"
-  die "Generated sudoers file was invalid and has been removed."
+chmod 440 "$SUDOERS_TMP"
+if ! visudo -cf "$SUDOERS_TMP" >/dev/null 2>&1; then
+  die "Generated sudoers file is invalid; the existing configuration was left untouched."
 fi
+install -m 0440 -o root -g root "$SUDOERS_TMP" "$SUDOERS"
+rm -f "$SUDOERS_TMP"
+SUDOERS_TMP=""
+
+# Catch a partial/ineffective sudoers deployment during installation rather
+# than deferring the failure to the web UI.
+sudo -u www-data sudo -n /usr/bin/apt-get --version >/dev/null 2>&1 \
+  || die "apt-get sudo rule verification failed ($SUDOERS)."
+sudo -u www-data sudo -n /usr/local/bin/nebula-helper php-versions >/dev/null 2>&1 \
+  || die "privileged helper sudo rule verification failed ($SUDOERS)."
 ok "sudoers rule installed ($SUDOERS)"
 
 # --------------------------------------------------------------------------

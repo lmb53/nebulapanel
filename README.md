@@ -87,6 +87,20 @@ find panel -name '*.php' -print0 | xargs -0 -n1 php -l
 bash -n install.sh panel/bin/nebula-helper
 ```
 
+## Repairing an existing installation
+
+Re-running the corrected installer with the same prefix repairs the helper and
+sudoers rules without replacing `data/` (accounts, settings, backups, and audit
+history are preserved). For example:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/lmb53/nebulapanel/main/install.sh \
+  | sudo PANEL_PREFIX=5cc813be4cbdf4b3c35be176 bash
+```
+
+Use the prefix from your current `/var/www/html/<prefix>/` path. Omitting it
+intentionally creates a separate random installation.
+
 ## Install
 
 ```bash
