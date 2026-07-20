@@ -1,6 +1,15 @@
 <?php
-/** @var bool $root_ok */ /** @var string $rel */ /** @var array $listing */
-/** @var array $breadcrumbs */ /** @var array $config */
+/** @var array $config */
+require_once APP_ROOT . '/lib/files.php';
+$rel = $_GET['path'] ?? '';
+$abs = fm_resolve($rel);
+if ($abs === null || !is_dir($abs)) {
+    $abs = fm_resolve('');
+}
+$root_ok = fm_root() !== '';
+$rel = $abs ? fm_rel($abs) : '';
+$listing = $abs ? fm_list($abs) : ['dirs' => [], 'files' => []];
+$breadcrumbs = fm_breadcrumbs($rel);
 ?>
 <div class="page-header">
   <div>

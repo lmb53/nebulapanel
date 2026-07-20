@@ -3,14 +3,11 @@
 /** @var string $__active current route for nav highlighting */
 /** @var array  $config */
 $active = $__active ?? 'dashboard';
-$nav = [
-    'Pinned' => [
-        ['dashboard', 'layout-dashboard', 'Dashboard'],
-        ['files',     'folder-tree',      'File Manager'],
-        ['services',  'server-cog',       'Services'],
-        ['sysinfo',   'cpu',              'System Info'],
-    ],
-];
+// Build nav grouped by section from the module registry.
+$nav = [];
+foreach (nebula_modules() as $route => $m) {
+    $nav[$m[2]][] = [$route, $m[0], $m[1]];
+}
 function nav_link(string $route, string $icon, string $label, string $active): string
 {
     $cls = $route === $active ? 'nav-item active' : 'nav-item';

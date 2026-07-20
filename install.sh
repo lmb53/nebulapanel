@@ -174,6 +174,18 @@ chown www-data:www-data "$DEST/data"
 chmod 700 "$DEST/data"
 ok "Permissions applied (data/ is private, web-writable)"
 
+# Record the installed commit SHA so the Panel Updates page has a baseline.
+SHA="$(curl -fsSL -H 'User-Agent: NebulaPanel' \
+        "https://api.github.com/repos/${REPO}/commits/${REPO_REF}" 2>/dev/null \
+        | grep -m1 '"sha"' | sed -E 's/.*"sha": ?"([a-f0-9]+)".*/\1/')"
+if [[ -n "$SHA" ]]; then
+  printf '{\n  "sha": "%s",\n  "ref": "%s",\n  "applied_at": "%s"\n}\n' \
+    "$SHA" "$REPO_REF" "$(date -Iseconds 2>/dev/null || date)" > "$DEST/data/version.json"
+  chown www-data:www-data "$DEST/data/version.json"
+  chmod 600 "$DEST/data/version.json"
+  ok "Recorded version baseline (${SHA:0:12})"
+fi
+
 # --------------------------------------------------------------------------
 # 5. Nginx site
 # --------------------------------------------------------------------------
@@ -214,16 +226,36 @@ systemctl reload nginx
 ok "Nginx configured and reloaded"
 
 # --------------------------------------------------------------------------
-# 6. Service control via sudoers (start/stop/restart only)
+# 6. Grant scoped root to the web user via sudoers
 # --------------------------------------------------------------------------
-log "Granting www-data permission to control services…"
-SYSTEMCTL="$(command -v systemctl)"
+# The panel drives real tools (systemctl, ufw, apt-get, docker, mysql, tar,
+# journalctl). Each needs passwordless sudo. NOTE: several of these (tar,
+# docker, mysql, apt-get) effectively confer broad root power — that is
+# inherent to a server control panel. This is exactly why the panel must sit
+# behind the obscured prefix + HTTPS + an IP allow-list.
+log "Granting www-data scoped root via sudoers…"
 SUDOERS=/etc/sudoers.d/nebula-panel
-cat > "$SUDOERS" <<EOF
-# Allow the web server to start/stop/restart services (no password),
-# and nothing else. Installed by Nebula Panel installer.
-www-data ALL=(root) NOPASSWD: ${SYSTEMCTL} start *, ${SYSTEMCTL} stop *, ${SYSTEMCTL} restart *
-EOF
+{
+  echo "# Nebula Panel — passwordless root for the web user, scoped to the"
+  echo "# commands the panel uses. Keep the panel behind HTTPS + IP allow-list."
+} > "$SUDOERS"
+
+# systemctl: only start/stop/restart.
+SC="$(command -v systemctl || true)"
+[[ -n "$SC" ]] && echo "www-data ALL=(root) NOPASSWD: $SC start *, $SC stop *, $SC restart *" >> "$SUDOERS"
+
+# A binary usable with any args (only added if the binary exists).
+sudo_line() {
+  local p; p="$(command -v "$1" 2>/dev/null || true)"
+  [[ -n "$p" ]] && echo "www-data ALL=(root) NOPASSWD:${2:+$2:} $p *" >> "$SUDOERS"
+}
+sudo_line ufw
+sudo_line docker
+sudo_line mysql
+sudo_line journalctl
+sudo_line tar
+sudo_line apt-get SETENV   # SETENV so DEBIAN_FRONTEND=... is permitted
+
 chmod 440 "$SUDOERS"
 if ! visudo -cf "$SUDOERS" >/dev/null 2>&1; then
   rm -f "$SUDOERS"

@@ -1,5 +1,8 @@
 <?php
-/** @var array $facts */ /** @var array $net */ /** @var ?array $mem */ /** @var ?array $disk */
+$facts = system_facts();
+$net = net_interfaces();
+$mem = mem_info();
+$disk = disk_info('/');
 $rows = [
     ['Hostname',    $facts['hostname']],
     ['Operating system', $facts['os']],

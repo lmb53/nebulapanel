@@ -19,6 +19,16 @@
     return r.json();
   }
 
+  function fmtBytes(b) {
+    if (!b) return '0 B';
+    const u = ['B', 'KB', 'MB', 'GB', 'TB'];
+    const i = Math.floor(Math.log(b) / Math.log(1024));
+    return (b / Math.pow(1024, i)).toFixed(1) + ' ' + u[i];
+  }
+
+  // Public API for per-module view scripts (available by DOMContentLoaded).
+  window.Nebula = { api, apiGet, apiPost, toast, fmtBytes };
+
   // ---- Toasts -------------------------------------------------------------
   function toast(msg, type = 'success') {
     const stack = document.getElementById('toastStack');
@@ -111,13 +121,6 @@
       if (series.labels.length > 40) { series.labels.shift(); series.cpu.shift(); series.mem.shift(); }
       liveChart.update();
     }
-  }
-
-  function fmtBytes(b) {
-    if (!b) return '0 B';
-    const u = ['B', 'KB', 'MB', 'GB', 'TB'];
-    const i = Math.floor(Math.log(b) / Math.log(1024));
-    return (b / Math.pow(1024, i)).toFixed(1) + ' ' + u[i];
   }
 
   async function pollMetrics() {

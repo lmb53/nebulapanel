@@ -1,4 +1,4 @@
-<?php /** @var array $facts */ /** @var array $config */ ?>
+<?php /** @var array $config */ $facts = system_facts(); ?>
 <div class="page-header">
   <div>
     <h1 class="page-title">Dashboard</h1>

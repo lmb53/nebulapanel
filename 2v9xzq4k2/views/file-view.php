@@ -1,5 +1,15 @@
 <?php
-/** @var string $rel */ /** @var bool $is_text */ /** @var ?string $content */ /** @var int $size */
+require_once APP_ROOT . '/lib/files.php';
+$abs = fm_resolve($_GET['path'] ?? '');
+if ($abs === null || !is_file($abs)) {
+    echo '<div class="card"><div class="empty-state"><div class="es-icon"><i data-lucide="file-x"></i></div>'
+       . '<div style="font-weight:600;color:var(--text-secondary)">File not found</div></div></div>';
+    return;
+}
+$rel = fm_rel($abs);
+$is_text = fm_is_text($abs);
+$content = $is_text ? file_get_contents($abs) : null;
+$size = filesize($abs);
 $dir = trim(dirname($rel), '.'); $dir = $dir === '/' ? '' : $dir;
 ?>
 <div class="page-header">

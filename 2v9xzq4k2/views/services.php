@@ -1,4 +1,4 @@
-<?php /** @var array $services */ ?>
+<?php /** @var array $config */ $services = services_overview($config['services']); ?>
 <div class="page-header">
   <div>
     <h1 class="page-title">Services</h1>

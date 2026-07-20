@@ -6,17 +6,32 @@ A working, self-hosted server control panel served from an **obscured URL prefix
 > The random directory name is *obscurity*, not real security. Always pair it with
 > HTTPS, a strong admin password, and ideally IP allow-listing. See "Hardening".
 
-## What works in this MVP
+## What works
 
 | Feature | Status |
 |---|---|
 | First-run admin setup (bcrypt) + login/logout | ✅ |
-| Session auth, idle timeout, CSRF on all writes | ✅ |
-| Dashboard with **live** CPU / memory / disk / load (3s poll) + chart | ✅ |
-| Service control — start / stop / restart via `systemctl` | ✅ (needs sudoers rule) |
-| File Manager — browse / view / download / delete, confined to a root | ✅ |
-| System Info — OS, kernel, CPU, RAM, disk, network interfaces | ✅ |
-| Audit log (`data/audit.log`) | ✅ |
+| Session auth, idle timeout, CSRF on all writes, audit log | ✅ |
+| **Dashboard** — live CPU / memory / disk / load (3s poll) + chart | ✅ |
+| **Monitoring** — live charts + top processes (`ps`) | ✅ |
+| **Services** — start / stop / restart via `systemctl` | ✅ sudo |
+| **Updates** — list upgradable + `apt-get update`/`upgrade` | ✅ sudo |
+| **Users** — system accounts from `/etc/passwd` (read-only) | ✅ |
+| **Cron** — full CRUD on the web user's crontab | ✅ |
+| **Firewall** — UFW status, enable/disable, add/delete rules | ✅ sudo |
+| **Logs** — journalctl per-unit + `/var/log` file tails | ✅ |
+| **Databases** — MariaDB/MySQL: DBs + users CRUD (`sudo mysql`) | ✅ sudo |
+| **Docker** — containers (start/stop/restart/rm) + images | ✅ sudo |
+| **File Manager** — browse / view / download / delete (confined root) | ✅ |
+| **Backups** — create / list / download / delete `.tar.gz` | ✅ |
+| **Terminal** — audited non-interactive command runner | ✅ |
+| **System Info** — OS, kernel, CPU, RAM, disk, network | ✅ |
+| **Panel Updates** — self-update from GitHub (check + apply) | ✅ |
+| **Settings** — panel name, timeout, change password, audit log | ✅ |
+
+Rows marked **sudo** require the passwordless sudoers rules the installer sets up
+(see below). The panel is modular: each feature is `lib/mod_<x>.php` +
+`views/<x>.php` (+ `api/<x>.php`), registered in `lib/modules.php`.
 
 Metrics read Linux `/proc` and use `systemctl`, so **run this on the Linux VPS**.
 On macOS/Windows the pages load but most metrics show `n/a`.
@@ -61,25 +76,30 @@ location ~ \.php$ {
 `mod_php` or PHP-FPM + the bundled `.htaccess` files already deny `data/`, `lib/`,
 `views/`. Ensure `AllowOverride All` for the directory.
 
-## Making service control work (sudoers)
+## Privileges (sudoers)
 
-`systemctl start/stop/restart` needs root. Grant the **web user** permission for
-*only* systemctl — nothing else:
-
-```bash
-sudo visudo -f /etc/sudoers.d/nebula-panel
-```
+Several modules drive tools that need root. **The installer writes these rules
+for you** to `/etc/sudoers.d/nebula-panel` (only for binaries that exist):
 
 ```
-# Let the web server control services without a password.
-www-data ALL=(root) NOPASSWD: /usr/bin/systemctl start *, \
-                              /usr/bin/systemctl stop *, \
-                              /usr/bin/systemctl restart *
+www-data ALL=(root) NOPASSWD: /usr/bin/systemctl start *, /usr/bin/systemctl stop *, /usr/bin/systemctl restart *
+www-data ALL=(root) NOPASSWD: /usr/sbin/ufw *
+www-data ALL=(root) NOPASSWD: /usr/bin/docker *
+www-data ALL=(root) NOPASSWD: /usr/bin/mysql *
+www-data ALL=(root) NOPASSWD: /usr/bin/journalctl *
+www-data ALL=(root) NOPASSWD: /usr/bin/tar *
+www-data ALL=(root) NOPASSWD:SETENV: /usr/bin/apt-get *
 ```
 
-Verify the path with `which systemctl` (often `/usr/bin/systemctl` or `/bin/systemctl`).
-Without this rule, status still shows correctly but start/stop/restart return a
-permission error (surfaced in the UI).
+> ⚠️ **This is broad.** `tar`, `docker`, `mysql`, and `apt-get` as root are each
+> effectively a path to full root. That is inherent to a control panel — the
+> mitigation is *access control*, not command scoping: keep the panel behind the
+> obscured prefix **+ HTTPS + an IP allow-list**, and treat panel access as root
+> access. If you don't need a module, delete its `sudo_line` from `install.sh`
+> (or the rule from the sudoers file) to shrink the surface.
+
+Modules whose tool/sudo rule is missing degrade gracefully: read-only status
+still shows and actions return a clear permission error in the UI.
 
 ## First run
 
@@ -102,26 +122,58 @@ To reset the admin account, delete `data/admin.json` and reload.
 
 ```
 2v9xzq4k2/
-  index.php        front controller — routes ?r=<route>, dispatches API + views
-  config.php       panel name, fm_root, service whitelist, timeouts
+  index.php         front controller — ?r=<route>: public / api/<x> / page views
+  config.php        panel name, fm_root, service whitelist, timeouts
   lib/
-    bootstrap.php  sessions, config, includes
-    helpers.php    url()/asset()/e()/json_out()/csrf/render()/audit()
-    auth.php       setup, login, logout, guards
-    sys.php        /proc metrics + systemctl control
-    files.php      path-safe file manager backend
-  views/           layout + one file per page
-  assets/          style.css, app.js (live polling, actions)
-  data/            admin.json, audit.log (web-denied, not in git)
+    bootstrap.php   sessions, config (+ data/settings.json overrides), includes
+    helpers.php     url()/asset()/e()/json_out()/csrf/render()/audit()/read_json_body()
+    auth.php        setup, login, logout, guards
+    sys.php         /proc metrics, run_cmd(), sudo_cmd(), has_cmd()
+    modules.php     nav + route registry (single source of truth)
+    files.php       path-safe file manager backend
+    mod_*.php       one backend per feature (cron, firewall, db, docker, …)
+  api/
+    <x>.php         one JSON endpoint per feature (drop-in: ?r=api/<x>)
+  views/
+    layout.php      shell; <x>.php self-loads its data and renders
+  assets/           style.css, app.js (exposes window.Nebula for view scripts)
+  data/             admin.json, settings.json, audit.log, backups/ (web-denied)
 ```
 
-Routing is intentionally query-param based (`?r=...`) so it works identically
-under Nginx, Apache, and `php -S` with **zero rewrite rules**.
+**Adding a module** = drop `lib/mod_x.php` + `views/x.php` (+ `api/x.php`) and add
+one row to `lib/modules.php`. No edits to the router or nav needed.
 
-## Not in this MVP (natural next steps)
+Routing is query-param based (`?r=...`) so it works identically under Nginx,
+Apache, and `php -S` with **zero rewrite rules**. Page views self-load their
+data; API endpoints are self-contained files that emit JSON via `json_out()`.
 
-- Live terminal / SSH (needs a WebSocket process — PHP is poor at this)
-- File upload / rename / chmod / create
-- Websites, Databases, DNS, SSL, Cron, Firewall pages (backends to add)
-- Multi-user + roles, 2FA
+## Self-update (Panel Updates page)
+
+The **Panel Updates** page checks the configured GitHub repo (`config.php` →
+`repo` / `repo_ref`, default `lmb53/nebulapanel@main`) and can apply updates
+in place:
+
+1. Compares the deployed commit SHA (recorded in `data/version.json` at install)
+   against the latest commit via the GitHub API.
+2. On **Update now**: downloads the tarball, **snapshots the current install**
+   to `data/backups/pre-update-<ts>.tar.gz`, then `rsync`s the new files over
+   the panel — **preserving `data/` and `config.php`** so your settings survive.
+
+Because the web user owns the panel files (the installer sets this), no sudo is
+needed to self-update. Notes:
+- `config.php` is intentionally **not** overwritten, so new config keys from an
+  update won't appear automatically — diff it against the repo after a major
+  update. Runtime prefs (panel name, timeout) live in `data/settings.json` and
+  are unaffected.
+- Roll back by extracting the pre-update snapshot from `data/backups/`.
+- Pin `repo_ref` to a tag/commit for reproducible, reviewed updates.
+
+## Still to build (natural next steps)
+
+- **Websites / vhosts** — create Nginx/Apache sites, doc roots, PHP pool per site
+- **DNS, SSL (Let's Encrypt issue/renew), Email** — the remaining mockup pages
+- **PHP** — multiple versions, extensions, per-site `php.ini`
+- **File Manager** — upload / rename / chmod / create / inline edit
+- **Live PTY terminal** — real interactive shell (needs a WebSocket sidecar)
+- **Multi-user + roles, 2FA**
 ```

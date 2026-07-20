@@ -47,6 +47,65 @@ function is_linux(): bool
     return PHP_OS_FAMILY === 'Linux' && is_dir('/proc');
 }
 
+/** Is a binary available on PATH? */
+function has_cmd(string $bin): bool
+{
+    [$code] = run_cmd('command -v ' . escapeshellarg($bin));
+    return $code === 0;
+}
+
+/** Simple HTTP GET. Returns [ok(bool), body]. Uses curl if present. */
+function http_get(string $url, int $timeout = 60): array
+{
+    if (has_cmd('curl')) {
+        [$code, $out] = run_cmd(
+            'curl -fsSL --max-time ' . (int) $timeout
+            . ' -H ' . escapeshellarg('User-Agent: NebulaPanel')
+            . ' ' . escapeshellarg($url),
+            $timeout + 5
+        );
+        return [$code === 0, $out];
+    }
+    $ctx = stream_context_create(['http' => [
+        'header'  => "User-Agent: NebulaPanel\r\n",
+        'timeout' => $timeout,
+    ]]);
+    $body = @file_get_contents($url, false, $ctx);
+    return [$body !== false, (string) $body];
+}
+
+/** Download a URL to a local file. Returns true on success. */
+function http_download(string $url, string $dest, int $timeout = 300): bool
+{
+    if (has_cmd('curl')) {
+        [$code] = run_cmd(
+            'curl -fsSL --max-time ' . (int) $timeout
+            . ' -H ' . escapeshellarg('User-Agent: NebulaPanel')
+            . ' -o ' . escapeshellarg($dest)
+            . ' ' . escapeshellarg($url),
+            $timeout + 5
+        );
+        return $code === 0;
+    }
+    $data = http_get($url, $timeout);
+    return $data[0] && @file_put_contents($dest, $data[1]) !== false;
+}
+
+/** Run a command as root via passwordless sudo. Returns [code, out, err]. */
+function sudo_cmd(string $cmd, int $timeout = 30): array
+{
+    return run_cmd('sudo -n ' . $cmd . ' 2>&1', $timeout);
+}
+
+/** Normalise a sudo/permission failure into a friendly message. */
+function sudo_error(string $out, int $code): string
+{
+    if (stripos($out, 'a password is required') !== false || stripos($out, 'may not run sudo') !== false) {
+        return 'Permission denied — the web user needs a sudoers rule for this command (see README).';
+    }
+    return trim($out) ?: ('Command failed (exit ' . $code . ').');
+}
+
 /** CPU usage percent, sampled over ~200ms from /proc/stat. */
 function cpu_usage(): ?float
 {

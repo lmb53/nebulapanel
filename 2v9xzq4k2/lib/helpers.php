@@ -121,6 +121,22 @@ function render(string $view, array $data = [], bool $withLayout = true): void
     }
 }
 
+/** Read a JSON request body, falling back to POST fields. */
+function read_json_body(): array
+{
+    $raw = file_get_contents('php://input');
+    $j = json_decode((string) $raw, true);
+    return is_array($j) ? $j : $_POST;
+}
+
+/** Guard: only allow POST for a write endpoint, else 405 JSON. */
+function require_post(): void
+{
+    if (($_SERVER['REQUEST_METHOD'] ?? 'GET') !== 'POST') {
+        json_out(['ok' => false, 'error' => 'POST required'], 405);
+    }
+}
+
 /** Append an entry to the audit log. */
 function audit(string $action, string $detail = ''): void
 {

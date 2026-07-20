@@ -9,6 +9,12 @@ define('DATA_DIR', APP_ROOT . '/data');
 
 $config = require APP_ROOT . '/config.php';
 
+// Runtime overrides written by the Settings page (panel_name, session_timeout).
+$__overrides = @json_decode((string) @file_get_contents(APP_ROOT . '/data/settings.json'), true);
+if (is_array($__overrides)) {
+    $config = array_merge($config, $__overrides);
+}
+
 if (!empty($config['debug'])) {
     error_reporting(E_ALL);
     ini_set('display_errors', '1');
@@ -45,6 +51,7 @@ session_start();
 require APP_ROOT . '/lib/helpers.php';
 require APP_ROOT . '/lib/auth.php';
 require APP_ROOT . '/lib/sys.php';
+require APP_ROOT . '/lib/modules.php';
 
 // Enforce idle timeout for logged-in sessions.
 if (!empty($_SESSION['uid'])) {

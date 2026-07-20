@@ -33,6 +33,10 @@ return [
     // Session idle timeout in seconds (default 30 min).
     'session_timeout' => 1800,
 
+    // Self-update source: the GitHub repo + ref the panel updates itself from.
+    'repo'     => getenv('NEBULA_REPO') ?: 'lmb53/nebulapanel',
+    'repo_ref' => getenv('NEBULA_REPO_REF') ?: 'main',
+
     // Set true only while debugging to surface PHP errors.
     'debug' => false,
 ];
