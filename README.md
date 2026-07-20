@@ -1,15 +1,18 @@
 # Nebula Panel — PHP MVP
 
-A working, self-hosted server control panel served from an **obscured URL prefix**
-(the secret directory name), e.g. `http://YOUR_IP/2v9xzq4k2/`.
+A working, self-hosted server control panel. The repository's application source
+lives in the clearly named `panel/` directory. Installation copies those files
+to a fresh **random public URL prefix**, e.g. `http://YOUR_IP/a1b2c3d4e5f6/`.
 
 > The random directory name is *obscurity*, not real security. Always pair it with
 > HTTPS, a strong admin password, and ideally IP allow-listing. See "Hardening".
 
 ## Quick install
 
-On a fresh **Ubuntu 22.04** box, one command installs and configures everything
-(Nginx + PHP-FPM, the panel, sudoers rules, the privileged helper, firewall):
+On a fresh **Ubuntu 22.04 or 24.04** box, one command installs and configures
+everything (Nginx + PHP-FPM, the panel, sudoers rules, the privileged helper,
+firewall). By default it creates a fresh random directory at
+`/var/www/html/<random-prefix>/` and serves it publicly through Nginx:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/lmb53/nebulapanel/main/install.sh | sudo bash
@@ -22,9 +25,12 @@ curl -fsSL https://raw.githubusercontent.com/lmb53/nebulapanel/main/install.sh \
   | sudo PANEL_PREFIX=random ADMIN_IP=203.0.113.7 DOMAIN=panel.example.com bash
 ```
 
-The installer prints the panel URL when it finishes — open it to create the admin
-account and run the provisioning wizard. Options (env vars): `PANEL_PREFIX`,
-`ADMIN_IP`, `DOMAIN`, `FM_ROOT`, `REPO`, `REPO_REF` (see [install.sh](install.sh)).
+The installer prints both the random public URL and its filesystem path when it
+finishes — open the URL to create the admin account and run the provisioning
+wizard. Set `PANEL_PREFIX=my-fixed-name` only when you deliberately want a stable
+directory; `random` or an unset value generates a new one. Options (env vars):
+`PANEL_PREFIX`, `WEBROOT`, `ADMIN_IP`, `DOMAIN`, `FM_ROOT`, `REPO`, `REPO_REF`
+(see [install.sh](install.sh)).
 
 > ⚠️ `curl … | sudo bash` runs remote code as root. It's your repo, but pin
 > `REPO_REF` to a tag/commit for reproducible, reviewed installs.
@@ -77,19 +83,20 @@ Run the cross-platform smoke test and syntax checks before deploying:
 
 ```bash
 php tests/smoke.php
-find 2v9xzq4k2 -name '*.php' -print0 | xargs -0 -n1 php -l
-bash -n install.sh 2v9xzq4k2/bin/nebula-helper
+find panel -name '*.php' -print0 | xargs -0 -n1 php -l
+bash -n install.sh panel/bin/nebula-helper
 ```
 
 ## Install
 
 ```bash
-# 1. Copy the secret directory into your web root.
-sudo cp -r 2v9xzq4k2 /var/www/html/
+# 1. Copy the panel source to a random directory in your web root.
+PANEL_PREFIX="$(od -An -N12 -tx1 /dev/urandom | tr -d '[:space:]')"
+sudo cp -r panel "/var/www/html/$PANEL_PREFIX"
 
 # 2. Make data/ writable by the web user (setup + audit log live here).
-sudo chown -R www-data:www-data /var/www/html/2v9xzq4k2/data
-sudo chmod 700 /var/www/html/2v9xzq4k2/data
+sudo chown -R www-data:www-data "/var/www/html/$PANEL_PREFIX/data"
+sudo chmod 700 "/var/www/html/$PANEL_PREFIX/data"
 
 # 3. Choose which directory the File Manager may browse (default /var/www).
 #    Either edit config.php ('fm_root') or set an env var in your FPM pool.
@@ -99,12 +106,12 @@ sudo chmod 700 /var/www/html/2v9xzq4k2/data
 
 ```nginx
 # Inside your server { } block. No rewrites needed — routing is query-param based.
-location /2v9xzq4k2/ {
+location /RANDOM_PREFIX/ {
     index index.php;
-    try_files $uri $uri/ /2v9xzq4k2/index.php$is_args$args;
+    try_files $uri $uri/ /RANDOM_PREFIX/index.php$is_args$args;
 }
-location ~ ^/2v9xzq4k2/(api|data|lib|views|bin)/ { deny all; return 404; }
-location = /2v9xzq4k2/config.php { deny all; return 404; }
+location ~ ^/RANDOM_PREFIX/(api|data|lib|views|bin)/ { deny all; return 404; }
+location = /RANDOM_PREFIX/config.php { deny all; return 404; }
 location ~ \.php$ {
     include snippets/fastcgi-php.conf;
     fastcgi_pass unix:/run/php/php8.3-fpm.sock;
@@ -162,7 +169,7 @@ does **not** touch it — re-run `install.sh` to update the helper.
 
 ## First run
 
-1. Visit `http://YOUR_IP/2v9xzq4k2/`
+1. Visit the random URL printed by the installer.
 2. You'll be redirected to **Setup** — create the admin username + password.
 3. Then the **provisioning wizard** opens: pick the services to install (MariaDB,
    a PHP version, phpMyAdmin, Redis, Fail2Ban, Certbot, Docker, …). It installs
@@ -178,7 +185,7 @@ To reset the admin account, delete `data/admin.json` and reload.
   `Secure` cookie flag automatically over HTTPS.
 - **Change the secret prefix** — rename the directory to your own random string.
 - **IP allow-list** the location block to your admin IPs.
-- **Rate-limit** `/2v9xzq4k2/?r=login` (nginx `limit_req` or fail2ban).
+- **Rate-limit** `/<random-prefix>/?r=login` (nginx `limit_req` or fail2ban).
 - If TLS terminates at a reverse proxy, add only that proxy's IP to
   `trusted_proxies` in `config.php`; forwarded headers are ignored otherwise.
 - Keep `'debug' => false` in `config.php`.
@@ -186,7 +193,7 @@ To reset the admin account, delete `data/admin.json` and reload.
 ## Architecture
 
 ```
-2v9xzq4k2/
+panel/             source directory; installed under a random public name
   index.php         front controller — ?r=<route>: public / api/<x> / page views
   config.php        panel name, fm_root, service whitelist, timeouts
   lib/

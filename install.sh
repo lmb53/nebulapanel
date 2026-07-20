@@ -20,7 +20,7 @@
 #   REPO=lmb53/nebulapanel   GitHub repo to pull from
 #   REPO_REF=main            Branch, tag, or commit to install
 #   SOURCE=auto|remote|local Where to get files (default: auto = local else remote)
-#   PANEL_PREFIX=myprefix    Fixed URL prefix (default: a fresh RANDOM-letter prefix each run)
+#   PANEL_PREFIX=myprefix    Fixed URL prefix (default: fresh random hex each run)
 #   FM_ROOT=/var/www         Directory the File Manager may browse
 #   DOMAIN=panel.example.com Provision HTTPS via certbot for this domain
 #   ADMIN_IP=203.0.113.7     Restrict panel access to this IP (recommended)
@@ -137,22 +137,41 @@ PANEL_SRC="$(resolve_source)"
 SRC_NAME="$(basename "$PANEL_SRC")"
 ok "Panel source: $PANEL_SRC"
 
-# Decide the deployed prefix (obscured directory name):
-#   PANEL_PREFIX unset / "random" -> fresh random-letter prefix (DEFAULT, per install)
+# Decide the deployed directory below the public HTML root:
+#   PANEL_PREFIX unset / "random" -> fresh random hex prefix (DEFAULT)
 #   PANEL_PREFIX=foo              -> use "foo" (fixed, e.g. to redeploy in place)
+# `od` reads a fixed number of bytes, avoiding the SIGPIPE failure caused by
+# `/dev/urandom | head` when `set -o pipefail` is active.
+[[ "$WEBROOT" == /* ]] || die "WEBROOT must be an absolute path."
+mkdir -p "$WEBROOT"
+WEBROOT="$(readlink -f "$WEBROOT")"
+
 if [[ -z "$PANEL_PREFIX" || "$PANEL_PREFIX" == "random" ]]; then
-  PANEL_PREFIX="$(LC_ALL=C tr -dc 'a-z' </dev/urandom | head -c 12)"
+  for _attempt in {1..10}; do
+    PANEL_PREFIX="$(od -An -N12 -tx1 /dev/urandom | tr -d '[:space:]')"
+    [[ ! -e "$WEBROOT/$PANEL_PREFIX" ]] && break
+    PANEL_PREFIX=""
+  done
+  [[ -n "$PANEL_PREFIX" ]] || die "Could not allocate a unique random panel directory."
+elif [[ ! "$PANEL_PREFIX" =~ ^[A-Za-z0-9][A-Za-z0-9_-]{2,63}$ ]]; then
+  die "PANEL_PREFIX must be 3-64 letters, numbers, dashes, or underscores."
 fi
 DEST="$WEBROOT/$PANEL_PREFIX"
 
 # --------------------------------------------------------------------------
 # 3. Deploy the panel files
 # --------------------------------------------------------------------------
-log "Deploying panel to $DEST…"
+log "Deploying panel to public directory $DEST…"
 mkdir -p "$DEST"
 rsync -a --delete \
-  --exclude 'data/admin.json' --exclude 'data/audit.log' \
+  --exclude 'data/' \
   "$PANEL_SRC"/ "$DEST"/
+# Runtime state survives a fixed-prefix reinstall. On a fresh random install,
+# seed only the web-denial/ignore guards from the source data directory.
+mkdir -p "$DEST/data"
+for _guard in .htaccess .gitignore; do
+  [[ -f "$PANEL_SRC/data/$_guard" ]] && cp -f "$PANEL_SRC/data/$_guard" "$DEST/data/$_guard"
+done
 ok "Files copied"
 
 # Integrity check: catch a stale/incomplete source (the usual cause of
