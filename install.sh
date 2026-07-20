@@ -20,7 +20,7 @@
 #   REPO=lmb53/nebulapanel   GitHub repo to pull from
 #   REPO_REF=main            Branch, tag, or commit to install
 #   SOURCE=auto|remote|local Where to get files (default: auto = local else remote)
-#   PANEL_PREFIX=myprefix    URL prefix (default: source folder name; "random" = generate)
+#   PANEL_PREFIX=myprefix    Fixed URL prefix (default: a fresh RANDOM-letter prefix each run)
 #   FM_ROOT=/var/www         Directory the File Manager may browse
 #   DOMAIN=panel.example.com Provision HTTPS via certbot for this domain
 #   ADMIN_IP=203.0.113.7     Restrict panel access to this IP (recommended)
@@ -137,13 +137,10 @@ SRC_NAME="$(basename "$PANEL_SRC")"
 ok "Panel source: $PANEL_SRC"
 
 # Decide the deployed prefix (obscured directory name):
-#   PANEL_PREFIX unset  -> keep the source folder name
-#   PANEL_PREFIX=random -> generate a fresh 12-char random prefix
-#   PANEL_PREFIX=foo    -> use "foo"
-if [[ "$PANEL_PREFIX" == "random" ]]; then
-  PANEL_PREFIX="$(tr -dc 'a-z0-9' </dev/urandom | head -c 12)"
-elif [[ -z "$PANEL_PREFIX" ]]; then
-  PANEL_PREFIX="$SRC_NAME"
+#   PANEL_PREFIX unset / "random" -> fresh random-letter prefix (DEFAULT, per install)
+#   PANEL_PREFIX=foo              -> use "foo" (fixed, e.g. to redeploy in place)
+if [[ -z "$PANEL_PREFIX" || "$PANEL_PREFIX" == "random" ]]; then
+  PANEL_PREFIX="$(LC_ALL=C tr -dc 'a-z' </dev/urandom | head -c 12)"
 fi
 DEST="$WEBROOT/$PANEL_PREFIX"
 
@@ -156,6 +153,22 @@ rsync -a --delete \
   --exclude 'data/admin.json' --exclude 'data/audit.log' \
   "$PANEL_SRC"/ "$DEST"/
 ok "Files copied"
+
+# Integrity check: catch a stale/incomplete source (the usual cause of
+# "View not found" errors in the panel). Every routed view must be present.
+_missing=""
+for v in setup-wizard dashboard websites files services databases phpmyadmin \
+         ssl php cron firewall logs updates users docker backups terminal \
+         monitoring sysinfo diagnostics apps selfupdate settings service \
+         file-view file-edit login setup layout; do
+  [[ -f "$DEST/views/$v.php" ]] || _missing="$_missing $v"
+done
+if [[ -n "$_missing" ]]; then
+  warn "Source is missing views:${_missing}"
+  warn "Your repo (${REPO}@${REPO_REF}) is out of date — commit & push ALL files, then reinstall."
+else
+  ok "All panel views present ($(ls "$DEST"/views/*.php | wc -l | tr -d ' ') files)"
+fi
 
 # Set the File Manager root in config.php if it differs from the default.
 if [[ "$FM_ROOT" != "/var/www" ]]; then
