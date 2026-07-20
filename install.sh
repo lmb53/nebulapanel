@@ -1,23 +1,31 @@
 #!/usr/bin/env bash
 #
 # Nebula Panel — one-shot installer for a blank Ubuntu 22.04 box.
-# Installs Nginx + PHP-FPM, deploys the panel to an obscured URL prefix,
-# sets permissions, wires up systemd service control (sudoers), and the
-# firewall. Optionally provisions HTTPS with certbot if a domain is given.
+# Downloads the panel from GitHub, installs Nginx + PHP-FPM, deploys to an
+# obscured URL prefix, sets permissions, wires up systemd service control
+# (sudoers), and the firewall. Optionally provisions HTTPS via certbot.
 #
-# Usage (run on the server as root or with sudo, from the folder that
-# contains this script AND the panel source directory):
+# QUICK INSTALL (downloads everything, no need to clone first):
 #
-#   sudo ./install.sh
+#   curl -fsSL https://raw.githubusercontent.com/lmb53/nebulapanel/main/install.sh | sudo bash
+#
+# With options (pass env vars before `bash`):
+#
+#   curl -fsSL https://raw.githubusercontent.com/lmb53/nebulapanel/main/install.sh \
+#     | sudo PANEL_PREFIX=random ADMIN_IP=203.0.113.7 DOMAIN=panel.example.com bash
+#
+# Or clone the repo and run ./install.sh locally (uses local files if found).
 #
 # Optional overrides (environment variables):
-#   PANEL_PREFIX=myprefix   Use a specific URL prefix (default: keep source
-#                           folder name; set PANEL_PREFIX=random to regenerate)
-#   FM_ROOT=/var/www        Directory the File Manager may browse
+#   REPO=lmb53/nebulapanel   GitHub repo to pull from
+#   REPO_REF=main            Branch, tag, or commit to install
+#   SOURCE=auto|remote|local Where to get files (default: auto = local else remote)
+#   PANEL_PREFIX=myprefix    URL prefix (default: source folder name; "random" = generate)
+#   FM_ROOT=/var/www         Directory the File Manager may browse
 #   DOMAIN=panel.example.com Provision HTTPS via certbot for this domain
-#   ADMIN_IP=203.0.113.7    Restrict access to this IP (recommended)
-#   WEBROOT=/var/www/html   Nginx document root
-#   PANEL_SRC=/path/to/src  Path to the panel source dir (auto-detected otherwise)
+#   ADMIN_IP=203.0.113.7     Restrict panel access to this IP (recommended)
+#   WEBROOT=/var/www/html    Nginx document root
+#   PANEL_SRC=/path/to/src   Explicit path to the panel source dir (skips download)
 #
 set -euo pipefail
 
@@ -25,40 +33,107 @@ set -euo pipefail
 # 0. Preconditions & configuration
 # --------------------------------------------------------------------------
 if [[ $EUID -ne 0 ]]; then
-  echo "This script must run as root. Try: sudo $0" >&2
+  echo "This script must run as root. Try: sudo $0  (or pipe to 'sudo bash')" >&2
   exit 1
 fi
 
+REPO="${REPO:-lmb53/nebulapanel}"
+REPO_REF="${REPO_REF:-main}"
+SOURCE="${SOURCE:-auto}"
 WEBROOT="${WEBROOT:-/var/www/html}"
 FM_ROOT="${FM_ROOT:-/var/www}"
 PANEL_PREFIX="${PANEL_PREFIX:-}"
 DOMAIN="${DOMAIN:-}"
 ADMIN_IP="${ADMIN_IP:-}"
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-log()  { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
-ok()   { printf '\033[1;32m  ✓\033[0m %s\n' "$*"; }
-warn() { printf '\033[1;33m  ! \033[0m%s\n' "$*"; }
+# Resolve the script's own directory (handles being piped via curl | bash).
+if [[ -n "${BASH_SOURCE[0]:-}" && -f "${BASH_SOURCE[0]}" ]]; then
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+else
+  SCRIPT_DIR="$(pwd)"
+fi
+
+# All progress output goes to stderr so functions can safely echo paths.
+log()  { printf '\033[1;34m==>\033[0m %s\n' "$*" >&2; }
+ok()   { printf '\033[1;32m  ✓\033[0m %s\n' "$*" >&2; }
+warn() { printf '\033[1;33m  ! \033[0m%s\n' "$*" >&2; }
 die()  { printf '\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 
+# Clean up any downloaded temp files on exit.
+TMP_DL=""
+cleanup() { [[ -n "$TMP_DL" && -d "$TMP_DL" ]] && rm -rf "$TMP_DL"; }
+trap cleanup EXIT
+
 # --------------------------------------------------------------------------
-# 1. Locate the panel source directory
+# 1. Install packages (needed for download + serving)
 # --------------------------------------------------------------------------
-find_panel_src() {
-  [[ -n "${PANEL_SRC:-}" ]] && { echo "$PANEL_SRC"; return; }
-  # A valid source dir contains index.php and lib/bootstrap.php.
-  local d
-  for d in "$SCRIPT_DIR"/*/; do
-    if [[ -f "${d}index.php" && -f "${d}lib/bootstrap.php" ]]; then
-      echo "${d%/}"; return
-    fi
-  done
+log "Installing packages (Nginx, PHP-FPM, tooling)…"
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -qq
+apt-get install -y -qq nginx php-fpm php-cli rsync ufw curl ca-certificates tar >/dev/null
+ok "Packages installed"
+
+# Detect PHP-FPM version, socket and service name.
+FPM_SOCK="$(ls /run/php/php*-fpm.sock 2>/dev/null | head -1 || true)"
+if [[ -z "$FPM_SOCK" ]]; then
+  systemctl start "php*-fpm" 2>/dev/null || true
+  FPM_SOCK="$(ls /run/php/php*-fpm.sock 2>/dev/null | head -1 || true)"
+fi
+[[ -z "$FPM_SOCK" ]] && die "Could not find a PHP-FPM socket in /run/php/."
+PHP_VER="$(php -r 'echo PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION;')"
+FPM_SVC="php${PHP_VER}-fpm"
+ok "PHP $PHP_VER  (socket: $FPM_SOCK)"
+
+systemctl enable --now nginx >/dev/null 2>&1 || true
+systemctl enable --now "$FPM_SVC" >/dev/null 2>&1 || true
+
+# --------------------------------------------------------------------------
+# 2. Obtain the panel source (local checkout or download from GitHub)
+# --------------------------------------------------------------------------
+
+# Find a dir that looks like the panel (has index.php + lib/bootstrap.php).
+detect_panel_dir() {
+  local root="$1" hit
+  hit="$(find "$root" -type f -path '*/lib/bootstrap.php' 2>/dev/null | head -1 || true)"
+  [[ -z "$hit" ]] && return 1
+  local dir; dir="$(dirname "$(dirname "$hit")")"
+  [[ -f "$dir/index.php" ]] && { echo "$dir"; return 0; }
   return 1
 }
 
-PANEL_SRC="$(find_panel_src)" || die "Could not find the panel source dir (a folder with index.php + lib/bootstrap.php) next to this script. Set PANEL_SRC=/path."
+download_source() {
+  local url="https://codeload.github.com/${REPO}/tar.gz/${REPO_REF}"
+  TMP_DL="$(mktemp -d)"
+  log "Downloading ${REPO}@${REPO_REF} from GitHub…"
+  if ! curl -fsSL "$url" -o "$TMP_DL/src.tar.gz"; then
+    die "Download failed: $url  (check REPO/REPO_REF and that the repo is public)"
+  fi
+  tar -xzf "$TMP_DL/src.tar.gz" -C "$TMP_DL" || die "Failed to extract the downloaded archive."
+  local dir
+  dir="$(detect_panel_dir "$TMP_DL")" || die "Downloaded archive did not contain a panel source dir."
+  echo "$dir"
+}
+
+resolve_source() {
+  if [[ -n "${PANEL_SRC:-}" ]]; then
+    [[ -f "$PANEL_SRC/index.php" ]] || die "PANEL_SRC=$PANEL_SRC has no index.php."
+    echo "$PANEL_SRC"; return
+  fi
+  local local_dir=""
+  if [[ "$SOURCE" != "remote" ]]; then
+    local_dir="$(detect_panel_dir "$SCRIPT_DIR" || true)"
+  fi
+  if [[ -n "$local_dir" && "$SOURCE" != "remote" ]]; then
+    log "Using local panel source (no download needed)."
+    echo "$local_dir"
+  else
+    download_source
+  fi
+}
+
+PANEL_SRC="$(resolve_source)"
 SRC_NAME="$(basename "$PANEL_SRC")"
-ok "Found panel source: $PANEL_SRC"
+ok "Panel source: $PANEL_SRC"
 
 # Decide the deployed prefix (obscured directory name):
 #   PANEL_PREFIX unset  -> keep the source folder name
@@ -72,36 +147,17 @@ fi
 DEST="$WEBROOT/$PANEL_PREFIX"
 
 # --------------------------------------------------------------------------
-# 2. Install packages
-# --------------------------------------------------------------------------
-log "Installing Nginx, PHP-FPM and tooling…"
-export DEBIAN_FRONTEND=noninteractive
-apt-get update -qq
-apt-get install -y -qq nginx php-fpm php-cli rsync ufw >/dev/null
-ok "Packages installed"
-
-# Detect PHP-FPM version, socket and service name.
-FPM_SOCK="$(ls /run/php/php*-fpm.sock 2>/dev/null | head -1 || true)"
-[[ -z "$FPM_SOCK" ]] && { systemctl start "php*-fpm" 2>/dev/null || true; FPM_SOCK="$(ls /run/php/php*-fpm.sock 2>/dev/null | head -1 || true)"; }
-[[ -z "$FPM_SOCK" ]] && die "Could not find a PHP-FPM socket in /run/php/."
-PHP_VER="$(php -r 'echo PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION;')"
-FPM_SVC="php${PHP_VER}-fpm"
-ok "PHP $PHP_VER  (socket: $FPM_SOCK)"
-
-systemctl enable --now nginx >/dev/null 2>&1 || true
-systemctl enable --now "$FPM_SVC" >/dev/null 2>&1 || true
-
-# --------------------------------------------------------------------------
 # 3. Deploy the panel files
 # --------------------------------------------------------------------------
 log "Deploying panel to $DEST…"
 mkdir -p "$DEST"
-rsync -a --delete --exclude 'data/admin.json' --exclude 'data/audit.log' "$PANEL_SRC"/ "$DEST"/
+rsync -a --delete \
+  --exclude 'data/admin.json' --exclude 'data/audit.log' \
+  "$PANEL_SRC"/ "$DEST"/
 ok "Files copied"
 
 # Set the File Manager root in config.php if it differs from the default.
 if [[ "$FM_ROOT" != "/var/www" ]]; then
-  # Replace the fallback default; use | as delimiter since paths contain /.
   sed -i "s|?: '/var/www'|?: '${FM_ROOT}'|" "$DEST/config.php"
   ok "File Manager root set to $FM_ROOT"
 fi
@@ -190,10 +246,11 @@ ok "Firewall allows SSH + HTTP/HTTPS"
 if [[ -n "$DOMAIN" ]]; then
   log "Provisioning HTTPS for $DOMAIN via certbot…"
   apt-get install -y -qq certbot python3-certbot-nginx >/dev/null
-  if certbot --nginx -d "$DOMAIN" --non-interactive --agree-tos --register-unsafely-without-email --redirect >/dev/null 2>&1; then
+  if certbot --nginx -d "$DOMAIN" --non-interactive --agree-tos \
+       --register-unsafely-without-email --redirect >/dev/null 2>&1; then
     ok "HTTPS enabled for $DOMAIN"
   else
-    warn "certbot failed (DNS not pointed at this box yet?). You can re-run: certbot --nginx -d $DOMAIN"
+    warn "certbot failed (is DNS for $DOMAIN pointed at this box yet?). Re-run: certbot --nginx -d $DOMAIN"
   fi
 fi
 
@@ -210,6 +267,7 @@ echo "  Nebula Panel is installed."
 echo "------------------------------------------------------------"
 echo "  URL:        ${SCHEME}://${HOST}/${PANEL_PREFIX}/"
 echo "  Deployed:   ${DEST}"
+echo "  Source:     ${REPO}@${REPO_REF}"
 echo "  FM root:    ${FM_ROOT}"
 echo "  PHP-FPM:    ${FPM_SVC}"
 [[ -n "$ADMIN_IP" ]] && echo "  Access:     restricted to ${ADMIN_IP}"
