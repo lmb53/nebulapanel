@@ -18,10 +18,61 @@ valid_domain() { [[ "$1" =~ ^[a-zA-Z0-9]([a-zA-Z0-9.-]{0,251}[a-zA-Z0-9])?$ ]] |
 valid_path()   { [[ "$1" =~ ^/[a-zA-Z0-9._/-]+$ && "$1" != *".."* ]] || die "invalid path"; }
 valid_php()    { [[ "$1" =~ ^[0-9]+\.[0-9]+$ ]] || die "invalid php version"; }
 valid_email()  { [[ -z "$1" || "$1" =~ ^[^@[:space:]]+@[^@[:space:]]+$ ]] || die "invalid email"; }
+valid_user()   { [[ "$1" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] || die "invalid user"; }
+
+# Print "uid:gid:home" for a real interactive account; reject system users.
+human_user_info() {
+  local user="$1" row uid gid home
+  valid_user "$user"
+  row="$(getent passwd "$user" || true)"; [[ -n "$row" ]] || die "user not found"
+  IFS=: read -r _ _ uid gid _ home _ <<<"$row"
+  [[ "$uid" =~ ^[0-9]+$ && "$uid" -ge 1000 && "$uid" -lt 65534 ]] || die "not a human user"
+  valid_path "$home"
+  printf '%s:%s:%s\n' "$uid" "$gid" "$home"
+}
 
 CMD="${1:-}"; shift || true
 
 case "$CMD" in
+
+  # ssh-keys-list <user> / ssh-key-add <user> <base64-key> / ssh-key-delete <user> <line>
+  ssh-keys-list)
+    USER_NAME="${1:-}"; INFO="$(human_user_info "$USER_NAME")"; HOME_DIR="${INFO#*:*:}"
+    KEY_FILE="$HOME_DIR/.ssh/authorized_keys"
+    [[ -f "$KEY_FILE" ]] || exit 0
+    N=0
+    while IFS= read -r KEY_LINE || [[ -n "$KEY_LINE" ]]; do
+      [[ -z "$KEY_LINE" || "$KEY_LINE" == \#* ]] && continue
+      N=$((N + 1))
+      META="$(printf '%s\n' "$KEY_LINE" | ssh-keygen -lf - 2>/dev/null || true)"
+      [[ -n "$META" ]] && printf '%s\t%s\n' "$N" "$META"
+    done < "$KEY_FILE"
+    ;;
+
+  ssh-key-add)
+    USER_NAME="${1:-}"; KEY_B64="${2:-}"; INFO="$(human_user_info "$USER_NAME")"
+    UID_NUM="${INFO%%:*}"; REST="${INFO#*:}"; GID_NUM="${REST%%:*}"; HOME_DIR="${INFO#*:*:}"
+    [[ "$KEY_B64" =~ ^[A-Za-z0-9+/=]+$ ]] || die "invalid key encoding"
+    KEY_LINE="$(printf '%s' "$KEY_B64" | base64 -d 2>/dev/null || true)"
+    [[ "$KEY_LINE" != *$'\n'* && "$KEY_LINE" =~ ^(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp(256|384|521))[[:space:]]+[A-Za-z0-9+/=]+([[:space:]].*)?$ ]] || die "invalid public key"
+    printf '%s\n' "$KEY_LINE" | ssh-keygen -lf - >/dev/null 2>&1 || die "invalid public key"
+    install -d -m 0700 -o "$UID_NUM" -g "$GID_NUM" "$HOME_DIR/.ssh"
+    KEY_FILE="$HOME_DIR/.ssh/authorized_keys"
+    touch "$KEY_FILE"; chown "$UID_NUM:$GID_NUM" "$KEY_FILE"; chmod 0600 "$KEY_FILE"
+    grep -Fqx -- "$KEY_LINE" "$KEY_FILE" || printf '%s\n' "$KEY_LINE" >> "$KEY_FILE"
+    echo "key added for $USER_NAME"
+    ;;
+
+  ssh-key-delete)
+    USER_NAME="${1:-}"; KEY_NUM="${2:-}"; INFO="$(human_user_info "$USER_NAME")"
+    UID_NUM="${INFO%%:*}"; REST="${INFO#*:}"; GID_NUM="${REST%%:*}"; HOME_DIR="${INFO#*:*:}"
+    [[ "$KEY_NUM" =~ ^[1-9][0-9]*$ ]] || die "invalid key number"
+    KEY_FILE="$HOME_DIR/.ssh/authorized_keys"; [[ -f "$KEY_FILE" ]] || die "key file not found"
+    TMP="$(mktemp)"; trap 'rm -f "$TMP"' EXIT
+    awk -v wanted="$KEY_NUM" 'BEGIN{n=0} /^[[:space:]]*($|#)/{print;next} {n++; if(n!=wanted) print}' "$KEY_FILE" > "$TMP"
+    install -m 0600 -o "$UID_NUM" -g "$GID_NUM" "$TMP" "$KEY_FILE"
+    echo "key removed for $USER_NAME"
+    ;;
 
   # List installed PHP-FPM versions (one per line, e.g. 8.1).
   php-versions)
@@ -46,7 +97,9 @@ case "$CMD" in
 server {
     listen 80;
     listen [::]:80;
-    server_name $DOMAIN www.$DOMAIN;
+    # Only configure the hostname the user entered. In particular, a site such
+    # as app.example.com must not silently gain www.app.example.com.
+    server_name $DOMAIN;
     root $DOCROOT;
     index index.php index.html index.htm;
     access_log /var/log/nginx/${DOMAIN}.access.log;
@@ -85,9 +138,9 @@ EOF
     valid_domain "$DOMAIN"; valid_email "$EMAIL"
     command -v certbot >/dev/null || die "certbot not installed"
     if [[ -n "$EMAIL" ]]; then
-      certbot --nginx -d "$DOMAIN" -d "www.$DOMAIN" --non-interactive --agree-tos -m "$EMAIL" --redirect
+      certbot --nginx -d "$DOMAIN" --non-interactive --agree-tos -m "$EMAIL" --redirect
     else
-      certbot --nginx -d "$DOMAIN" -d "www.$DOMAIN" --non-interactive --agree-tos --register-unsafely-without-email --redirect
+      certbot --nginx -d "$DOMAIN" --non-interactive --agree-tos --register-unsafely-without-email --redirect
     fi
     echo "ssl issued for $DOMAIN"
     ;;
@@ -98,14 +151,14 @@ EOF
     [[ "$VER" =~ ^[0-9]+\.[0-9]+$ ]] || die "invalid php version"
     export DEBIAN_FRONTEND=noninteractive
     if ! command -v add-apt-repository >/dev/null 2>&1; then
-      apt-get update -qq
-      apt-get install -y -qq software-properties-common
+        apt-get -o Dpkg::Use-Pty=0 -o APT::Color=0 update
+        apt-get -o Dpkg::Use-Pty=0 -o APT::Color=0 install -y software-properties-common
     fi
     if ! grep -rqs 'ondrej/php' /etc/apt/sources.list.d 2>/dev/null; then
       add-apt-repository -y ppa:ondrej/php
     fi
-    apt-get update -qq
-    apt-get install -y "php${VER}-fpm" "php${VER}-cli" "php${VER}-mysql" "php${VER}-curl" \
+      apt-get -o Dpkg::Use-Pty=0 -o APT::Color=0 update
+      apt-get -o Dpkg::Use-Pty=0 -o APT::Color=0 install -y "php${VER}-fpm" "php${VER}-cli" "php${VER}-mysql" "php${VER}-curl" \
       "php${VER}-mbstring" "php${VER}-xml" "php${VER}-gd" "php${VER}-zip" \
       || die "apt install failed for php ${VER}"
     systemctl enable --now "php${VER}-fpm" || true
@@ -119,14 +172,16 @@ EOF
     command -v curl >/dev/null || die "curl not installed"
     TMP="$(mktemp -d)"
     trap 'rm -rf "$TMP"' EXIT
-    curl -fsSL -o "$TMP/pma.tar.gz" \
+      curl -fL --show-error --progress-bar -o "$TMP/pma.tar.gz" \
       "https://www.phpmyadmin.net/downloads/phpMyAdmin-latest-all-languages.tar.gz" || die "download failed"
     tar -xzf "$TMP/pma.tar.gz" -C "$TMP" || die "extract failed"
     SRC="$(find "$TMP" -maxdepth 1 -type d -name 'phpMyAdmin-*' | head -1)"
     [[ -n "$SRC" ]] || die "archive layout unexpected"
     mkdir -p "$TARGET"
     cp -a "$SRC"/. "$TARGET"/
-    SECRET="$(tr -dc 'a-zA-Z0-9' </dev/urandom | head -c 32)"
+    # Avoid an infinite producer piped into head: with pipefail, head closing
+    # the pipe makes tr exit on SIGPIPE and aborts an otherwise good install.
+    SECRET="$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')"
     sed "s|\$cfg\['blowfish_secret'\] = '';|\$cfg['blowfish_secret'] = '${SECRET}';|" \
       "$TARGET/config.sample.inc.php" > "$TARGET/config.inc.php"
     mkdir -p "$TARGET/tmp"
