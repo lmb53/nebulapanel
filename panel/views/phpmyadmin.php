@@ -49,25 +49,41 @@ $helper = helper_available();
           </div>
         </div>
       <?php endif; ?>
+      <div class="card hidden" id="pmaLogCard" style="margin-top:16px">
+        <div class="card-header"><h3>Install output</h3></div>
+        <pre class="mono" id="pmaLog" style="margin:0;padding:16px;font-size:12px;line-height:1.55;white-space:pre-wrap;max-height:40vh;overflow:auto"></pre>
+      </div>
     </div>
   </div>
 <?php endif; ?>
 
 <script>
 document.addEventListener('DOMContentLoaded', () => {
-  const { apiPost, toast } = window.Nebula;
+  const { apiPost, streamPost, toast } = window.Nebula;
 
   const installBtn = document.getElementById('pmaInstall');
   installBtn?.addEventListener('click', async () => {
     installBtn.disabled = true;
     const original = installBtn.innerHTML;
     installBtn.textContent = 'Installing…';
-    const res = await apiPost('pma', { action: 'install' });
+    const logCard = document.getElementById('pmaLogCard');
+    const logEl = document.getElementById('pmaLog');
+    logCard?.classList.remove('hidden');
+    if (logEl) logEl.textContent = '';
+    const res = await streamPost('pma', { action: 'install' }, (event) => {
+      if (event.type === 'output' && event.text && logEl) {
+        logEl.textContent += event.text;
+        logEl.scrollTop = logEl.scrollHeight;
+      }
+    });
     if (res.ok) {
       toast('phpMyAdmin installed', 'success');
       setTimeout(() => location.reload(), 500);
     } else {
       toast(res.error || 'Failed', 'error');
+      if (logEl && res.error && !logEl.textContent.includes(String(res.error).trim())) {
+        logEl.textContent += (logEl.textContent ? '\n' : '') + res.error + '\n';
+      }
       installBtn.disabled = false;
       installBtn.innerHTML = original;
       if (window.lucide) lucide.createIcons();
