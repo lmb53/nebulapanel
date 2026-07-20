@@ -6,6 +6,29 @@ A working, self-hosted server control panel served from an **obscured URL prefix
 > The random directory name is *obscurity*, not real security. Always pair it with
 > HTTPS, a strong admin password, and ideally IP allow-listing. See "Hardening".
 
+## Quick install
+
+On a fresh **Ubuntu 22.04** box, one command installs and configures everything
+(Nginx + PHP-FPM, the panel, sudoers rules, the privileged helper, firewall):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/lmb53/nebulapanel/main/install.sh | sudo bash
+```
+
+Hardened variant — random URL prefix, locked to your IP, with HTTPS:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/lmb53/nebulapanel/main/install.sh \
+  | sudo PANEL_PREFIX=random ADMIN_IP=203.0.113.7 DOMAIN=panel.example.com bash
+```
+
+The installer prints the panel URL when it finishes — open it to create the admin
+account and run the provisioning wizard. Options (env vars): `PANEL_PREFIX`,
+`ADMIN_IP`, `DOMAIN`, `FM_ROOT`, `REPO`, `REPO_REF` (see [install.sh](install.sh)).
+
+> ⚠️ `curl … | sudo bash` runs remote code as root. It's your repo, but pin
+> `REPO_REF` to a tag/commit for reproducible, reviewed installs.
+
 ## What works
 
 | Feature | Status |
@@ -22,10 +45,13 @@ A working, self-hosted server control panel served from an **obscured URL prefix
 | **Firewall** — UFW status, enable/disable, add/delete rules | ✅ sudo |
 | **Logs** — journalctl per-unit + `/var/log` file tails | ✅ |
 | **Websites** — create/delete Nginx vhosts, docroot, PHP ver, Let's Encrypt | ✅ helper |
+| **SSL** — list / issue / renew / delete certbot certificates | ✅ helper |
+| **PHP** — per-version ini settings (memory_limit, upload size…) + modules | ✅ helper |
 | **Databases** — MariaDB/MySQL: DBs + users CRUD (`sudo mysql`) | ✅ sudo |
 | **phpMyAdmin** — one-click install + launch (auto blowfish config) | ✅ helper |
 | **Docker** — containers (start/stop/restart/rm) + images | ✅ sudo |
-| **File Manager** — browse / edit / upload / mkdir / rename / chmod / copy / move / delete | ✅ |
+| **File Manager** — 3-pane (tree/list/properties), grid+list, drag-drop upload, multi-select, edit / mkdir / rename / chmod / delete | ✅ |
+| **Diagnostics** — environment + per-privilege sudo checks with fix hints | ✅ |
 | **Backups** — create / list / download / delete `.tar.gz` | ✅ |
 | **Terminal** — audited non-interactive command runner | ✅ |
 | **System Info** — OS, kernel, CPU, RAM, disk, network | ✅ |
@@ -126,7 +152,11 @@ does **not** touch it — re-run `install.sh` to update the helper.
 
 1. Visit `http://YOUR_IP/2v9xzq4k2/`
 2. You'll be redirected to **Setup** — create the admin username + password.
-3. You're in. Credentials are hashed into `data/admin.json`.
+3. Then the **provisioning wizard** opens: pick the services to install (MariaDB,
+   a PHP version, phpMyAdmin, Redis, Fail2Ban, Certbot, Docker, …). It installs
+   each in order with live progress, via apt + the privileged helper. You can
+   skip and add more later from **Install Apps**.
+4. You're in. Credentials are hashed into `data/admin.json`.
 
 To reset the admin account, delete `data/admin.json` and reload.
 
