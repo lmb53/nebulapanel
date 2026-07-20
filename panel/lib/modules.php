@@ -13,6 +13,8 @@ function nebula_modules(): array
         'monitoring' => ['activity',         'Monitoring',   'Overview'],
 
         'websites'   => ['globe',            'Websites',     'Hosting'],
+        'domains'    => ['earth',            'Domains',      'Hosting'],
+        'dns'        => ['network',          'DNS',          'Hosting'],
         'ssl'        => ['shield-check',     'SSL',          'Hosting'],
         'php'        => ['code-2',           'PHP',          'Hosting'],
         'databases'  => ['database',         'Databases',    'Hosting'],
@@ -22,6 +24,7 @@ function nebula_modules(): array
         'apps'       => ['package-plus',     'Install Apps', 'System'],
         'updates'    => ['download-cloud',   'Updates',      'System'],
         'users'      => ['users',            'Users',        'System'],
+        'sshkeys'    => ['key-round',        'SSH Keys',     'System'],
         'cron'       => ['clock',            'Cron Jobs',    'System'],
         'firewall'   => ['shield',           'Firewall',     'System'],
         'logs'       => ['scroll-text',      'Logs',         'System'],
@@ -34,7 +37,9 @@ function nebula_modules(): array
         'terminal'   => ['square-terminal',  'Terminal',     'Tools'],
         'sysinfo'    => ['cpu',              'System Info',  'Tools'],
         'diagnostics'=> ['stethoscope',      'Diagnostics',  'Tools'],
+        'notifications'=>['bell',            'Notifications','Tools'],
         'selfupdate' => ['git-branch',       'Panel Updates','Tools'],
+        'api'        => ['braces',           'API',          'Tools'],
         'settings'   => ['settings',         'Settings',     'Tools'],
     ];
 }

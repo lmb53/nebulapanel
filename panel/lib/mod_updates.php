@@ -48,16 +48,33 @@ function upd_count(): int
 }
 
 /** Refresh the package index (apt-get update). */
-function upd_refresh(): array
+function upd_refresh(?callable $onOutput = null): array
 {
-    [$c, $o] = sudo_cmd('apt-get update', 300);
+    $cmd = 'apt-get -o Dpkg::Use-Pty=0 -o APT::Color=0 update';
+    [$c, $o] = $onOutput ? sudo_cmd_stream($cmd, $onOutput, 300) : sudo_cmd($cmd, 300);
     return ['ok' => $c === 0, 'output' => $o, 'error' => $c === 0 ? null : sudo_error($o, $c)];
 }
 
 /** Upgrade all packages (apt-get -y upgrade). */
-function upd_upgrade(): array
+function upd_upgrade(?callable $onOutput = null): array
 {
-    [$c, $o] = sudo_cmd('DEBIAN_FRONTEND=noninteractive apt-get -y upgrade', 900);
+    $cmd = 'DEBIAN_FRONTEND=noninteractive apt-get -o Dpkg::Use-Pty=0 -o APT::Color=0 -y upgrade';
+    [$c, $o] = $onOutput ? sudo_cmd_stream($cmd, $onOutput, 900) : sudo_cmd($cmd, 900);
     audit('updates.upgrade');
+    return ['ok' => $c === 0, 'output' => $o, 'error' => $c === 0 ? null : sudo_error($o, $c)];
+}
+
+/** Upgrade one package that is currently present in apt's upgradable list. */
+function upd_install_package(string $package, ?callable $onOutput = null): array
+{
+    if (!preg_match('/^[a-z0-9][a-z0-9+.-]{0,127}$/i', $package)) {
+        return ['ok' => false, 'error' => 'Invalid package name.'];
+    }
+    if (!in_array($package, array_column(upd_list(), 'package'), true)) {
+        return ['ok' => false, 'error' => 'Package is not currently listed as upgradable.'];
+    }
+    $cmd = 'DEBIAN_FRONTEND=noninteractive apt-get -o Dpkg::Use-Pty=0 -o APT::Color=0 install --only-upgrade -y ' . escapeshellarg($package);
+    [$c, $o] = $onOutput ? sudo_cmd_stream($cmd, $onOutput, 600) : sudo_cmd($cmd, 600);
+    audit('updates.package', $package . ' (exit ' . $c . ')');
     return ['ok' => $c === 0, 'output' => $o, 'error' => $c === 0 ? null : sudo_error($o, $c)];
 }

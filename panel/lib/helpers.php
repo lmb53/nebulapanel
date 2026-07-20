@@ -43,6 +43,26 @@ function json_out($data, int $code = 200): void
     exit;
 }
 
+/** Begin a newline-delimited JSON response that proxies must not buffer. */
+function stream_json_start(): void
+{
+    ignore_user_abort(true);
+    @set_time_limit(0);
+    @ini_set('zlib.output_compression', '0');
+    header('Content-Type: application/x-ndjson; charset=UTF-8');
+    header('Cache-Control: no-store, no-cache, must-revalidate');
+    header('X-Accel-Buffering: no');
+    while (ob_get_level() > 0) { @ob_end_flush(); }
+}
+
+/** Emit one immediately-flushed NDJSON event. */
+function stream_json_event(array $event): void
+{
+    echo json_encode($event, JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE) . "\n";
+    @ob_flush();
+    flush();
+}
+
 /** Safely replace a JSON file in-place, never exposing a partial write. */
 function write_json_file(string $path, array $data, int $mode = 0600): bool
 {
@@ -103,6 +123,9 @@ function csrf_field(): string
  */
 function csrf_check(): void
 {
+    // Bearer credentials are not ambient browser credentials and therefore
+    // are not vulnerable to cross-site request forgery.
+    if (function_exists('is_api_token_authenticated') && is_api_token_authenticated()) { return; }
     $sent = $_POST['_csrf'] ?? ($_SERVER['HTTP_X_CSRF_TOKEN'] ?? '');
     if (empty($_SESSION['csrf']) || !hash_equals($_SESSION['csrf'], (string) $sent)) {
         if (is_json_request()) {
@@ -177,7 +200,7 @@ function audit(string $action, string $detail = ''): void
         $value = preg_replace('/[\r\n\x00-\x1F\x7F]+/', ' ', $value) ?? '';
         return substr(trim($value), 0, $max);
     };
-    $user = $clean((string) ($_SESSION['username'] ?? 'anon'), 100);
+    $user = $clean((string) (function_exists('current_user') ? (current_user() ?? 'anon') : ($_SESSION['username'] ?? 'anon')), 100);
     $ip = $clean(client_ip(), 64);
     $action = $clean($action, 120);
     $detail = $clean($detail, 2000);

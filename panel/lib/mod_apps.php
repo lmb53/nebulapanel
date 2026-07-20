@@ -42,13 +42,14 @@ function app_installed(string $key): bool
     return $code === 0;
 }
 
-function app_install(string $key): array
+function app_install(string $key, ?callable $onOutput = null): array
 {
     $c = app_catalog()[$key] ?? null;
     if (!$c) {
         return ['ok' => false, 'error' => 'Unknown app.'];
     }
-    [$code, $out] = sudo_cmd('DEBIAN_FRONTEND=noninteractive apt-get install -y ' . escapeshellarg($c['pkg']), 600);
+    $cmd = 'DEBIAN_FRONTEND=noninteractive apt-get -o Dpkg::Use-Pty=0 -o APT::Color=0 install -y ' . escapeshellarg($c['pkg']);
+    [$code, $out] = $onOutput ? sudo_cmd_stream($cmd, $onOutput, 600) : sudo_cmd($cmd, 600);
     audit('app.install', $c['pkg'] . ' (exit ' . $code . ')');
     if ($code !== 0) {
         return ['ok' => false, 'error' => sudo_error($out, $code)];
@@ -59,13 +60,14 @@ function app_install(string $key): array
     return ['ok' => true, 'output' => $out];
 }
 
-function app_uninstall(string $key): array
+function app_uninstall(string $key, ?callable $onOutput = null): array
 {
     $c = app_catalog()[$key] ?? null;
     if (!$c) {
         return ['ok' => false, 'error' => 'Unknown app.'];
     }
-    [$code, $out] = sudo_cmd('DEBIAN_FRONTEND=noninteractive apt-get remove -y ' . escapeshellarg($c['pkg']), 600);
+    $cmd = 'DEBIAN_FRONTEND=noninteractive apt-get -o Dpkg::Use-Pty=0 -o APT::Color=0 remove -y ' . escapeshellarg($c['pkg']);
+    [$code, $out] = $onOutput ? sudo_cmd_stream($cmd, $onOutput, 600) : sudo_cmd($cmd, 600);
     audit('app.uninstall', $c['pkg'] . ' (exit ' . $code . ')');
     return $code === 0 ? ['ok' => true, 'output' => $out] : ['ok' => false, 'error' => sudo_error($out, $code)];
 }
@@ -99,12 +101,13 @@ function php_installable_versions(): array
     return array_values(array_diff($all, php_installed_versions()));
 }
 
-function php_install(string $ver): array
+function php_install(string $ver, ?callable $onOutput = null): array
 {
     if (!preg_match('/^\d+\.\d+$/', $ver)) {
         return ['ok' => false, 'error' => 'Invalid version.'];
     }
-    [$code, $out] = helper_cmd('php-install ' . escapeshellarg($ver), 900);
+    $args = 'php-install ' . escapeshellarg($ver);
+    [$code, $out] = $onOutput ? helper_cmd_stream($args, $onOutput, 900) : helper_cmd($args, 900);
     audit('php.install', $ver . ' (exit ' . $code . ')');
     return $code === 0 ? ['ok' => true, 'output' => $out] : ['ok' => false, 'error' => trim($out) ?: 'install failed'];
 }

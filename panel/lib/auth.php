@@ -197,7 +197,8 @@ function logout_user(): void
 
 function current_user(): ?string
 {
-    return $_SESSION['username'] ?? null;
+    global $apiAuthLabel;
+    return $_SESSION['username'] ?? (isset($apiAuthLabel) ? 'api:' . $apiAuthLabel : null);
 }
 
 function is_logged_in(): bool
@@ -211,7 +212,7 @@ function require_auth(): void
     if (!is_setup_complete()) {
         redirect('setup');
     }
-    if (!is_logged_in()) {
+    if (!is_logged_in() && !is_api_token_authenticated()) {
         redirect('login');
     }
 }

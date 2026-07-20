@@ -40,7 +40,7 @@ function pma_url(): ?string
 }
 
 /** Install phpMyAdmin into the web document root via the helper. */
-function pma_install(): array
+function pma_install(?callable $onOutput = null): array
 {
     if (!helper_available()) {
         return ['ok' => false, 'error' => 'Privileged helper not installed.'];
@@ -51,7 +51,8 @@ function pma_install(): array
     }
     $name = 'dbadmin-' . bin2hex(random_bytes(4));
     $target = dirname(APP_ROOT) . '/' . $name;
-    [$c, $o] = helper_cmd('pma-install ' . escapeshellarg($target), 300);
+    $args = 'pma-install ' . escapeshellarg($target);
+    [$c, $o] = $onOutput ? helper_cmd_stream($args, $onOutput, 300) : helper_cmd($args, 300);
     if ($c !== 0) {
         return ['ok' => false, 'error' => trim($o) ?: 'install failed'];
     }

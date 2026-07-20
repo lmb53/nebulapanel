@@ -64,6 +64,7 @@ session_start();
 require APP_ROOT . '/lib/helpers.php';
 require APP_ROOT . '/lib/auth.php';
 require APP_ROOT . '/lib/sys.php';
+require APP_ROOT . '/lib/mod_api.php';
 require APP_ROOT . '/lib/modules.php';
 
 // Enforce idle timeout for logged-in sessions.

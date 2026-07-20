@@ -67,6 +67,72 @@ function run_cmd(string $cmd, int $timeout = 15): array
     return [$code, trim($out), trim($err)];
 }
 
+/**
+ * Run a command while forwarding output as it arrives.
+ *
+ * The callback receives ($chunk, $channel), where channel is stdout or
+ * stderr. A bounded copy is still returned for auditing/error messages.
+ */
+function run_cmd_stream(string $cmd, callable $onChunk, int $timeout = 15): array
+{
+    if (!function_exists('proc_open')) {
+        return [127, '', 'proc_open disabled'];
+    }
+    $desc = [1 => ['pipe', 'w'], 2 => ['pipe', 'w']];
+    $proc = @proc_open($cmd, $desc, $pipes);
+    if (!is_resource($proc)) {
+        return [127, '', 'could not start process'];
+    }
+    stream_set_blocking($pipes[1], false);
+    stream_set_blocking($pipes[2], false);
+    $out = '';
+    $err = '';
+    $maxBytes = 2 * 1024 * 1024;
+    $truncated = false;
+    $timedOut = false;
+    $start = microtime(true);
+    $append = static function (string &$target, string $chunk) use ($maxBytes, &$truncated): void {
+        $left = $maxBytes - strlen($target);
+        if ($left <= 0) { $truncated = true; return; }
+        $target .= strlen($chunk) > $left ? substr($chunk, 0, $left) : $chunk;
+        if (strlen($chunk) > $left) { $truncated = true; }
+    };
+    $drain = static function ($pipe, string $channel, string &$capture) use ($onChunk, $append): void {
+        $chunk = (string) stream_get_contents($pipe);
+        if ($chunk === '') { return; }
+        $append($capture, $chunk);
+        $onChunk($chunk, $channel);
+    };
+    $status = ['running' => true, 'exitcode' => -1];
+    do {
+        $drain($pipes[1], 'stdout', $out);
+        $drain($pipes[2], 'stderr', $err);
+        $status = proc_get_status($proc);
+        if (!$status['running']) { break; }
+        if (microtime(true) - $start >= max(1, $timeout)) {
+            $timedOut = true;
+            proc_terminate($proc);
+            break;
+        }
+        usleep(50000);
+    } while (true);
+    $drain($pipes[1], 'stdout', $out);
+    $drain($pipes[2], 'stderr', $err);
+    fclose($pipes[1]);
+    fclose($pipes[2]);
+    $closeCode = proc_close($proc);
+    $code = $timedOut ? 124 : (($status['exitcode'] ?? -1) >= 0 ? $status['exitcode'] : $closeCode);
+    if ($timedOut) {
+        $message = 'Command timed out after ' . max(1, $timeout) . " seconds.\n";
+        $err .= ($err === '' ? '' : "\n") . trim($message);
+        $onChunk($message, 'stderr');
+    }
+    if ($truncated) {
+        $err .= ($err === '' ? '' : "\n") . 'Captured command output was truncated at 2 MB.';
+    }
+    return [$code, trim($out), trim($err)];
+}
+
 function is_linux(): bool
 {
     return PHP_OS_FAMILY === 'Linux' && is_dir('/proc');
@@ -122,6 +188,11 @@ function sudo_cmd(string $cmd, int $timeout = 30): array
     return run_cmd('sudo -n ' . $cmd . ' 2>&1', $timeout);
 }
 
+function sudo_cmd_stream(string $cmd, callable $onChunk, int $timeout = 30): array
+{
+    return run_cmd_stream('sudo -n ' . $cmd . ' 2>&1', $onChunk, $timeout);
+}
+
 /** Absolute path to the privileged helper (installed by install.sh). */
 const NEBULA_HELPER = '/usr/local/bin/nebula-helper';
 
@@ -141,6 +212,14 @@ function helper_cmd(string $args, int $timeout = 180): array
         return [127, '', 'nebula-helper is not installed (re-run install.sh).'];
     }
     return sudo_cmd(NEBULA_HELPER . ' ' . $args, $timeout);
+}
+
+function helper_cmd_stream(string $args, callable $onChunk, int $timeout = 180): array
+{
+    if (!helper_available()) {
+        return [127, '', 'nebula-helper is not installed (re-run install.sh).'];
+    }
+    return sudo_cmd_stream(NEBULA_HELPER . ' ' . $args, $onChunk, $timeout);
 }
 
 /** Normalise a sudo/permission failure into a friendly message. */

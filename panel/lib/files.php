@@ -54,8 +54,23 @@ function fm_resolve(string $rel, bool $mustExist = true): ?string
 function fm_rel(string $abs): string
 {
     $root = fm_root();
-    $rel = ltrim(substr($abs, strlen($root)), '/');
+    $rel = str_replace('\\', '/', substr($abs, strlen($root)));
+    $rel = ltrim($rel, '/');
     return $rel === '' ? '' : $rel;
+}
+
+/** Return a safe File Manager-relative link target for an absolute path. */
+function fm_link_path(string $abs): ?string
+{
+    $root = fm_root();
+    $real = realpath($abs);
+    if ($root === '' || $real === false) {
+        return null;
+    }
+    if ($real !== $root && strpos($real, $root . DIRECTORY_SEPARATOR) !== 0) {
+        return null;
+    }
+    return fm_rel($real);
 }
 
 /** List a directory. Returns ['dirs' => [...], 'files' => [...]] sorted. */
