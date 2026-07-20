@@ -24,16 +24,29 @@ if ($action !== 'install') {
 }
 
 $key = (string) ($body['key'] ?? '');
+$streaming = ($_GET['stream'] ?? '') === '1';
+$emit = null;
+if ($streaming) {
+    stream_json_start();
+    stream_json_event(['type' => 'start']);
+    $emit = static function (string $text, string $channel): void {
+        stream_json_event(['type' => 'output', 'channel' => $channel, 'text' => $text]);
+    };
+}
 if (strpos($key, 'php:') === 0) {
     $version = substr($key, 4);
     $allowed = array_values(array_unique(array_merge(php_installable_versions(), php_installed_versions())));
     $res = in_array($version, $allowed, true)
-        ? (in_array($version, php_installed_versions(), true) ? ['ok' => true] : php_install($version))
+        ? (in_array($version, php_installed_versions(), true) ? ['ok' => true] : php_install($version, $emit))
         : ['ok' => false, 'error' => 'Unsupported PHP version.'];
 } elseif ($key === 'phpmyadmin') {
-    $res = pma_install();
+    $res = pma_install($emit);
 } else {
-    $res = app_install($key);
+    $res = app_install($key, $emit);
 }
 
+if ($streaming) {
+    stream_json_event(['type' => 'result', 'result' => $res]);
+    exit;
+}
 json_out($res, !empty($res['ok']) ? 200 : 400);

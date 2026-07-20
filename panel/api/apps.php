@@ -7,14 +7,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     csrf_check();
     $b = read_json_body();
     $action = (string) ($b['action'] ?? '');
+    $streaming = ($_GET['stream'] ?? '') === '1';
+    $emit = null;
+    if ($streaming) {
+        stream_json_start();
+        stream_json_event(['type' => 'start']);
+        $emit = static function (string $text, string $channel): void {
+            stream_json_event(['type' => 'output', 'channel' => $channel, 'text' => $text]);
+        };
+    }
     if ($action === 'install') {
-        $res = app_install((string) ($b['key'] ?? ''));
+        $res = app_install((string) ($b['key'] ?? ''), $emit);
     } elseif ($action === 'uninstall') {
-        $res = app_uninstall((string) ($b['key'] ?? ''));
+        $res = app_uninstall((string) ($b['key'] ?? ''), $emit);
     } elseif ($action === 'php-install') {
-        $res = php_install((string) ($b['version'] ?? ''));
+        $res = php_install((string) ($b['version'] ?? ''), $emit);
     } else {
         $res = ['ok' => false, 'error' => 'Unknown action.'];
+    }
+    if ($streaming) {
+        stream_json_event(['type' => 'result', 'result' => $res]);
+        exit;
     }
     json_out($res, $res['ok'] ? 200 : 400);
 }
