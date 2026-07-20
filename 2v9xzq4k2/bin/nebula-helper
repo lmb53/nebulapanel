@@ -92,6 +92,26 @@ EOF
     echo "ssl issued for $DOMAIN"
     ;;
 
+  # php-install <version>  (adds ondrej/php PPA on Ubuntu, installs php<ver>-fpm + common extensions)
+  php-install)
+    VER="${1:-}"
+    [[ "$VER" =~ ^[0-9]+\.[0-9]+$ ]] || die "invalid php version"
+    export DEBIAN_FRONTEND=noninteractive
+    if ! command -v add-apt-repository >/dev/null 2>&1; then
+      apt-get update -qq
+      apt-get install -y -qq software-properties-common
+    fi
+    if ! grep -rqs 'ondrej/php' /etc/apt/sources.list.d 2>/dev/null; then
+      add-apt-repository -y ppa:ondrej/php
+    fi
+    apt-get update -qq
+    apt-get install -y "php${VER}-fpm" "php${VER}-cli" "php${VER}-mysql" "php${VER}-curl" \
+      "php${VER}-mbstring" "php${VER}-xml" "php${VER}-gd" "php${VER}-zip" \
+      || die "apt install failed for php ${VER}"
+    systemctl enable --now "php${VER}-fpm" || true
+    echo "installed php ${VER}"
+    ;;
+
   # pma-install <targetdir>
   pma-install)
     TARGET="${1:-}"

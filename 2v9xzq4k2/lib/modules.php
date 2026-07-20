@@ -17,6 +17,7 @@ function nebula_modules(): array
         'phpmyadmin' => ['table-properties', 'phpMyAdmin',   'Hosting'],
 
         'services'   => ['server-cog',       'Services',     'System'],
+        'apps'       => ['package-plus',     'Install Apps', 'System'],
         'updates'    => ['download-cloud',   'Updates',      'System'],
         'users'      => ['users',            'Users',        'System'],
         'cron'       => ['clock',            'Cron Jobs',    'System'],
@@ -50,7 +51,7 @@ function nebula_sections(): array
 /** Routes that render a page but aren't top-level nav items. */
 function nebula_extra_routes(): array
 {
-    return ['file-view', 'file-edit'];
+    return ['file-view', 'file-edit', 'service'];
 }
 
 /** Is this a valid HTML page route? */

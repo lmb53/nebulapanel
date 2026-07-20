@@ -213,10 +213,52 @@
     document.getElementById('refreshBtn')?.addEventListener('click', pollMetrics);
   }
 
+  // ---- Command palette (⌘K / Ctrl+K) -------------------------------------
+  function wireCmdk() {
+    const overlay = document.getElementById('cmdk');
+    if (!overlay) return;
+    const input = document.getElementById('cmdkInput');
+    const list = document.getElementById('cmdkList');
+    const items = Array.from(list.querySelectorAll('.cmdk-item'));
+    let sel = 0;
+    const visible = () => items.filter((it) => !it.classList.contains('hidden'));
+    function setSel(i) {
+      const vis = visible();
+      if (!vis.length) return;
+      sel = (i + vis.length) % vis.length;
+      items.forEach((it) => it.classList.remove('sel'));
+      vis[sel].classList.add('sel');
+      vis[sel].scrollIntoView({ block: 'nearest' });
+    }
+    function filter(q) {
+      q = q.toLowerCase().trim();
+      items.forEach((it) => it.classList.toggle('hidden', !!q && !it.dataset.label.includes(q)));
+      setSel(0);
+    }
+    function open() { overlay.classList.remove('hidden'); input.value = ''; filter(''); input.focus(); }
+    function close() { overlay.classList.add('hidden'); }
+    function go() { const vis = visible(); if (vis[sel]) window.location.href = vis[sel].dataset.href; }
+
+    document.getElementById('searchTrigger')?.addEventListener('click', open);
+    document.addEventListener('keydown', (e) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); open(); }
+      else if (e.key === 'Escape' && !overlay.classList.contains('hidden')) { close(); }
+    });
+    input.addEventListener('input', () => filter(input.value));
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'ArrowDown') { e.preventDefault(); setSel(sel + 1); }
+      else if (e.key === 'ArrowUp') { e.preventDefault(); setSel(sel - 1); }
+      else if (e.key === 'Enter') { e.preventDefault(); go(); }
+    });
+    items.forEach((it) => it.addEventListener('click', () => (window.location.href = it.dataset.href)));
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+  }
+
   // ---- Boot ---------------------------------------------------------------
   document.addEventListener('DOMContentLoaded', () => {
     if (window.lucide) lucide.createIcons();
     wireChrome();
+    wireCmdk();
 
     const page = window.NEBULA_PAGE;
     // Live metrics run on every authenticated page (topbar), chart on dashboard.

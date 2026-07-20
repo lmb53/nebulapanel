@@ -15,6 +15,7 @@ A working, self-hosted server control panel served from an **obscured URL prefix
 | **Dashboard** — live CPU / memory / disk / load (3s poll) + chart | ✅ |
 | **Monitoring** — live charts + top processes (`ps`) | ✅ |
 | **Services** — start / stop / restart via `systemctl` | ✅ sudo |
+| **Install Apps** — install apache2/redis/mariadb/fail2ban + extra PHP versions | ✅ sudo/helper |
 | **Updates** — list upgradable + `apt-get update`/`upgrade` | ✅ sudo |
 | **Users** — system accounts from `/etc/passwd` (read-only) | ✅ |
 | **Cron** — full CRUD on the web user's crontab | ✅ |

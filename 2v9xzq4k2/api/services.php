@@ -1,6 +1,10 @@
 <?php
 /** api/services — GET status list; POST {name, action} to control. */
 global $config;
+require APP_ROOT . '/lib/mod_apps.php';
+
+// Controllable set = configured services + any installed manageable unit.
+$allowed = array_values(array_unique(array_merge($config['services'], manageable_units())));
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     csrf_check();
@@ -8,9 +12,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $res = service_action(
         (string) ($body['name'] ?? ''),
         (string) ($body['action'] ?? ''),
-        $config['services']
+        $allowed
     );
     json_out($res, $res['ok'] ? 200 : 400);
 }
 
-json_out(['ok' => true, 'services' => services_overview($config['services'])]);
+json_out(['ok' => true, 'services' => services_overview($allowed)]);

@@ -1,4 +1,9 @@
-<?php /** @var array $config */ $services = services_overview($config['services']); ?>
+<?php
+/** @var array $config */
+require_once APP_ROOT . '/lib/mod_apps.php';
+$allowed = array_values(array_unique(array_merge($config['services'], manageable_units())));
+$services = services_overview($allowed);
+?>
 <div class="page-header">
   <div>
     <h1 class="page-title">Services</h1>
