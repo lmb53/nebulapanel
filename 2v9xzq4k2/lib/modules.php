@@ -12,6 +12,10 @@ function nebula_modules(): array
         'dashboard'  => ['layout-dashboard', 'Dashboard',    'Overview'],
         'monitoring' => ['activity',         'Monitoring',   'Overview'],
 
+        'websites'   => ['globe',            'Websites',     'Hosting'],
+        'databases'  => ['database',         'Databases',    'Hosting'],
+        'phpmyadmin' => ['table-properties', 'phpMyAdmin',   'Hosting'],
+
         'services'   => ['server-cog',       'Services',     'System'],
         'updates'    => ['download-cloud',   'Updates',      'System'],
         'users'      => ['users',            'Users',        'System'],
@@ -19,7 +23,6 @@ function nebula_modules(): array
         'firewall'   => ['shield',           'Firewall',     'System'],
         'logs'       => ['scroll-text',      'Logs',         'System'],
 
-        'databases'  => ['database',         'Databases',    'Services'],
         'docker'     => ['container',        'Docker',       'Services'],
 
         'files'      => ['folder-tree',      'File Manager', 'Files'],
@@ -47,7 +50,7 @@ function nebula_sections(): array
 /** Routes that render a page but aren't top-level nav items. */
 function nebula_extra_routes(): array
 {
-    return ['file-view'];
+    return ['file-view', 'file-edit'];
 }
 
 /** Is this a valid HTML page route? */

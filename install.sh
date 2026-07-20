@@ -70,7 +70,8 @@ trap cleanup EXIT
 log "Installing packages (Nginx, PHP-FPM, tooling)…"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
-apt-get install -y -qq nginx php-fpm php-cli rsync ufw curl ca-certificates tar >/dev/null
+apt-get install -y -qq nginx php-fpm php-cli php-mysql rsync ufw curl ca-certificates tar \
+  certbot python3-certbot-nginx >/dev/null
 ok "Packages installed"
 
 # Detect PHP-FPM version, socket and service name.
@@ -186,6 +187,15 @@ if [[ -n "$SHA" ]]; then
   ok "Recorded version baseline (${SHA:0:12})"
 fi
 
+# Install the privileged helper root-owned, OUTSIDE the web-writable tree, so
+# the web user can't modify what it runs as root.
+if [[ -f "$DEST/bin/nebula-helper" ]]; then
+  install -m 0755 -o root -g root "$DEST/bin/nebula-helper" /usr/local/bin/nebula-helper
+  ok "Installed privileged helper (/usr/local/bin/nebula-helper)"
+else
+  warn "bin/nebula-helper missing from source — Websites/phpMyAdmin will be limited."
+fi
+
 # --------------------------------------------------------------------------
 # 5. Nginx site
 # --------------------------------------------------------------------------
@@ -205,7 +215,7 @@ server {
     index index.php index.html;
 
     # Never serve the panel's private directories.
-    location ~ ^/${PANEL_PREFIX}/(data|lib|views)/ { deny all; return 404; }
+    location ~ ^/${PANEL_PREFIX}/(data|lib|views|bin)/ { deny all; return 404; }
 
     location /${PANEL_PREFIX}/ {
 ${ACCESS_RULES}
@@ -255,6 +265,11 @@ sudo_line mysql
 sudo_line journalctl
 sudo_line tar
 sudo_line apt-get SETENV   # SETENV so DEBIAN_FRONTEND=... is permitted
+
+# The privileged helper: a single tight entry that covers vhost/SSL/phpMyAdmin
+# operations, instead of granting tee/ln/mkdir/certbot broadly.
+[[ -x /usr/local/bin/nebula-helper ]] && \
+  echo "www-data ALL=(root) NOPASSWD: /usr/local/bin/nebula-helper *" >> "$SUDOERS"
 
 chmod 440 "$SUDOERS"
 if ! visudo -cf "$SUDOERS" >/dev/null 2>&1; then

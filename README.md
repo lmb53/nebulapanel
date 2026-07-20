@@ -20,9 +20,11 @@ A working, self-hosted server control panel served from an **obscured URL prefix
 | **Cron** — full CRUD on the web user's crontab | ✅ |
 | **Firewall** — UFW status, enable/disable, add/delete rules | ✅ sudo |
 | **Logs** — journalctl per-unit + `/var/log` file tails | ✅ |
+| **Websites** — create/delete Nginx vhosts, docroot, PHP ver, Let's Encrypt | ✅ helper |
 | **Databases** — MariaDB/MySQL: DBs + users CRUD (`sudo mysql`) | ✅ sudo |
+| **phpMyAdmin** — one-click install + launch (auto blowfish config) | ✅ helper |
 | **Docker** — containers (start/stop/restart/rm) + images | ✅ sudo |
-| **File Manager** — browse / view / download / delete (confined root) | ✅ |
+| **File Manager** — browse / edit / upload / mkdir / rename / chmod / copy / move / delete | ✅ |
 | **Backups** — create / list / download / delete `.tar.gz` | ✅ |
 | **Terminal** — audited non-interactive command runner | ✅ |
 | **System Info** — OS, kernel, CPU, RAM, disk, network | ✅ |
@@ -101,6 +103,24 @@ www-data ALL=(root) NOPASSWD:SETENV: /usr/bin/apt-get *
 Modules whose tool/sudo rule is missing degrade gracefully: read-only status
 still shows and actions return a clear permission error in the UI.
 
+### The privileged helper (`nebula-helper`)
+
+Website provisioning, SSL, and phpMyAdmin install need to write nginx configs,
+create docroots, and run certbot — operations that would otherwise require a
+broad `tee`/`ln`/`mkdir`/`certbot` sudo grant. Instead the installer deploys a
+single **root-owned** script to `/usr/local/bin/nebula-helper` with one tight
+sudoers rule:
+
+```
+www-data ALL=(root) NOPASSWD: /usr/local/bin/nebula-helper *
+```
+
+The helper accepts only a fixed set of validated subcommands (`site-create`,
+`site-delete`, `site-ssl`, `php-versions`, `pma-install`, `pma-remove`) and
+re-validates every argument itself. It lives **outside** the web-writable tree
+and is root-owned, so the web user can't alter what runs as root. Self-update
+does **not** touch it — re-run `install.sh` to update the helper.
+
 ## First run
 
 1. Visit `http://YOUR_IP/2v9xzq4k2/`
@@ -170,10 +190,9 @@ needed to self-update. Notes:
 
 ## Still to build (natural next steps)
 
-- **Websites / vhosts** — create Nginx/Apache sites, doc roots, PHP pool per site
-- **DNS, SSL (Let's Encrypt issue/renew), Email** — the remaining mockup pages
-- **PHP** — multiple versions, extensions, per-site `php.ini`
-- **File Manager** — upload / rename / chmod / create / inline edit
+- **DNS & Email** — the remaining mockup pages
+- **PHP** — install additional versions (ondrej PPA), extensions, per-site `php.ini`
+- **Websites** — per-site logs viewer, clone/staging, wildcard certs, Apache mode
 - **Live PTY terminal** — real interactive shell (needs a WebSocket sidecar)
 - **Multi-user + roles, 2FA**
 ```

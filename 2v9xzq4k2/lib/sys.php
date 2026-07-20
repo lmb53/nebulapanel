@@ -97,6 +97,27 @@ function sudo_cmd(string $cmd, int $timeout = 30): array
     return run_cmd('sudo -n ' . $cmd . ' 2>&1', $timeout);
 }
 
+/** Absolute path to the privileged helper (installed by install.sh). */
+const NEBULA_HELPER = '/usr/local/bin/nebula-helper';
+
+/** Is the privileged helper installed? */
+function helper_available(): bool
+{
+    return is_file(NEBULA_HELPER);
+}
+
+/**
+ * Invoke the privileged helper via sudo. $args must already be
+ * escapeshellarg()'d by the caller. Returns [code, out, err].
+ */
+function helper_cmd(string $args, int $timeout = 180): array
+{
+    if (!helper_available()) {
+        return [127, '', 'nebula-helper is not installed (re-run install.sh).'];
+    }
+    return sudo_cmd(NEBULA_HELPER . ' ' . $args, $timeout);
+}
+
 /** Normalise a sudo/permission failure into a friendly message. */
 function sudo_error(string $out, int $code): string
 {
