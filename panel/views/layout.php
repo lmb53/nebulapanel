@@ -82,7 +82,7 @@ function nav_link(string $route, string $icon, string $label, string $active): s
       <div class="avatar" title="<?= e(current_user() ?? '') ?>"><?= e(strtoupper(substr(current_user() ?? 'U', 0, 2))) ?></div>
     </header>
 
-    <main class="page">
+    <main class="page<?= $active === 'files' ? ' page-file-manager' : '' ?>">
       <?php require $__view; ?>
     </main>
   </div>
