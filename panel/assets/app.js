@@ -18,7 +18,63 @@
         headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': CSRF, Accept: 'application/json' },
         body: JSON.stringify(body || {}),
       });
-      return await r.json().catch(() => ({ ok: false, error: `Invalid server response (HTTP ${r.status})` }));
+      const text = await r.text();
+      try {
+        return JSON.parse(text);
+      } catch (e) {
+        return {
+          ok: false,
+          error: text.trim().slice(0, 8000) || `Invalid server response (HTTP ${r.status})`,
+        };
+      }
+    } catch (e) {
+      return { ok: false, error: e?.message || 'Network request failed' };
+    }
+  }
+
+  /** POST JSON and consume newline-delimited progress events as they arrive. */
+  async function streamPost(endpoint, body, onEvent) {
+    try {
+      const r = await fetch(api(endpoint) + '&stream=1', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': CSRF, Accept: 'application/x-ndjson' },
+        body: JSON.stringify(body || {}),
+      });
+      if (!r.body || !r.body.getReader) return await r.json();
+      const reader = r.body.getReader();
+      const decoder = new TextDecoder();
+      let pending = '';
+      let result = null;
+      let rawError = '';
+      const consumeLine = (line) => {
+        if (!line.trim()) return;
+        let event;
+        try {
+          event = JSON.parse(line);
+        } catch (e) {
+          // Preserve PHP/proxy errors in the visible output without letting one
+          // malformed line discard the rest of a long-running operation.
+          rawError += (rawError ? '\n' : '') + line;
+          if (onEvent) onEvent({ type: 'output', channel: 'stderr', text: line + '\n' });
+          return;
+        }
+        if (event.type === 'result') result = event.result;
+        else if (typeof event.ok === 'boolean') result = event;
+        if (onEvent) onEvent(event);
+      };
+      while (true) {
+        const { value, done } = await reader.read();
+        pending += decoder.decode(value || new Uint8Array(), { stream: !done });
+        const lines = pending.split(/\r?\n/);
+        pending = lines.pop() || '';
+        for (const line of lines) consumeLine(line);
+        if (done) break;
+      }
+      consumeLine(pending);
+      return result || {
+        ok: false,
+        error: rawError.trim().slice(0, 8000) || `Stream ended without a result (HTTP ${r.status})`,
+      };
     } catch (e) {
       return { ok: false, error: e?.message || 'Network request failed' };
     }
@@ -32,7 +88,7 @@
   }
 
   // Public API for per-module view scripts (available by DOMContentLoaded).
-  window.Nebula = { api, apiGet, apiPost, toast, fmtBytes };
+  window.Nebula = { api, apiGet, apiPost, streamPost, toast, fmtBytes };
 
   // ---- Toasts -------------------------------------------------------------
   function toast(msg, type = 'success') {
@@ -47,11 +103,24 @@
     icon.style.color = colors[type] || colors.info;
     const copy = document.createElement('div');
     copy.style.fontSize = '13px';
+    copy.style.whiteSpace = 'pre-wrap';
+    copy.style.wordBreak = 'break-word';
+    copy.style.flex = '1';
     copy.textContent = String(msg);
-    el.append(icon, copy);
+    const close = document.createElement('button');
+    close.type = 'button';
+    close.className = 'toast-close';
+    close.setAttribute('aria-label', 'Dismiss message');
+    close.textContent = '×';
+    close.addEventListener('click', () => el.remove());
+    el.append(icon, copy, close);
     stack.appendChild(el);
     if (window.lucide) lucide.createIcons();
-    setTimeout(() => { el.style.opacity = '0'; el.style.transition = '.3s'; setTimeout(() => el.remove(), 300); }, 3500);
+    // Errors remain until explicitly dismissed, so command output and
+    // certificate failures cannot disappear before the user has read them.
+    if (type !== 'error') {
+      setTimeout(() => { el.style.opacity = '0'; el.style.transition = '.3s'; setTimeout(() => el.remove(), 300); }, 3500);
+    }
   }
   window.nebulaToast = toast;
 
