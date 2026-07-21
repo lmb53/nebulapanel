@@ -39,29 +39,30 @@ $siblingFiles = array_values(array_filter($siblingListing['files'], fn($file) =>
   </div>
 </div>
 
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/lib/codemirror.min.css">
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/theme/material-darker.min.css">
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/addon/dialog/dialog.min.css">
+<link rel="stylesheet" href="<?= e(asset('vendor/codemirror-5.65.16.min.css')) ?>">
+<link rel="stylesheet" href="<?= e(asset('vendor/codemirror-material-darker-5.65.16.min.css')) ?>">
+<link rel="stylesheet" href="<?= e(asset('vendor/codemirror-dialog-5.65.16.min.css')) ?>">
 <div class="editor-tabs" id="editorTabs"></div>
 <div class="card code-editor-card"><div class="code-editor-toolbar"><span class="badge badge-slate mono" id="fmode">text</span><span class="muted mono" id="fcursor">Ln 1, Col 1</span><span class="topbar-spacer"></span><span class="muted">Ctrl/Cmd+S save · Ctrl/Cmd+F find · F3 next · Tab indent</span></div><div class="code-editor-host"><textarea id="fedit" class="input mono" style="width:100%;height:60vh;white-space:pre"><?= e($content) ?></textarea></div></div>
 </section>
 </div>
 
-<script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/lib/codemirror.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/addon/edit/matchbrackets.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/addon/edit/closebrackets.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/addon/search/searchcursor.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/addon/search/search.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/addon/dialog/dialog.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/mode/xml/xml.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/mode/javascript/javascript.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/mode/css/css.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/mode/htmlmixed/htmlmixed.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/mode/clike/clike.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/mode/php/php.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/mode/yaml/yaml.min.js"></script>
+<script src="<?= e(asset('vendor/codemirror-5.65.16.min.js')) ?>"></script>
+<script src="<?= e(asset('vendor/codemirror-matchbrackets-5.65.16.min.js')) ?>"></script>
+<script src="<?= e(asset('vendor/codemirror-closebrackets-5.65.16.min.js')) ?>"></script>
+<script src="<?= e(asset('vendor/codemirror-searchcursor-5.65.16.min.js')) ?>"></script>
+<script src="<?= e(asset('vendor/codemirror-search-5.65.16.min.js')) ?>"></script>
+<script src="<?= e(asset('vendor/codemirror-dialog-5.65.16.min.js')) ?>"></script>
+<script src="<?= e(asset('vendor/codemirror-xml-5.65.16.min.js')) ?>"></script>
+<script src="<?= e(asset('vendor/codemirror-javascript-5.65.16.min.js')) ?>"></script>
+<script src="<?= e(asset('vendor/codemirror-css-5.65.16.min.js')) ?>"></script>
+<script src="<?= e(asset('vendor/codemirror-htmlmixed-5.65.16.min.js')) ?>"></script>
+<script src="<?= e(asset('vendor/codemirror-clike-5.65.16.min.js')) ?>"></script>
+<script src="<?= e(asset('vendor/codemirror-php-5.65.16.min.js')) ?>"></script>
+<script src="<?= e(asset('vendor/codemirror-yaml-5.65.16.min.js')) ?>"></script>
 <script>
 const FEDIT_PATH = <?= json_encode($rel) ?>;
+let FEDIT_HASH = <?= json_encode(hash_file('sha256', $abs) ?: '') ?>;
 document.addEventListener('DOMContentLoaded', () => {
   const { apiPost, toast } = window.Nebula;
   const ta = document.getElementById('fedit');
@@ -105,7 +106,7 @@ document.addEventListener('DOMContentLoaded', () => {
   if(dirty)setSaveState('Unsaved changes','var(--orange-400)');
   document.getElementById('fmode').textContent=extension||'text';
   const value=()=>editor?editor.getValue():ta.value;
-  const save=async()=>{const res=await apiPost('file-save',{path:FEDIT_PATH,content:value()});if(res.ok){toast('Saved','success');lastSavedContent=value();dirty=false;delete drafts[FEDIT_PATH];persistDrafts();renderTabs();setSaveState('Saved','var(--emerald-400)',true);}else toast(res.error||'Save failed','error');};
+  const save=async()=>{const res=await apiPost('file-save',{path:FEDIT_PATH,content:value(),base_hash:FEDIT_HASH});if(res.ok){FEDIT_HASH=res.hash||FEDIT_HASH;toast('Saved','success');lastSavedContent=value();dirty=false;delete drafts[FEDIT_PATH];persistDrafts();renderTabs();setSaveState('Saved','var(--emerald-400)',true);}else{toast(res.error||'Save failed','error');if(res.conflict)setSaveState('Changed on disk — reload before saving','var(--red-400)');}};
   document.getElementById('fsave')?.addEventListener('click',save);
   document.getElementById('ffind')?.addEventListener('click',()=>editor?editor.execCommand('find'):ta.focus());
   document.getElementById('ffindPrev')?.addEventListener('click',()=>editor?.execCommand('findPrev'));

@@ -24,10 +24,10 @@ function nav_link(string $route, string $icon, string $label, string $active): s
 <meta charset="UTF-8">
 <title><?= e($config['panel_name']) ?></title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-<script src="https://unpkg.com/lucide@latest"></script>
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<script src="<?= e(asset('vendor/lucide-1.8.0.min.js')) ?>"></script>
+<?php if ($active === 'dashboard'): ?>
+<script src="<?= e(asset('vendor/chart-4.4.9.umd.min.js')) ?>"></script>
+<?php endif; ?>
 <link rel="stylesheet" href="<?= e(asset('style.css')) ?>">
 <meta name="csrf-token" content="<?= e(csrf_token()) ?>">
 <meta name="base-url" content="<?= e(base_url()) ?>">

@@ -24,7 +24,7 @@ $backups = backup_list();
       <button class="btn btn-primary" id="bkCreate"><i data-lucide="archive"></i>Create backup</button>
     </div>
     <div style="font-size:12px;color:var(--text-tertiary);margin-top:10px">
-      Root-owned sources may need a passwordless sudo rule for <span class="mono">tar</span> (see README).
+      Sources must be inside the configured website-file root. Nebula's own files are always excluded.
     </div>
   </div>
 </div>

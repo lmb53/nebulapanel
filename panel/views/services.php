@@ -23,8 +23,8 @@ $statusBadge = static function (string $status): array {
     <p class="page-subtitle"><?= count($instances) ?> installed instance<?= count($instances) === 1 ? '' : 's' ?> · manage status, boot behaviour, websites and logs</p>
   </div>
   <div class="page-actions">
-    <a class="btn btn-secondary" href="<?= e(url('apps')) ?>"><i data-lucide="package-plus"></i>Install service</a>
-    <button class="btn btn-secondary" type="button" onclick="location.reload()"><i data-lucide="refresh-cw"></i>Refresh</button>
+    <?php if (role_route_allowed('apps')): ?><a class="btn btn-secondary" href="<?= e(url('apps')) ?>"><i data-lucide="package-plus"></i>Install service</a><?php endif; ?>
+    <button class="btn btn-secondary" type="button" id="servicesRefresh"><i data-lucide="refresh-cw"></i>Refresh</button>
   </div>
 </div>
 
@@ -129,6 +129,7 @@ $statusBadge = static function (string $status): array {
 <script>
 document.addEventListener('DOMContentLoaded', () => {
   const { apiPost, toast } = window.Nebula;
+  document.getElementById('servicesRefresh')?.addEventListener('click', () => location.reload());
   document.querySelectorAll('[data-open-service]').forEach((card) => card.addEventListener('click', () => document.querySelector(`[data-tab-target="${card.dataset.openService}"]`)?.click()));
   document.querySelectorAll('[data-service-action]').forEach((btn) => btn.addEventListener('click', async () => {
     btn.disabled = true;

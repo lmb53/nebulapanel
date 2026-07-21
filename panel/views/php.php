@@ -262,10 +262,10 @@ document.addEventListener('DOMContentLoaded', () => {
   <pre class="mono" id="phpOutput" style="margin:0;padding:16px;font-size:12px;line-height:1.55;white-space:pre-wrap;max-height:38vh;overflow:auto"></pre>
 </div>
 
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/lib/codemirror.min.css">
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/theme/material-darker.min.css">
-<script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/lib/codemirror.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/mode/properties/properties.min.js"></script>
+<link rel="stylesheet" href="<?= e(asset('vendor/codemirror-5.65.16.min.css')) ?>">
+<link rel="stylesheet" href="<?= e(asset('vendor/codemirror-material-darker-5.65.16.min.css')) ?>">
+<script src="<?= e(asset('vendor/codemirror-5.65.16.min.js')) ?>"></script>
+<script src="<?= e(asset('vendor/codemirror-properties-5.65.16.min.js')) ?>"></script>
 <script>
 document.addEventListener('DOMContentLoaded', () => {
   const { apiPost, streamPost, toast } = window.Nebula;

@@ -353,6 +353,7 @@ if ($rel !== '') {
       <div class="split-divider"></div>
 
       <!-- RIGHT: properties -->
+      <div class="fm-props-backdrop" id="fmPropsBackdrop"></div>
       <div class="split-pane fm-right-pane" id="fmProps">
         <button class="icon-btn fm-props-close" id="fmPropsClose" title="Close details"><i data-lucide="x"></i></button>
         <div id="fmPropsEmpty" class="fm-empty-hint">Select an item to see its details.</div>
@@ -592,7 +593,9 @@ document.addEventListener('DOMContentLoaded', () => {
   const propsEmpty = document.getElementById('fmPropsEmpty');
   const propsBody = document.getElementById('fmPropsBody');
   const propsPane = document.getElementById('fmProps');
+  const propsBackdrop = document.getElementById('fmPropsBackdrop');
   let propsRow = null;
+  const closeProps = () => { propsPane?.classList.remove('open'); propsBackdrop?.classList.remove('open'); };
   const permissionBits = [4, 2, 1, 4, 2, 1, 4, 2, 1];
   function fillPermissionGrid(mode) {
     const digits = String(mode || '000').slice(-3).padStart(3, '0').split('').map((d) => parseInt(d, 8) || 0);
@@ -660,15 +663,12 @@ document.addEventListener('DOMContentLoaded', () => {
     propsEmpty?.classList.add('hidden');
     propsBody.classList.remove('hidden');
     propsPane?.classList.add('open');
+    propsBackdrop?.classList.add('open');
     if (window.lucide) window.lucide.createIcons();
   }
 
-  bindClick('fmPropsClose', () => propsPane?.classList.remove('open'));
-  document.addEventListener('click', (event) => {
-    if (!propsPane?.classList.contains('open')) return;
-    if (propsPane.contains(event.target) || event.target.closest('[data-fm-details]')) return;
-    propsPane.classList.remove('open');
-  });
+  bindClick('fmPropsClose', closeProps);
+  bindClick('fmPropsBackdrop', closeProps);
   bindClick('fmSavePerms', async () => {
     if (!propsRow) return;
     const mode = permissionMode();
@@ -699,8 +699,12 @@ document.addEventListener('DOMContentLoaded', () => {
       if (cb) { cb.checked = !cb.checked; cb.dispatchEvent(new Event('change')); }
     });
   });
-  document.querySelectorAll('[data-fm-details]').forEach((button) => {
-    button.addEventListener('click', (event) => { event.stopPropagation(); showProps(button.closest('.fm-row')); });
+  document.addEventListener('click', (event) => {
+    const button = event.target.closest('[data-fm-details]');
+    if (!button) return;
+    event.preventDefault(); event.stopPropagation();
+    const row = button.closest('.fm-row');
+    if (row) { markSelected(row); showProps(row); }
   });
 
   // ---- Multi-select --------------------------------------------------------

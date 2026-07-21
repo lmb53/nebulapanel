@@ -118,7 +118,10 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   const procBody = document.getElementById('procBody');
+  let processBusy = false, processTimer = null;
   async function loadProcesses() {
+    if (processBusy || document.hidden) return;
+    processBusy = true;
     try {
       const res = await apiGet('processes');
       document.getElementById('procCount').textContent = res.count ?? 0;
@@ -135,9 +138,11 @@ document.addEventListener('DOMContentLoaded', () => {
       });
       if (!procBody.children.length) { const tr=document.createElement('tr');const td=document.createElement('td');td.colSpan=6;td.className='text-tertiary';td.style.cssText='text-align:center;padding:24px';td.textContent='No process data available.';tr.appendChild(td);procBody.appendChild(tr); }
     } catch (error) { /* Keep the dashboard usable if process inspection is unavailable. */ }
+    finally { processBusy = false; }
   }
   document.getElementById('procRefresh')?.addEventListener('click', loadProcesses);
-  loadProcesses(); setInterval(loadProcesses, 5000);
+  const scheduleProcesses=async()=>{await loadProcesses();clearTimeout(processTimer);processTimer=setTimeout(scheduleProcesses,8000);};
+  scheduleProcesses();document.addEventListener('visibilitychange',()=>{if(document.hidden)clearTimeout(processTimer);else{clearTimeout(processTimer);scheduleProcesses();}});
 });
 </script>
 <script>window.NEBULA_PAGE = 'dashboard';</script>

@@ -33,9 +33,7 @@ $items[] = ['key' => 'phpmyadmin', 'label' => 'phpMyAdmin', 'desc' => 'Web-based
 <meta charset="UTF-8">
 <title>Set up your server · <?= e($config['panel_name']) ?></title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-<script src="https://unpkg.com/lucide@latest"></script>
+<script src="<?= e(asset('vendor/lucide-1.8.0.min.js')) ?>"></script>
 <link rel="stylesheet" href="<?= e(asset('style.css')) ?>">
 <meta name="csrf-token" content="<?= e(csrf_token()) ?>">
 <meta name="base-url" content="<?= e(base_url()) ?>">
