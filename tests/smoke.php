@@ -19,7 +19,6 @@ $_SERVER['REMOTE_ADDR'] = '198.51.100.250';
 require APP_ROOT . '/lib/helpers.php';
 require APP_ROOT . '/lib/auth.php';
 require APP_ROOT . '/lib/sys.php';
-require APP_ROOT . '/lib/mod_api.php';
 require APP_ROOT . '/lib/mod_updates.php';
 require APP_ROOT . '/lib/modules.php';
 require APP_ROOT . '/lib/files.php';
@@ -47,10 +46,21 @@ file_put_contents($config['fm_root'] . '/site/index.txt', 'ok');
 $check(fm_resolve('site/index.txt') === realpath($config['fm_root'] . '/site/index.txt'), 'valid file-manager path was rejected');
 $check(fm_resolve('../outside') === null, 'file-manager traversal was accepted');
 $check(is_page_route('dashboard') && !is_page_route('../config'), 'page route whitelist failed');
-$check(is_page_route('domains') && is_page_route('dns') && is_page_route('sshkeys') && is_page_route('notifications') && is_page_route('api'), 'mockup-backed module routes are missing');
+$modules = nebula_modules();
+$check(is_page_route('domains') && is_page_route('dns') && is_page_route('sshkeys') && is_page_route('notifications'), 'mockup-backed module routes are missing');
+$check(!is_page_route('api') && !isset($modules['api']), 'removed public API page is still routed');
+$check(($modules['files'][2] ?? '') === 'Hosting', 'File Manager is not in Hosting');
+$check(($modules['backups'][2] ?? '') === 'Tools', 'Backups is not in Tools');
 $check(is_file(APP_ROOT . '/api/provision.php'), 'provisioning API endpoint is missing');
+$check(is_file(APP_ROOT . '/api/ssl.php'), 'SSL API endpoint is missing');
+$check(is_file(APP_ROOT . '/api/php.php'), 'PHP API endpoint is missing');
+$check(is_file(APP_ROOT . '/api/file-state.php') && is_file(APP_ROOT . '/api/file-owner.php') && is_file(APP_ROOT . '/api/file-compress.php'), 'extended File Manager endpoints are missing');
 $check(human_bytes(1048576) === '1 MB', 'byte formatting failed');
 $check(fm_link_path($config['fm_root'] . '/site') === 'site', 'absolute file-manager link conversion failed');
+$pinResult = fm_toggle_pin('site');
+$check(!empty($pinResult['ok']) && count(fm_state_entries('pinned')) === 1, 'folder pinning failed');
+fm_record_recent('site/index.txt');
+$check(count(fm_state_entries('recent')) === 1, 'recent-file tracking failed');
 
 $chunks = '';
 $streamCmd = escapeshellarg(PHP_BINARY) . ' --version';
@@ -60,19 +70,20 @@ $check(
     'streaming command runner failed (code=' . $streamCode . ', out=' . json_encode($streamOut) . ', chunks=' . json_encode($chunks) . ')'
 );
 
-$generated = api_token_generate('smoke test');
-$check(!empty($generated['ok']) && strncmp((string) ($generated['token'] ?? ''), 'nbp_', 4) === 0, 'API token generation failed');
-$check(api_token_authenticate((string) ($generated['token'] ?? '')), 'API token authentication failed');
-$tokenId = (string) ($generated['record']['id'] ?? '');
-$check(!empty(api_token_revoke($tokenId)['ok']), 'API token revocation failed');
 $check(empty(upd_install_package('../bad')['ok']), 'unsafe package name was accepted');
+
+$helperSource = (string) file_get_contents(APP_ROOT . '/bin/nebula-helper');
+$check(strpos($helperSource, 'server_name $DOMAIN;') !== false, 'site vhost still adds an implicit hostname');
+$check(strpos($helperSource, '-d "www.$DOMAIN"') === false, 'SSL issuance still requests an implicit www hostname');
+$check(strpos($helperSource, "tr -dc 'a-zA-Z0-9' </dev/urandom | head") === false, 'phpMyAdmin secret generation still has the pipefail/SIGPIPE bug');
+$check(strpos($helperSource, 'FM_ROOT_FILE=/etc/nebula-panel/fm-root') !== false, 'privileged File Manager confinement is missing');
 
 @unlink($config['fm_root'] . '/site/index.txt');
 @rmdir($config['fm_root'] . '/site');
 @rmdir($config['fm_root']);
 @unlink($jsonPath);
 @unlink(login_attempts_file());
-@unlink(api_tokens_file());
+@unlink(fm_state_file());
 @unlink(DATA_DIR . '/audit.log');
 @rmdir($testDir);
 
