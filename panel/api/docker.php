@@ -5,6 +5,7 @@ require APP_ROOT . '/lib/mod_docker.php';
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     require_post();
     csrf_check();
+    require_capability('docker.manage');
     $body = read_json_body();
     $action = (string) ($body['action'] ?? '');
     if ($action === 'container') {

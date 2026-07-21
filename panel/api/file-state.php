@@ -12,9 +12,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         json_out($res, !empty($res['ok']) ? 200 : 400);
     }
     if ($action === 'clear-recent') {
-        $state = fm_state();
-        $state['recent'] = [];
-        $ok = fm_save_state($state);
+        $ok = fm_clear_recent();
         json_out($ok ? ['ok' => true] : ['ok' => false, 'error' => 'Could not clear recent files.'], $ok ? 200 : 500);
     }
     json_out(['ok' => false, 'error' => 'Unknown action.'], 400);

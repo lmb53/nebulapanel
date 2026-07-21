@@ -5,6 +5,7 @@ require APP_ROOT . '/lib/mod_pma.php';
 
 require_post();
 csrf_check();
+require_capability('panel.provision');
 $body = read_json_body();
 $action = (string) ($body['action'] ?? '');
 

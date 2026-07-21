@@ -5,6 +5,7 @@ require APP_ROOT . '/lib/mod_apps.php';
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     require_post();
     csrf_check();
+    require_capability('packages.manage');
     $b = read_json_body();
     $action = (string) ($b['action'] ?? '');
     $streaming = ($_GET['stream'] ?? '') === '1';

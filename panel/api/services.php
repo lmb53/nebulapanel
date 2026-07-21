@@ -9,6 +9,7 @@ $allowed = array_values(array_unique(array_merge($config['services'], manageable
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     require_post();
     csrf_check();
+    require_capability('services.control');
     $body = read_json_body();
     $res = service_action(
         (string) ($body['name'] ?? ''),
