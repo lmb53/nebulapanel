@@ -43,7 +43,7 @@ directory; `random` or an unset value generates a new one. Options (env vars):
 | Session auth, idle timeout, POST-only logout, CSRF, login throttling, audit log | ✅ |
 | **Dashboard** — live resources + actionable health, update, service, reboot, and backup alerts | ✅ |
 | **Monitoring** — live charts + top processes (`ps`) | ✅ |
-| **Services** — start / stop / restart + enable at boot via `systemctl` | ✅ sudo |
+| **Services** — tabbed per-instance manager, virtual hosts, logs, start / stop / restart + boot state | ✅ sudo |
 | **Install Apps** — install apache2/redis/mariadb/fail2ban + extra PHP versions with live output | ✅ sudo/helper |
 | **Updates** — list upgradable, update one/all, with persistent streaming apt output | ✅ sudo |
 | **Users** — system accounts from `/etc/passwd` (read-only) | ✅ |
@@ -58,15 +58,14 @@ directory; `random` or an unset value generates a new one. Options (env vars):
 | **Databases** — MariaDB/MySQL: DBs + users CRUD (`sudo mysql`) | ✅ sudo |
 | **phpMyAdmin** — one-click install + launch (auto blowfish config) | ✅ helper |
 | **Docker** — containers (start/stop/restart/rm) + images | ✅ sudo |
-| **File Manager** — 3-pane (tree/list/properties), grid+list, drag-drop upload, multi-select, edit / mkdir / rename / chmod / delete | ✅ |
+| **File Manager** — tabbed browse/pinned/recent views, clipboard, archives, ownership, permission grid, drag-drop upload | ✅ helper |
 | **Diagnostics** — environment + per-privilege sudo checks with fix hints | ✅ |
 | **Backups** — create / verify / list / download / delete `.tar.gz` | ✅ |
 | **Terminal** — audited non-interactive command runner | ✅ |
 | **System Info** — OS, kernel, CPU, RAM, disk, network | ✅ |
 | **Panel Updates** — self-update from GitHub (check + apply) | ✅ |
 | **Settings** — panel name, timeout, change password, audit log | ✅ |
-| **Notifications** — live operational alerts with read state | ✅ |
-| **API** — hashed bearer keys for authenticated JSON automation | ✅ |
+| **Notifications** — live operational inbox, top-bar dropdown, mark-read and delete state | ✅ |
 
 Rows marked **sudo** require the passwordless sudoers rules the installer sets up
 (see below). The panel is modular: each feature is `lib/mod_<x>.php` +
@@ -212,9 +211,6 @@ To reset the admin account, delete `data/admin.json` and reload.
 - If TLS terminates at a reverse proxy, add only that proxy's IP to
   `trusted_proxies` in `config.php`; forwarded headers are ignored otherwise.
 - Keep `'debug' => false` in `config.php`.
-- Treat API bearer keys like admin passwords. They grant the same control as a
-  signed-in administrator, are shown once, and are stored only as SHA-256 hashes.
-
 ## Architecture
 
 ```

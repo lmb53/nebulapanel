@@ -180,9 +180,10 @@ done
 ok "Files copied"
 
 # Fail before configuring the server if a release archive is incomplete.
-for _required in index.php lib/bootstrap.php lib/sys.php lib/mod_api.php \
-                 api/apps.php api/updates.php api/provision.php api/tokens.php \
-                 api/notifications.php api/sshkeys.php assets/app.js assets/style.css; do
+for _required in index.php lib/bootstrap.php lib/sys.php \
+                 api/apps.php api/updates.php api/provision.php \
+                 api/notifications.php api/sshkeys.php api/file-state.php \
+                 api/file-owner.php api/file-compress.php assets/app.js assets/style.css; do
   [[ -f "$DEST/$_required" ]] || die "Deployed source is incomplete: missing $_required"
 done
 
@@ -191,7 +192,7 @@ done
 _missing=""
 for v in setup-wizard dashboard websites domains dns files services databases phpmyadmin \
          ssl php cron firewall logs updates users sshkeys docker backups terminal \
-         monitoring sysinfo diagnostics notifications api apps selfupdate settings service \
+         monitoring sysinfo diagnostics notifications apps selfupdate settings service \
          file-view file-edit login setup layout; do
   [[ -f "$DEST/views/$v.php" ]] || _missing="$_missing $v"
 done
@@ -207,6 +208,14 @@ if [[ "$FM_ROOT" != "/var/www" ]]; then
   sed -i "s|?: '/var/www'|?: '${FM_ROOT}'|" "$DEST/config.php"
   ok "File Manager root set to $FM_ROOT"
 fi
+
+# Root-owned confinement policy used by privileged File Manager metadata
+# operations. The web user can request chmod/chown only beneath this root.
+mkdir -p "$FM_ROOT" /etc/nebula-panel
+FM_ROOT="$(readlink -f "$FM_ROOT")"
+printf '%s\n' "$FM_ROOT" > /etc/nebula-panel/fm-root
+chown root:root /etc/nebula-panel/fm-root
+chmod 0644 /etc/nebula-panel/fm-root
 
 # --------------------------------------------------------------------------
 # 4. Permissions
