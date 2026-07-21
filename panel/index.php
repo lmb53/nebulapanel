@@ -81,6 +81,7 @@ require_auth();
 // First-run provisioning wizard (standalone full-screen, auth required).
 // --------------------------------------------------------------------------
 if ($route === 'setup-wizard') {
+    require_capability('panel.provision');
     render('setup-wizard', [], false);
     return;
 }
@@ -89,6 +90,7 @@ if ($route === 'setup-wizard') {
 // required, and database credentials are transferred server-side via a
 // dedicated PHP session rather than exposed in the URL.
 if ($route === 'pma-signon') {
+    require_capability('phpmyadmin.use');
     require APP_ROOT . '/lib/mod_pma.php';
     pma_accept_signon((string) ($_GET['token'] ?? ''));
 }
@@ -118,6 +120,7 @@ if (strpos($route, 'api/') === 0) {
 // Special: streaming file download (not a rendered page).
 // --------------------------------------------------------------------------
 if ($route === 'file-download') {
+    require_capability('files.manage');
     require APP_ROOT . '/lib/files.php';
     $abs = fm_resolve($_GET['path'] ?? '');
     if ($abs === null || !is_file($abs) || !is_readable($abs)) {
@@ -127,13 +130,14 @@ if ($route === 'file-download') {
     fm_record_recent(fm_rel($abs));
     audit('file.download', fm_rel($abs));
     header('Content-Type: application/octet-stream');
-    header('Content-Disposition: attachment; filename="' . basename($abs) . '"');
+    header('Content-Disposition: ' . attachment_header(basename($abs)));
     header('Content-Length: ' . filesize($abs));
     readfile($abs);
     return;
 }
 
 if ($route === 'backup-download') {
+    require_capability('backups.manage');
     require APP_ROOT . '/lib/mod_backups.php';
     $abs = backup_resolve($_GET['file'] ?? '');
     if ($abs === null || !is_file($abs)) {
@@ -142,7 +146,7 @@ if ($route === 'backup-download') {
     }
     audit('backup.download', basename($abs));
     header('Content-Type: application/gzip');
-    header('Content-Disposition: attachment; filename="' . basename($abs) . '"');
+    header('Content-Disposition: ' . attachment_header(basename($abs)));
     header('Content-Length: ' . filesize($abs));
     readfile($abs);
     return;

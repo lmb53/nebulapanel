@@ -13,6 +13,7 @@ set -euo pipefail
 NGINX_AV=/etc/nginx/sites-available
 NGINX_EN=/etc/nginx/sites-enabled
 FM_ROOT_FILE=/etc/nebula-panel/fm-root
+PANEL_ROOT_FILE=/etc/nebula-panel/panel-root
 BIND_ZONE_DIR=/etc/bind/nebula-zones
 BIND_ZONE_CONF=/etc/bind/nebula-zones.conf
 
@@ -41,24 +42,28 @@ schedule_php_service() {
 
 # Resolve a path and prove it is inside the installer-owned File Manager root.
 fm_confined_path() {
-  local requested="$1" root target
+  local requested="$1" root target panel_root
   [[ -r "$FM_ROOT_FILE" ]] || die "file manager root is not configured; re-run install.sh"
   root="$(realpath "$(head -n 1 "$FM_ROOT_FILE")" 2>/dev/null || true)"
   target="$(realpath "$requested" 2>/dev/null || true)"
   [[ -n "$root" && -n "$target" ]] || die "path not found"
   [[ "$target" == "$root" || "$target" == "$root"/* ]] || die "path is outside file manager root"
+  panel_root="$(realpath "$(head -n 1 "$PANEL_ROOT_FILE" 2>/dev/null)" 2>/dev/null || true)"
+  [[ -z "$panel_root" || ( "$target" != "$panel_root" && "$target" != "$panel_root"/* ) ]] || die "panel-private path is not allowed"
   printf '%s\n' "$target"
 }
 
 # Resolve a not-yet-created path by validating its existing parent.
 fm_confined_new_path() {
-  local requested="$1" root parent target
+  local requested="$1" root parent target panel_root
   [[ -r "$FM_ROOT_FILE" ]] || die "file manager root is not configured; re-run install.sh"
   root="$(realpath "$(head -n 1 "$FM_ROOT_FILE")" 2>/dev/null || true)"
   parent="$(realpath "$(dirname "$requested")" 2>/dev/null || true)"
   [[ -n "$root" && -n "$parent" ]] || die "destination parent not found"
   [[ "$parent" == "$root" || "$parent" == "$root"/* ]] || die "destination is outside file manager root"
   target="$parent/$(basename "$requested")"
+  panel_root="$(realpath "$(head -n 1 "$PANEL_ROOT_FILE" 2>/dev/null)" 2>/dev/null || true)"
+  [[ -z "$panel_root" || ( "$target" != "$panel_root" && "$target" != "$panel_root"/* ) ]] || die "panel-private destination is not allowed"
   [[ ! -e "$target" ]] || die "destination already exists"
   printf '%s\n' "$target"
 }
@@ -77,6 +82,30 @@ human_user_info() {
 CMD="${1:-}"; shift || true
 
 case "$CMD" in
+
+  # panel-update <staged-panel-source>
+  # Source must be staged by Nebula beneath its private data/_update folder.
+  panel-update)
+    SOURCE="${1:-}"
+    [[ -r "$PANEL_ROOT_FILE" ]] || die "panel root is not configured; re-run install.sh"
+    PANEL_ROOT="$(realpath "$(head -n 1 "$PANEL_ROOT_FILE")")"
+    SOURCE="$(realpath "$SOURCE" 2>/dev/null || true)"
+    [[ -n "$PANEL_ROOT" && -n "$SOURCE" ]] || die "update source not found"
+    [[ "$SOURCE" == "$PANEL_ROOT/data/_update/"* ]] || die "update source is outside the staging directory"
+    [[ -f "$SOURCE/index.php" && -f "$SOURCE/lib/bootstrap.php" ]] || die "invalid panel update source"
+    command -v rsync >/dev/null || die "rsync is required"
+    SNAP_DIR="$PANEL_ROOT/data/backups"; mkdir -p "$SNAP_DIR"
+    SNAP="$SNAP_DIR/pre-update-$(date +%Y%m%d-%H%M%S).tar.gz"
+    tar -czf "$SNAP" --exclude='data/backups' --exclude='data/_update' -C "$(dirname "$PANEL_ROOT")" "$(basename "$PANEL_ROOT")"
+    chown www-data:www-data "$SNAP"; chmod 0600 "$SNAP"
+    rsync -a --delete --exclude=data --exclude=config.php "$SOURCE/" "$PANEL_ROOT/"
+    chown -R root:root "$PANEL_ROOT"
+    find "$PANEL_ROOT" -type d -exec chmod 0755 {} +
+    find "$PANEL_ROOT" -type f -exec chmod 0644 {} +
+    chown -R www-data:www-data "$PANEL_ROOT/data"
+    chmod 0700 "$PANEL_ROOT/data"
+    echo "snapshot=$(basename "$SNAP")"
+    ;;
 
   # dns-zone-put <domain> <base64-zone-file>
   dns-zone-put)

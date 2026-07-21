@@ -14,6 +14,10 @@ return [
     // escape above this path. Override with env NEBULA_FM_ROOT.
     'fm_root' => getenv('NEBULA_FM_ROOT') ?: '/var/www',
 
+    // Optional additional absolute paths to hide and reject. The panel's own
+    // application and private data directories are always denied automatically.
+    'fm_denied_paths' => [],
+
     // Services the panel is allowed to view / control via systemctl.
     // Only these can be started/stopped/restarted — nothing else.
     'services' => [

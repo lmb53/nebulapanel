@@ -203,8 +203,18 @@
     }
   }
 
+  let metricsTimer = null, metricsBusy = false;
   async function pollMetrics() {
+    if (metricsBusy || document.hidden) return;
+    metricsBusy = true;
     try { applyMetrics(await apiGet('metrics')); } catch (e) { /* silent */ }
+    finally { metricsBusy = false; }
+  }
+  function startMetricsPolling(page) {
+    const interval = page === 'dashboard' ? 5000 : 12000;
+    const tick = async () => { await pollMetrics(); clearTimeout(metricsTimer); metricsTimer=setTimeout(tick,interval); };
+    tick();
+    document.addEventListener('visibilitychange',()=>{if(document.hidden){clearTimeout(metricsTimer);}else{clearTimeout(metricsTimer);tick();}});
   }
 
   // ---- Services -----------------------------------------------------------
@@ -496,8 +506,7 @@
     // Live metrics run on every authenticated page (topbar), chart on dashboard.
     if (document.getElementById('miniHealth')) {
       if (page === 'dashboard') initLiveChart();
-      pollMetrics();
-      setInterval(pollMetrics, 3000);
+      startMetricsPolling(page);
     }
     if (page === 'dashboard') loadSvcSummary();
     if (page === 'services') wireServices();
