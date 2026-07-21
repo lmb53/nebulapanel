@@ -82,7 +82,9 @@ On macOS/Windows the pages load but most metrics show `n/a`.
 - Nginx or Apache
 
 ## Screenshot
-![Dashboard UI](https://i.imgur.com/Th0TvGm.png)
+![Dashboard UI Dark](https://i.imgur.com/Th0TvGm.png)
+
+![Dashboard UI Light](https://i.imgur.com/bOQe2Qg.png)
 
 ## Development checks
 
