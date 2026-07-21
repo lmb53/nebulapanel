@@ -52,13 +52,13 @@ the URL (runtime state is migrated), or use a fixed name. Options (env vars):
 | **Cron** — full CRUD on the web user's crontab | ✅ |
 | **Firewall** — UFW status, enable/disable, add/delete rules | ✅ sudo |
 | **Logs** — journalctl per-unit + `/var/log` file tails | ✅ |
-| **Websites** — create/delete Nginx vhosts, PHP version, service health, docroot disk/file usage, Let's Encrypt | ✅ helper |
+| **Websites** — create/delete Nginx vhosts, PHP version, service health, docroot disk/file usage, Let's Encrypt, **Git deploy (connect a repo & pull into the docroot)** | ✅ helper |
 | **Domains + DNS** — authoritative BIND zones and record CRUD for panel-managed domains | ✅ helper |
 | **SSL** — list / issue / renew / delete certbot certificates + validated custom PEM upload | ✅ helper |
 | **PHP** — per-version ini settings (memory_limit, upload size…) + modules | ✅ helper |
 | **Databases** — website-owned MariaDB/MySQL DB/user CRUD, metadata and per-database quick access | ✅ sudo |
 | **phpMyAdmin** — one-click install + password-free, short-lived signed per-database signon | ✅ helper |
-| **Docker** — create/control containers, pull/remove images, and manage volumes and networks | ✅ sudo |
+| **Docker** — create/control containers, pull/remove images, manage volumes and networks, **Compose stacks (editable docker-compose.yml, deploy/pull/restart/logs)** and a one-click **App Store** of popular self-hosted apps | ✅ sudo |
 | **File Manager** — expandable tree previews, browse/pinned/recent, archives, popup multi-tab editor, ownership, permissions and drag-drop upload | ✅ helper |
 | **Diagnostics** — environment + per-privilege sudo checks with fix hints | ✅ |
 | **Backups** — create / verify / list / download / delete `.tar.gz` | ✅ |

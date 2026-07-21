@@ -76,7 +76,7 @@ log "Installing packages (Nginx, PHP-FPM, tooling)…"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
 apt-get install -y -qq nginx php-fpm php-cli php-mysql php-curl php-mbstring php-xml php-zip \
-  rsync ufw sudo curl ca-certificates tar zip openssl bind9 bind9-utils \
+  rsync ufw sudo curl ca-certificates tar zip openssl bind9 bind9-utils git \
   certbot python3-certbot-nginx >/dev/null
 ok "Packages installed"
 

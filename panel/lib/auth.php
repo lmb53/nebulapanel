@@ -141,7 +141,7 @@ function role_route_allowed(string $route, ?string $role = null): bool
 
 function api_route_owner(string $name): string
 {
-    $map = ['metrics'=>'dashboard','health'=>'dashboard','processes'=>'dashboard','file-upload'=>'files','file-state'=>'files','file-save'=>'files','file-rename'=>'files','file-owner'=>'files','file-op'=>'files','file-mkfile'=>'files','file-mkdir'=>'files','file-chmod'=>'files','file-compress'=>'files','file-delete'=>'files','file-tree'=>'files','sites'=>'websites','provision'=>'apps','pma'=>'phpmyadmin','selfupdate'=>'selfupdate'];
+    $map = ['metrics'=>'dashboard','health'=>'dashboard','processes'=>'dashboard','file-upload'=>'files','file-state'=>'files','file-save'=>'files','file-rename'=>'files','file-owner'=>'files','file-op'=>'files','file-mkfile'=>'files','file-mkdir'=>'files','file-chmod'=>'files','file-compress'=>'files','file-delete'=>'files','file-tree'=>'files','sites'=>'websites','git'=>'websites','compose'=>'docker','provision'=>'apps','pma'=>'phpmyadmin','selfupdate'=>'selfupdate'];
     return $map[$name] ?? $name;
 }
 

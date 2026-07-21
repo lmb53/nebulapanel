@@ -1,9 +1,11 @@
 <?php
 require_once APP_ROOT . '/lib/mod_sites.php';
+require_once APP_ROOT . '/lib/mod_git.php';
 require_once APP_ROOT . '/lib/files.php';
 $available = sites_available();
 $sites = $available ? sites_with_runtime() : sites_list();
 $phpv = $available ? php_versions() : [];
+$gitAvailable = git_available();
 $nginxStatus = service_status('nginx');
 $apacheStatus = service_status('apache2');
 ?>
@@ -123,6 +125,9 @@ $apacheStatus = service_status('apache2');
             <?php else: ?>
               <span class="badge badge-slate">No SSL</span>
             <?php endif; ?>
+            <?php if (!empty($s['git']) && is_array($s['git'])): ?>
+              <span class="badge badge-purple" title="<?= e((string) ($s['git']['url'] ?? '')) ?>"><i data-lucide="git-branch" style="width:11px;height:11px;vertical-align:-1px"></i> <?= e((string) ($s['git']['branch'] ?? 'git')) ?></span>
+            <?php endif; ?>
           </div>
           <div style="font-size:11.5px;color:var(--text-tertiary);margin-bottom:4px">Disk used · <?= e(human_bytes($diskUsed)) ?><?= $diskTotal ? ' of ' . e(human_bytes($diskTotal)) . ' filesystem' : '' ?></div>
           <div class="progress" style="margin-bottom:8px"><div style="width:<?= e(number_format($diskPct, 1, '.', '')) ?>%;background:var(--blue-500)"></div></div>
@@ -136,6 +141,9 @@ $apacheStatus = service_status('apache2');
             <?php endif; ?>
             <a class="icon-btn" href="<?= e(url('databases', ['website' => $domain])) ?>" title="Databases"><i data-lucide="database"></i></a>
             <a class="icon-btn" href="<?= e(url('logs')) ?>" title="Logs"><i data-lucide="scroll-text"></i></a>
+            <?php if ($gitAvailable): ?>
+              <button class="icon-btn" data-ws-git="<?= e($domain) ?>"<?= !empty($s['git']) ? ' style="color:var(--purple-400)"' : '' ?> title="Git deployment"><i data-lucide="git-branch"></i></button>
+            <?php endif; ?>
             <?php if (!$ssl): ?>
               <button class="icon-btn" data-ws-ssl="<?= e($domain) ?>" title="Issue SSL"><i data-lucide="shield"></i></button>
             <?php endif; ?>
@@ -209,4 +217,78 @@ $apacheStatus = service_status('apache2');
     });
   });
   </script>
+
+  <?php if ($gitAvailable): ?>
+  <div class="drawer-overlay hidden" id="wsGitDrawer"><div class="drawer" style="width:min(560px,96vw)">
+    <div class="drawer-header"><div><strong id="wsGitTitle">Git deployment</strong><div class="muted mono" id="wsGitDomain" style="font-size:11px"></div></div><button class="icon-btn" data-close-git><i data-lucide="x"></i></button></div>
+    <div class="drawer-body"><div class="form-stack">
+      <div id="wsGitStatus" class="muted" style="font-size:12.5px">Loading…</div>
+      <div><label class="field-label">Repository URL</label><input class="input mono" id="wsGitUrl" placeholder="https://github.com/user/repo.git" autocomplete="off"><div class="field-help">Public repositories work as-is. For a private repo embed a token: <span class="mono">https://user:token@host/repo.git</span></div></div>
+      <div><label class="field-label">Branch</label><input class="input mono" id="wsGitBranch" value="main" autocomplete="off"></div>
+      <div class="notice notice-warning" style="font-size:12px"><i data-lucide="alert-triangle"></i><div>Connecting or pulling force-updates tracked files in the document root to match the repository. Uncommitted local changes there are discarded.</div></div>
+      <pre class="mono hidden" id="wsGitOut" style="margin:0;padding:12px;font-size:12px;line-height:1.5;white-space:pre-wrap;max-height:28vh;overflow:auto;background:var(--bg-surface-2);border-radius:8px"></pre>
+    </div></div>
+    <div class="drawer-footer"><button class="btn btn-ghost" id="wsGitDisconnect" style="margin-right:auto;color:var(--red-400)">Disconnect</button><button class="btn btn-secondary" id="wsGitPull"><i data-lucide="refresh-cw"></i>Pull latest</button><button class="btn btn-primary" id="wsGitConnect"><i data-lucide="git-branch"></i>Connect</button></div>
+  </div></div>
+  <script>
+  document.addEventListener('DOMContentLoaded', () => {
+    const { apiGet, apiPost, streamPost, toast } = window.Nebula;
+    const $ = (id) => document.getElementById(id);
+    const drawer = $('wsGitDrawer'); if (!drawer) return;
+    let domain = '';
+    const esc = (t) => String(t == null ? '' : t).replace(/[&<>"]/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c]));
+    document.querySelectorAll('[data-ws-git]').forEach((b) => b.addEventListener('click', () => openGit(b.getAttribute('data-ws-git'))));
+    document.querySelectorAll('[data-close-git]').forEach((b) => (b.onclick = () => drawer.classList.add('hidden')));
+    drawer.addEventListener('click', (e) => { if (e.target === drawer) drawer.classList.add('hidden'); });
+
+    async function openGit(d) {
+      domain = d; $('wsGitDomain').textContent = d;
+      $('wsGitOut').classList.add('hidden'); $('wsGitOut').textContent = '';
+      $('wsGitStatus').textContent = 'Loading…'; drawer.classList.remove('hidden');
+      try { renderStatus(await apiGet('git&domain=' + encodeURIComponent(d))); }
+      catch (e) { $('wsGitStatus').textContent = 'Could not load git status.'; }
+    }
+    function renderStatus(r) {
+      const s = $('wsGitStatus');
+      if (!r || r.available === false) { s.textContent = 'Git is not installed on the server.'; }
+      else if (r.connected) {
+        s.innerHTML = `Connected to <span class="mono">${esc(r.remote)}</span> · branch <strong>${esc(r.branch)}</strong>`
+          + (r.commit ? `<br>Last commit <span class="mono">${esc(r.commit)}</span> ${esc(r.subject)}` : '')
+          + (r.dirty ? '<br><span style="color:var(--orange-400)">Working tree has local changes.</span>' : '');
+        if (r.remote) $('wsGitUrl').value = r.remote;
+        if (r.branch) $('wsGitBranch').value = r.branch;
+        $('wsGitDisconnect').style.display = ''; $('wsGitPull').style.display = '';
+        $('wsGitConnect').innerHTML = '<i data-lucide="rotate-cw"></i>Reconnect';
+      } else {
+        s.textContent = 'Not connected. Enter a repository to deploy into this document root.';
+        $('wsGitDisconnect').style.display = 'none'; $('wsGitPull').style.display = 'none';
+        $('wsGitConnect').innerHTML = '<i data-lucide="git-branch"></i>Connect';
+        const m = r.meta || {};
+        if (m.url) $('wsGitUrl').value = m.url;
+        if (m.branch) $('wsGitBranch').value = m.branch;
+      }
+      if (window.lucide) lucide.createIcons();
+    }
+    async function runStream(body, ok) {
+      const out = $('wsGitOut'); out.classList.remove('hidden'); out.textContent = '';
+      const r = await streamPost('git', body, (ev) => { if (ev.type === 'output') { out.textContent += ev.text; out.scrollTop = out.scrollHeight; } });
+      toast(r.ok ? ok : (r.error || 'Git operation failed'), r.ok ? 'success' : 'error');
+      if (r.ok) { try { renderStatus(await apiGet('git&domain=' + encodeURIComponent(domain))); } catch (e) {} }
+      return r;
+    }
+    $('wsGitConnect').onclick = () => {
+      const url = $('wsGitUrl').value.trim(), branch = $('wsGitBranch').value.trim() || 'main';
+      if (!url) { toast('Enter a repository URL', 'warning'); return; }
+      runStream({ action: 'connect', domain, url, branch }, 'Repository connected');
+    };
+    $('wsGitPull').onclick = () => runStream({ action: 'pull', domain }, 'Pulled latest changes');
+    $('wsGitDisconnect').onclick = async () => {
+      if (!confirm('Disconnect this repository? The files stay; only the .git link is removed.')) return;
+      const r = await apiPost('git', { action: 'disconnect', domain, remove: true });
+      toast(r.ok ? 'Disconnected' : (r.error || 'Failed'), r.ok ? 'success' : 'error');
+      if (r.ok) { try { renderStatus(await apiGet('git&domain=' + encodeURIComponent(domain))); } catch (e) {} }
+    };
+  });
+  </script>
+  <?php endif; ?>
 <?php endif; ?>
