@@ -25,12 +25,37 @@ function cron_current_lines(): array
 }
 
 /** Parse the crontab into structured entries keyed by line index. */
+function cron_parse_job_line(string $line, int $index, bool $enabled = true): ?array
+{
+    $t = trim($line);
+    if ($t === '') { return null; }
+    if ($t[0] === '@') {
+        $parts = preg_split('/\s+/', $t, 2);
+        return [
+            'index' => $index, 'type' => 'job', 'schedule' => $parts[0],
+            'command' => $parts[1] ?? '', 'raw' => $line, 'enabled' => $enabled,
+        ];
+    }
+    $parts = preg_split('/\s+/', $t, 6);
+    if (count($parts) < 6) { return null; }
+    return [
+        'index' => $index, 'type' => 'job',
+        'schedule' => implode(' ', array_slice($parts, 0, 5)),
+        'command' => $parts[5], 'raw' => $line, 'enabled' => $enabled,
+    ];
+}
+
 function cron_list(): array
 {
     $jobs = [];
     foreach (cron_current_lines() as $i => $line) {
         $t = trim($line);
         if ($t === '') {
+            continue;
+        }
+        if (str_starts_with($t, '# NEBULA_DISABLED ')) {
+            $disabled = cron_parse_job_line(substr($t, strlen('# NEBULA_DISABLED ')), $i, false);
+            $jobs[] = $disabled ?: ['index' => $i, 'type' => 'comment', 'raw' => $line];
             continue;
         }
         if ($t[0] === '#') {
@@ -42,23 +67,8 @@ function cron_list(): array
             $jobs[] = ['index' => $i, 'type' => 'env', 'raw' => $line];
             continue;
         }
-        if ($t[0] === '@') {
-            $parts = preg_split('/\s+/', $t, 2);
-            $jobs[] = ['index' => $i, 'type' => 'job', 'schedule' => $parts[0], 'command' => $parts[1] ?? '', 'raw' => $line];
-            continue;
-        }
-        $parts = preg_split('/\s+/', $t, 6);
-        if (count($parts) >= 6) {
-            $jobs[] = [
-                'index'    => $i,
-                'type'     => 'job',
-                'schedule' => implode(' ', array_slice($parts, 0, 5)),
-                'command'  => $parts[5],
-                'raw'      => $line,
-            ];
-        } else {
-            $jobs[] = ['index' => $i, 'type' => 'other', 'raw' => $line];
-        }
+        $jobs[] = cron_parse_job_line($line, $i, true)
+            ?: ['index' => $i, 'type' => 'other', 'raw' => $line];
     }
     return $jobs;
 }
@@ -121,7 +131,24 @@ function cron_update(int $index,string $schedule,string $command): array
     $schedule=trim($schedule);$command=trim($command);$lines=cron_current_lines();
     if(!isset($lines[$index]))return ['ok'=>false,'error'=>'Job not found.'];
     if($schedule===''||$command===''||($schedule[0]!=='@'&&count(preg_split('/\s+/',$schedule))!==5))return ['ok'=>false,'error'=>'Enter a valid schedule and command.'];
-    $lines[$index]=$schedule.' '.$command;$res=cron_save($lines);if(!empty($res['ok']))audit('cron.update',$lines[$index]);return $res;
+    $disabled = str_starts_with(trim($lines[$index]), '# NEBULA_DISABLED ');
+    $lines[$index]=($disabled?'# NEBULA_DISABLED ':'').$schedule.' '.$command;$res=cron_save($lines);if(!empty($res['ok']))audit('cron.update',$lines[$index]);return $res;
+}
+
+function cron_toggle(int $index, bool $enabled): array
+{
+    $lines = cron_current_lines();
+    if (!isset($lines[$index])) { return ['ok' => false, 'error' => 'Job not found.']; }
+    $trimmed = trim($lines[$index]);
+    $currentlyDisabled = str_starts_with($trimmed, '# NEBULA_DISABLED ');
+    $jobLine = $currentlyDisabled ? substr($trimmed, strlen('# NEBULA_DISABLED ')) : $trimmed;
+    if (cron_parse_job_line($jobLine, $index) === null) {
+        return ['ok' => false, 'error' => 'Only cron jobs can be enabled or disabled.'];
+    }
+    $lines[$index] = $enabled ? $jobLine : '# NEBULA_DISABLED ' . $jobLine;
+    $res = cron_save($lines);
+    if (!empty($res['ok'])) { audit('cron.' . ($enabled ? 'enable' : 'disable'), $jobLine); }
+    return $res;
 }
 
 function cron_runs_file(): string { return DATA_DIR.'/cron-runs.json'; }

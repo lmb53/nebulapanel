@@ -180,12 +180,15 @@ function pma_accept_signon(string $token): void
         http_response_code(403); exit('phpMyAdmin account is unavailable.');
     }
     audit('pma.launch', $database);
+    // PHP keeps the current session ID in process memory after closing the
+    // panel session. Clear it before changing names so the short-lived
+    // phpMyAdmin signon session can never replace/delete nebula_sess.
     session_write_close();
+    session_id('');
     session_name('NebulaPmaSignon');
     global $https;
     session_set_cookie_params(['lifetime' => 0, 'path' => '/', 'httponly' => true, 'secure' => (bool) $https, 'samesite' => 'Lax']);
     session_start();
-    session_regenerate_id(true);
     $_SESSION['PMA_single_signon_user'] = (string) $account['user'];
     $_SESSION['PMA_single_signon_password'] = (string) $account['password'];
     $_SESSION['PMA_single_signon_host'] = 'localhost';
