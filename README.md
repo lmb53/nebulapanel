@@ -160,16 +160,15 @@ Several modules drive tools that need root. **The installer writes these rules
 for you** to `/etc/sudoers.d/nebula-panel` (only for binaries that exist):
 
 ```
-www-data ALL=(root) NOPASSWD: /usr/bin/systemctl start *, /usr/bin/systemctl stop *, /usr/bin/systemctl restart *, /usr/bin/systemctl enable *, /usr/bin/systemctl disable *
 www-data ALL=(root) NOPASSWD: /usr/sbin/ufw *
 www-data ALL=(root) NOPASSWD: /usr/bin/docker *
 www-data ALL=(root) NOPASSWD: /usr/bin/mysql *
 www-data ALL=(root) NOPASSWD: /usr/bin/journalctl *
-www-data ALL=(root) NOPASSWD: /usr/bin/tar *
 www-data ALL=(root) NOPASSWD:SETENV: /usr/bin/apt-get *
+www-data ALL=(root) NOPASSWD: /usr/local/bin/nebula-helper *
 ```
 
-> ⚠️ **This is broad.** `tar`, `docker`, `mysql`, and `apt-get` as root are each
+> ⚠️ **This is broad.** `docker`, `mysql`, and `apt-get` as root are each
 > effectively a path to full root. That is inherent to a control panel — the
 > mitigation is *access control*, not command scoping: keep the panel behind the
 > obscured prefix **+ HTTPS + an IP allow-list**, and treat panel access as root
@@ -191,8 +190,8 @@ sudoers rule:
 www-data ALL=(root) NOPASSWD: /usr/local/bin/nebula-helper *
 ```
 
-The helper accepts only a fixed set of validated subcommands (`site-create`,
-`site-delete`, `site-ssl`, `php-versions`, `pma-install`, `pma-remove`) and
+The helper accepts only a fixed set of validated subcommands covering site,
+certificate, DNS, PHP, File Manager, phpMyAdmin, and panel-update operations and
 re-validates every argument itself. It lives **outside** the web-writable tree
 and is root-owned, so the web user can't alter what runs as root. Self-update
 does **not** touch it — re-run `install.sh` to update the helper.
@@ -205,9 +204,11 @@ does **not** touch it — re-run `install.sh` to update the helper.
    a PHP version, phpMyAdmin, Redis, Fail2Ban, Certbot, Docker, …). It installs
    each in order with live progress, via apt + the privileged helper. You can
    skip and add more later from **Install Apps**.
-4. You're in. Credentials are hashed into `data/admin.json`.
+4. You're in. Credentials and RBAC state are hashed into `data/panel-users.json`.
 
-To reset the admin account, delete `data/admin.json` and reload.
+To reset a locked-out installation, stop the web service, back up and remove both
+`data/panel-users.json` and the legacy `data/admin.json`, then reload Setup. Do
+not remove either file while the panel is publicly reachable.
 
 ## Hardening (do this before exposing it)
 
@@ -238,7 +239,7 @@ panel/             source directory; installed under a random public name
   views/
     layout.php      shell; <x>.php self-loads its data and renders
   assets/           style.css, app.js (exposes window.Nebula for view scripts)
-  data/             admin.json, settings.json, audit.log, backups/ (web-denied)
+  data/             panel-users.json, settings.json, audit.log, backups/ (web-denied)
 ```
 
 **Adding a module** = drop `lib/mod_x.php` + `views/x.php` (+ `api/x.php`) and add
@@ -256,18 +257,21 @@ in place:
 
 1. Compares the deployed commit SHA (recorded in `data/version.json` at install)
    against the latest commit via the GitHub API.
-2. On **Update now**: downloads the tarball, **snapshots the current install**
-   to `data/backups/pre-update-<ts>.tar.gz`, then `rsync`s the new files over
-   the panel — **preserving `data/` and `config.php`** so your settings survive.
+2. On **Update now**: resolves the configured ref to an immutable commit,
+   downloads that commit, validates archive paths and PHP syntax, then asks the
+   root-owned helper to take a required snapshot and deploy it while preserving
+   `data/` and `config.php`.
 
-Because the web user owns the panel files (the installer sets this), no sudo is
-needed to self-update. Notes:
+The installer keeps application code root-owned and only `data/` writable by the
+web process. Notes:
 - `config.php` is intentionally **not** overwritten, so new config keys from an
   update won't appear automatically — diff it against the repo after a major
   update. Runtime prefs (panel name, timeout) live in `data/settings.json` and
   are unaffected.
 - Roll back by extracting the pre-update snapshot from `data/backups/`.
 - Pin `repo_ref` to a tag/commit for reproducible, reviewed updates.
+- Existing installations must re-run `install.sh` once to install the hardened
+  update helper and `/etc/nebula-panel/panel-root` confinement file.
 
 ## Still to build (natural next steps)
 

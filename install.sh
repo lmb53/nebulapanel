@@ -242,16 +242,19 @@ FM_ROOT="$(readlink -f "$FM_ROOT")"
 printf '%s\n' "$FM_ROOT" > /etc/nebula-panel/fm-root
 chown root:root /etc/nebula-panel/fm-root
 chmod 0644 /etc/nebula-panel/fm-root
+printf '%s\n' "$(readlink -f "$DEST")" > /etc/nebula-panel/panel-root
+chown root:root /etc/nebula-panel/panel-root
+chmod 0644 /etc/nebula-panel/panel-root
 
 # --------------------------------------------------------------------------
 # 4. Permissions
 # --------------------------------------------------------------------------
 log "Setting ownership and permissions…"
-chown -R www-data:www-data "$DEST"
+chown -R root:root "$DEST"
 find "$DEST" -type d -exec chmod 755 {} \;
 find "$DEST" -type f -exec chmod 644 {} \;
 mkdir -p "$DEST/data"
-chown www-data:www-data "$DEST/data"
+chown -R www-data:www-data "$DEST/data"
 chmod 700 "$DEST/data"
 ok "Permissions applied (data/ is private, web-writable)"
 
@@ -353,7 +356,6 @@ sudo_line ufw        /usr/sbin/ufw
 sudo_line docker     /usr/bin/docker
 sudo_line mysql      /usr/bin/mysql
 sudo_line journalctl /usr/bin/journalctl
-sudo_line tar        /usr/bin/tar
 sudo_line apt-get    /usr/bin/apt-get SETENV   # SETENV permits DEBIAN_FRONTEND
 
 # The privileged helper: a single tight entry that covers vhost/SSL/phpMyAdmin
