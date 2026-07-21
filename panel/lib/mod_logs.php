@@ -48,7 +48,7 @@ function log_read(string $id, int $lines): string
     if (strpos($id, 'file:') === 0) {
         $path = substr($id, 5);
         $real = realpath($path);
-        if ($real === false || strpos($real, '/var/log') !== 0) {
+        if ($real === false || !str_starts_with($real, '/var/log/')) {
             return 'File not allowed.';
         }
         [$code, $out] = run_cmd('tail -n ' . $lines . ' ' . escapeshellarg($real) . ' 2>&1');

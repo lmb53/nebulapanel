@@ -1,8 +1,8 @@
 <?php
 /**
  * Backups module — creates, lists, resolves and deletes .tar.gz archives
- * stored under data/backups. Archives are created with tar; root-owned
- * sources may require a passwordless sudo rule for tar (see README).
+ * stored under data/backups. Archives are created as the panel web user and
+ * are intentionally limited to readable, File-Manager-approved website paths.
  */
 
 /** Absolute path to the backups storage directory (created on demand). */
@@ -48,9 +48,18 @@ function backup_resolve(string $file): ?string
 /** Create a .tar.gz archive of $source, labelled $label. */
 function backup_create(string $source, string $label): array
 {
+    require_once APP_ROOT . '/lib/files.php';
     $real = realpath($source);
     if ($real === false) {
         return ['ok' => false, 'error' => 'Source path not found.'];
+    }
+    if (!fm_absolute_allowed($real)) {
+        return ['ok' => false, 'error' => 'Backups are limited to allowed website files and cannot include panel-private paths.'];
+    }
+    foreach (fm_forbidden_roots() as $blocked) {
+        if (str_starts_with($blocked, rtrim($real, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR)) {
+            return ['ok' => false, 'error' => 'Choose a website folder rather than a parent containing panel-private files.'];
+        }
     }
     $label = trim($label);
     if ($label === '') {
@@ -66,11 +75,7 @@ function backup_create(string $source, string $label): array
     $cmd = 'tar -czf ' . escapeshellarg($dest) . ' -C ' . escapeshellarg($parent) . ' ' . escapeshellarg($base);
     [$c, $o, $e] = run_cmd($cmd, 600);
     if ($c !== 0) {
-        // Retry with sudo for root-owned sources.
-        [$c, $o, $e] = sudo_cmd($cmd, 600);
-    }
-    if ($c !== 0) {
-        return ['ok' => false, 'error' => trim($o . ' ' . $e) ?: 'tar failed (exit ' . $c . ')'];
+        return ['ok' => false, 'error' => trim($o . ' ' . $e) ?: 'Backup failed. Ensure the website files are readable by the panel.'];
     }
     @chmod($dest, 0600);
     audit('backup.create', $fname . ' <= ' . $real);
@@ -97,9 +102,6 @@ function backup_verify(string $file): array
         return ['ok' => false, 'error' => 'Not found.'];
     }
     [$code, $out, $err] = run_cmd('tar -tzf ' . escapeshellarg($abs), 120);
-    if ($code !== 0) {
-        [$code, $out, $err] = sudo_cmd('tar -tzf ' . escapeshellarg($abs), 120);
-    }
     $entries = $out === '' ? 0 : count(preg_split('/\r?\n/', trim($out)));
     audit('backup.verify', basename($abs) . ' (exit ' . $code . ', entries ' . $entries . ')');
     if ($code !== 0) {

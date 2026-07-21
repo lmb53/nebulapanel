@@ -11,6 +11,36 @@ function fm_root(): string
     return $root ?: '';
 }
 
+function fm_forbidden_roots(): array
+{
+    global $config;
+    $roots = array_merge([APP_ROOT, DATA_DIR], (array) ($config['fm_denied_paths'] ?? []));
+    $resolved = [];
+    foreach ($roots as $root) {
+        $real = realpath((string) $root);
+        if ($real !== false) { $resolved[] = rtrim($real, DIRECTORY_SEPARATOR); }
+    }
+    return array_values(array_unique($resolved));
+}
+
+function fm_path_forbidden(string $absolute): bool
+{
+    $absolute = rtrim($absolute, DIRECTORY_SEPARATOR);
+    foreach (fm_forbidden_roots() as $blocked) {
+        if ($absolute === $blocked || str_starts_with($absolute, $blocked . DIRECTORY_SEPARATOR)) { return true; }
+    }
+    return false;
+}
+
+function fm_absolute_allowed(string $absolute): bool
+{
+    $root = fm_root();
+    $real = realpath($absolute);
+    return $root !== '' && $real !== false
+        && ($real === $root || str_starts_with($real, $root . DIRECTORY_SEPARATOR))
+        && !fm_path_forbidden($real);
+}
+
 /**
  * Resolve a user-supplied relative path to an absolute path that is
  * guaranteed to live inside FM_ROOT. Returns null if it escapes or the
@@ -47,6 +77,7 @@ function fm_resolve(string $rel, bool $mustExist = true): ?string
     if ($checkAgainst !== $root && strpos($checkAgainst, $root . DIRECTORY_SEPARATOR) !== 0) {
         return null;
     }
+    if (fm_path_forbidden($checkAgainst)) { return null; }
     return $real;
 }
 
@@ -87,6 +118,8 @@ function fm_list(string $absDir): array
             continue;
         }
         $full = $absDir . '/' . $entry;
+        $entryReal = realpath($full);
+        if ($entryReal !== false && fm_path_forbidden($entryReal)) { continue; }
         $isDir = is_dir($full);
         $item = [
             'name'     => $entry,
@@ -180,19 +213,47 @@ function fm_state_file(): string
 
 function fm_state(): array
 {
-    $state = @json_decode((string) @file_get_contents(fm_state_file()), true);
-    return is_array($state) ? [
+    $data = @json_decode((string) @file_get_contents(fm_state_file()), true);
+    $key = (string) ((int) ($_SESSION['uid'] ?? 0));
+    $state = is_array($data['users'][$key] ?? null) ? $data['users'][$key] : (is_array($data) ? $data : []);
+    return [
         'pinned' => array_values(array_unique((array) ($state['pinned'] ?? []))),
         'recent' => array_values(array_unique((array) ($state['recent'] ?? []))),
-    ] : ['pinned' => [], 'recent' => []];
+    ];
 }
 
 function fm_save_state(array $state): bool
 {
-    return write_json_file(fm_state_file(), [
+    return !empty(fm_update_state(static fn(array $current): array => $state)['ok']);
+}
+
+/** Mutate one user's File Manager state without losing concurrent changes. */
+function fm_update_state(callable $mutator): array
+{
+    $path = fm_state_file();
+    $lock = @fopen($path . '.lock', 'c');
+    if ($lock === false || !@flock($lock, LOCK_EX)) { if (is_resource($lock)) fclose($lock); return ['ok'=>false]; }
+    $data = @json_decode((string) @file_get_contents($path), true);
+    $data = is_array($data) && isset($data['users']) ? $data : ['version'=>2,'users'=>[]];
+    $key = (string) ((int) ($_SESSION['uid'] ?? 0));
+    $current = is_array($data['users'][$key] ?? null) ? $data['users'][$key] : ['pinned'=>[],'recent'=>[]];
+    $state = $mutator([
+        'pinned'=>array_values(array_unique((array)($current['pinned']??[]))),
+        'recent'=>array_values(array_unique((array)($current['recent']??[]))),
+    ]);
+    if (!is_array($state)) { @flock($lock, LOCK_UN); fclose($lock); return ['ok'=>false]; }
+    $data['users'][$key] = [
         'pinned' => array_slice(array_values(array_unique((array) ($state['pinned'] ?? []))), 0, 30),
         'recent' => array_slice(array_values(array_unique((array) ($state['recent'] ?? []))), 0, 30),
-    ]);
+    ];
+    $ok = write_json_file($path, $data);
+    @flock($lock, LOCK_UN); fclose($lock);
+    return ['ok'=>$ok,'state'=>$data['users'][$key]];
+}
+
+function fm_clear_recent(): bool
+{
+    $result=fm_update_state(static function(array $state):array{$state['recent']=[];return $state;});return !empty($result['ok']);
 }
 
 function fm_record_recent(string $rel): void
@@ -202,10 +263,9 @@ function fm_record_recent(string $rel): void
         return;
     }
     $rel = fm_rel($abs);
-    $state = fm_state();
-    $state['recent'] = array_values(array_filter($state['recent'], fn($p) => $p !== $rel));
-    array_unshift($state['recent'], $rel);
-    fm_save_state($state);
+    fm_update_state(static function(array $state) use($rel):array{
+        $state['recent']=array_values(array_filter($state['recent'],fn($p)=>$p!==$rel));array_unshift($state['recent'],$rel);return $state;
+    });
 }
 
 function fm_toggle_pin(string $rel): array
@@ -215,13 +275,11 @@ function fm_toggle_pin(string $rel): array
         return ['ok' => false, 'error' => 'Only existing folders can be pinned.'];
     }
     $rel = fm_rel($abs);
-    $state = fm_state();
-    $pinned = in_array($rel, $state['pinned'], true);
-    $state['pinned'] = array_values(array_filter($state['pinned'], fn($p) => $p !== $rel));
-    if (!$pinned) {
-        array_unshift($state['pinned'], $rel);
-    }
-    $ok = fm_save_state($state);
+    $pinned=false;
+    $result=fm_update_state(static function(array $state) use($rel,&$pinned):array{
+        $pinned=in_array($rel,$state['pinned'],true);$state['pinned']=array_values(array_filter($state['pinned'],fn($p)=>$p!==$rel));if(!$pinned)array_unshift($state['pinned'],$rel);return $state;
+    });
+    $ok = !empty($result['ok']);
     if ($ok) { audit($pinned ? 'file.unpin' : 'file.pin', $rel); }
     return $ok ? ['ok' => true, 'pinned' => !$pinned] : ['ok' => false, 'error' => 'Could not save pinned folders.'];
 }
@@ -428,7 +486,7 @@ function fm_chmod(string $rel, string $mode): array
 }
 
 /** Save text content to the file at $rel. */
-function fm_save(string $rel, string $content): array
+function fm_save(string $rel, string $content, string $expectedHash = ''): array
 {
     $abs = fm_resolve($rel);
     if ($abs === null || !is_file($abs)) {
@@ -440,11 +498,22 @@ function fm_save(string $rel, string $content): array
     if (strlen($content) > 5 * 1024 * 1024) {
         return ['ok' => false, 'error' => 'Content too large (max 5 MB).'];
     }
-    if (@file_put_contents($abs, $content) === false) {
+    $currentHash = hash_file('sha256', $abs) ?: '';
+    if ($expectedHash !== '' && !hash_equals($currentHash, $expectedHash)) {
+        return ['ok'=>false,'conflict'=>true,'error'=>'This file changed on disk after you opened it. Reload or copy your draft before saving.','current_hash'=>$currentHash];
+    }
+    $tmp = @tempnam(dirname($abs), '.nebula-edit-');
+    if ($tmp === false) {
         return ['ok' => false, 'error' => 'Save failed (permissions?).'];
     }
+    if (@file_put_contents($tmp, $content, LOCK_EX) === false) {
+        @unlink($tmp);
+        return ['ok' => false, 'error' => 'Save failed (permissions?).'];
+    }
+    @chmod($tmp, @fileperms($abs) & 0777);
+    if (!@rename($tmp, $abs)) { @unlink($tmp); return ['ok'=>false,'error'=>'Could not replace the file atomically.']; }
     audit('file.save', fm_rel($abs));
-    return ['ok' => true];
+    return ['ok' => true, 'hash' => hash_file('sha256', $abs) ?: '', 'mtime' => @filemtime($abs) ?: time()];
 }
 
 /** Recursively copy a file or directory tree. */

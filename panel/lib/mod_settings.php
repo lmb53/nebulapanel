@@ -53,18 +53,37 @@ function change_admin_password(string $current, string $new): array
     if (!is_setup_complete()) {
         return ['ok' => false, 'error' => 'No admin account exists.'];
     }
-    $admin = json_decode((string) @file_get_contents(admin_file()), true);
-    if (!is_array($admin) || empty($admin['hash']) || !password_verify($current, $admin['hash'])) {
-        usleep(300000);
-        return ['ok' => false, 'error' => 'Current password is incorrect.'];
-    }
     if (strlen($new) < 12 || strlen($new) > 1024) {
         return ['ok' => false, 'error' => 'New password must be between 12 and 1024 characters.'];
     }
-    $admin['hash'] = password_hash($new, PASSWORD_DEFAULT);
-    $admin['updated'] = date('c');
-    if (!write_json_file(admin_file(), $admin)) {
-        return ['ok' => false, 'error' => 'Could not update the admin file.'];
+    $uid = (int) ($_SESSION['uid'] ?? 0);
+    $result = with_panel_users_lock(function () use ($uid, $current, $new): array {
+        $users = panel_users();
+        $index = null;
+        foreach ($users as $i => $user) {
+            if ((int) ($user['id'] ?? 0) === $uid) { $index = $i; break; }
+        }
+        if ($index === null || empty($users[$index]['hash']) || !password_verify($current, (string) $users[$index]['hash'])) {
+            return ['ok' => false, 'invalid_password' => true, 'error' => 'Current password is incorrect.'];
+        }
+        $users[$index]['hash'] = password_hash($new, PASSWORD_DEFAULT);
+        $users[$index]['updated'] = date('c');
+        $users[$index]['session_version'] = max(1, (int) ($users[$index]['session_version'] ?? 1)) + 1;
+        if (!save_panel_users($users)) {
+            return ['ok' => false, 'error' => 'Could not update the panel user store.'];
+        }
+        return ['ok' => true, 'user' => $users[$index]];
+    });
+    if (empty($result['ok'])) {
+        if (!empty($result['invalid_password'])) { usleep(300000); }
+        return ['ok' => false, 'error' => (string) ($result['error'] ?? 'Could not update the panel user store.')];
+    }
+    $changedUser = $result['user'];
+    // Keep this session alive while invalidating every other session for the account.
+    $_SESSION['session_version'] = (int) $changedUser['session_version'];
+    if ($uid === 1 && is_file(admin_file())) {
+        $legacy = json_decode((string) @file_get_contents(admin_file()), true);
+        if (is_array($legacy)) { $legacy['hash']=$changedUser['hash'];$legacy['updated']=$changedUser['updated'];write_json_file(admin_file(),$legacy); }
     }
     audit('settings.password_changed');
     return ['ok' => true];

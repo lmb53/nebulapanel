@@ -24,7 +24,14 @@ function url(string $route = 'dashboard', array $params = []): string
 /** Build a URL to a static asset. */
 function asset(string $path): string
 {
-    return base_url() . '/assets/' . ltrim($path, '/');
+    $path = ltrim($path, '/');
+    $file = APP_ROOT . '/assets/' . $path;
+    return base_url() . '/assets/' . $path . (is_file($file) ? '?v=' . (int) filemtime($file) : '');
+}
+
+function csp_nonce(): string
+{
+    return defined('CSP_NONCE') ? CSP_NONCE : '';
 }
 
 /** HTML-escape. */
@@ -165,12 +172,51 @@ function render(string $view, array $data = [], bool $withLayout = true): void
         http_response_code(500);
         exit('View not found: ' . e($view));
     }
+    ob_start();
     if ($withLayout) {
         $__view = $viewFile;
         $__active = $_GET['r'] ?? 'dashboard';
         require APP_ROOT . '/views/layout.php';
     } else {
         require $viewFile;
+    }
+    $html = (string) ob_get_clean();
+    $nonce = e(csp_nonce());
+    echo preg_replace('/<script(?![^>]*\bnonce=)/i', '<script nonce="' . $nonce . '"', $html) ?? $html;
+}
+
+/** Safe attachment header for arbitrary filesystem names. */
+function attachment_header(string $filename): string
+{
+    $fallback = preg_replace('/[^A-Za-z0-9._-]+/', '_', $filename) ?: 'download';
+    return 'attachment; filename="' . $fallback . '"; filename*=UTF-8\'\'' . rawurlencode($filename);
+}
+
+/** Small shared cache for expensive read-only system snapshots. */
+function cache_remember(string $key, int $ttl, callable $producer)
+{
+    $safe = preg_replace('/[^a-z0-9_-]/i', '-', $key) ?: 'cache';
+    $dir = DATA_DIR . '/cache';
+    if (!is_dir($dir)) { @mkdir($dir, 0700, true); }
+    $path = $dir . '/' . $safe . '.json';
+    $cached = @json_decode((string) @file_get_contents($path), true);
+    if (is_array($cached) && (int) ($cached['expires'] ?? 0) >= time() && array_key_exists('value', $cached)) {
+        return $cached['value'];
+    }
+    $lock = @fopen($path . '.lock', 'c');
+    if ($lock === false || !@flock($lock, LOCK_EX)) { return $producer(); }
+    try {
+        // Another request may have populated the cache while this one waited.
+        $cached = @json_decode((string) @file_get_contents($path), true);
+        if (is_array($cached) && (int) ($cached['expires'] ?? 0) >= time() && array_key_exists('value', $cached)) {
+            return $cached['value'];
+        }
+        $value = $producer();
+        write_json_file($path, ['expires' => time() + max(1, $ttl), 'value' => $value]);
+        return $value;
+    } finally {
+        @flock($lock, LOCK_UN);
+        fclose($lock);
     }
 }
 
