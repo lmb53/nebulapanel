@@ -2,8 +2,10 @@
 require_once APP_ROOT . '/lib/mod_sites.php';
 require_once APP_ROOT . '/lib/files.php';
 $available = sites_available();
-$sites = sites_list();
+$sites = $available ? sites_with_runtime() : sites_list();
 $phpv = $available ? php_versions() : [];
+$nginxStatus = service_status('nginx');
+$apacheStatus = service_status('apache2');
 ?>
 <div class="page-header">
   <div>
@@ -24,6 +26,21 @@ $phpv = $available ? php_versions() : [];
     <div style="font-size:13px;margin-top:4px">Re-run <span class="mono">install.sh</span> to enable website management.</div>
   </div></div>
 <?php else: ?>
+  <div class="grid grid-3" style="margin-bottom:16px">
+    <a class="stat-card" href="<?= e(url('service', ['name' => 'nginx'])) ?>" style="color:inherit">
+      <div class="stat-top"><div class="stat-icon" style="background:rgba(16,185,129,.12)"><i data-lucide="server-cog" style="color:var(--emerald-400)"></i></div><span class="badge <?= $nginxStatus === 'active' ? 'badge-emerald' : 'badge-slate' ?>"><span class="bdot"></span><?= e(ucfirst($nginxStatus)) ?></span></div>
+      <div class="stat-val" style="font-size:18px">Nginx</div><div class="stat-label">Underlying reverse proxy / web server</div>
+    </a>
+    <a class="stat-card" href="<?= e(url('service', ['name' => 'apache2'])) ?>" style="color:inherit">
+      <div class="stat-top"><div class="stat-icon" style="background:rgba(245,158,11,.12)"><i data-lucide="server" style="color:var(--orange-400)"></i></div><span class="badge <?= $apacheStatus === 'active' ? 'badge-emerald' : 'badge-slate' ?>"><span class="bdot"></span><?= e(ucfirst($apacheStatus)) ?></span></div>
+      <div class="stat-val" style="font-size:18px">Apache</div><div class="stat-label">Available underlying HTTP service</div>
+    </a>
+    <div class="stat-card">
+      <div class="stat-top"><div class="stat-icon" style="background:rgba(59,130,246,.12)"><i data-lucide="hard-drive" style="color:var(--blue-400)"></i></div></div>
+      <div class="stat-val" style="font-size:18px"><?= e(human_bytes(array_sum(array_map(fn($site) => (int) ($site['disk_used'] ?? 0), $sites)))) ?></div><div class="stat-label">Disk used by tracked document roots</div>
+    </div>
+  </div>
+
   <div class="card hidden" id="wsForm" style="margin-bottom:16px">
     <div class="card-header"><h3>Add website</h3></div>
     <div class="card-pad">
@@ -82,6 +99,11 @@ $phpv = $available ? php_versions() : [];
           $ssl = !empty($s['ssl']);
           $url = ($ssl ? 'https://' : 'http://') . $domain;
           $filesPath = fm_link_path($docroot);
+          $server = (string) ($s['server'] ?? 'nginx');
+          $service = (string) ($s['service'] ?? 'unknown');
+          $diskUsed = (int) ($s['disk_used'] ?? 0);
+          $diskTotal = (int) ($s['disk_total'] ?? 0);
+          $diskPct = $diskTotal > 0 ? min(100, ($diskUsed / $diskTotal) * 100) : 0;
         ?>
         <div class="card" data-ws-card data-ws-ssl-state="<?= $ssl ? 'ssl' : 'nossl' ?>" style="padding:16px">
           <div class="flex items-center gap-3" style="margin-bottom:12px">
@@ -95,12 +117,16 @@ $phpv = $available ? php_versions() : [];
           </div>
           <div class="flex gap-2" style="margin-bottom:14px;flex-wrap:wrap">
             <?php if ($php !== ''): ?><span class="badge badge-slate">PHP <?= e($php) ?></span><?php endif; ?>
+            <span class="badge <?= $service === 'active' ? 'badge-emerald' : 'badge-slate' ?>"><span class="bdot"></span><?= e($server === 'apache2' ? 'Apache' : 'Nginx') ?> · <?= e($service) ?></span>
             <?php if ($ssl): ?>
               <span class="badge badge-emerald"><span class="bdot"></span>HTTPS</span>
             <?php else: ?>
               <span class="badge badge-slate">No SSL</span>
             <?php endif; ?>
           </div>
+          <div style="font-size:11.5px;color:var(--text-tertiary);margin-bottom:4px">Disk used · <?= e(human_bytes($diskUsed)) ?><?= $diskTotal ? ' of ' . e(human_bytes($diskTotal)) . ' filesystem' : '' ?></div>
+          <div class="progress" style="margin-bottom:8px"><div style="width:<?= e(number_format($diskPct, 1, '.', '')) ?>%;background:var(--blue-500)"></div></div>
+          <div class="flex items-center gap-3" style="font-size:11.5px;color:var(--text-tertiary);margin-bottom:12px"><span><i data-lucide="files" style="width:12px;height:12px;vertical-align:-2px"></i> <?= (int) ($s['file_count'] ?? 0) ?> files</span><?php if ($diskTotal): ?><span><?= e(human_bytes((int) ($s['disk_free'] ?? 0))) ?> free</span><?php endif; ?></div>
           <div class="flex items-center gap-1" style="border-top:1px solid var(--border-subtle);padding-top:10px">
             <a class="icon-btn" href="<?= e($url) ?>" target="_blank" rel="noopener" title="Visit"><i data-lucide="external-link"></i></a>
             <?php if ($filesPath !== null): ?>
@@ -108,6 +134,8 @@ $phpv = $available ? php_versions() : [];
             <?php else: ?>
               <button class="icon-btn" disabled title="Document root is outside the File Manager root or does not exist"><i data-lucide="folder-x"></i></button>
             <?php endif; ?>
+            <a class="icon-btn" href="<?= e(url('databases', ['website' => $domain])) ?>" title="Databases"><i data-lucide="database"></i></a>
+            <a class="icon-btn" href="<?= e(url('logs')) ?>" title="Logs"><i data-lucide="scroll-text"></i></a>
             <?php if (!$ssl): ?>
               <button class="icon-btn" data-ws-ssl="<?= e($domain) ?>" title="Issue SSL"><i data-lucide="shield"></i></button>
             <?php endif; ?>

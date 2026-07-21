@@ -15,12 +15,13 @@ $helper = helper_available();
   <div class="card">
     <div class="card-header"><h3>phpMyAdmin is installed</h3></div>
     <div class="card-pad">
-      <button class="btn btn-primary" id="pmaLaunch" data-url="<?= e($url) ?>">
-        <i data-lucide="external-link"></i>Launch phpMyAdmin
-      </button>
+      <a class="btn btn-primary" href="<?= e(url('databases')) ?>">
+        <i data-lucide="database"></i>Choose a database
+      </a>
       <div class="mono" style="margin-top:12px;color:var(--blue-400)"><?= e($url) ?></div>
       <div class="muted" style="font-size:13px;margin-top:12px">
-        Log in with a MySQL/MariaDB username &amp; password (create one on the Databases page).
+        Use the phpMyAdmin button beside a database. Nebula creates a short-lived,
+        signed handoff and opens that database without putting its password in the URL.
       </div>
       <div style="margin-top:20px;padding-top:16px;border-top:1px solid var(--border)">
         <button class="btn btn-danger" id="pmaRemove"><i data-lucide="trash-2"></i>Remove phpMyAdmin</button>
@@ -97,9 +98,5 @@ document.addEventListener('DOMContentLoaded', () => {
     else toast(res.error || 'Failed', 'error');
   });
 
-  const launchBtn = document.getElementById('pmaLaunch');
-  launchBtn?.addEventListener('click', () => {
-    window.open(launchBtn.dataset.url, '_blank');
-  });
 });
 </script>

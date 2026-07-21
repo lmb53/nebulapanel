@@ -37,31 +37,76 @@ $size = filesize($abs);
     <p class="page-subtitle"><span class="mono"><?= e($rel) ?></span> · <?= e(human_bytes($size)) ?></p>
   </div>
   <div class="page-actions">
-    <span id="fsaved" class="muted" style="font-size:13px;display:none">Saved</span>
+    <button class="btn btn-secondary" id="fwrap"><i data-lucide="wrap-text"></i>Wrap</button>
+    <button class="btn btn-secondary" id="ffind"><i data-lucide="search"></i>Find</button>
+    <span id="fsaved" class="muted" style="font-size:13px">Saved</span>
     <button class="btn btn-primary" id="fsave"><i data-lucide="save"></i>Save</button>
   </div>
 </div>
 
-<div class="card">
-  <div class="card-pad">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/lib/codemirror.min.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/theme/material-darker.min.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/addon/dialog/dialog.min.css">
+<div class="card code-editor-card">
+  <div class="code-editor-toolbar">
+    <span class="badge badge-slate mono" id="fmode">text</span>
+    <span class="muted mono" id="fcursor">Ln 1, Col 1</span>
+    <span class="topbar-spacer"></span>
+    <span class="muted">Ctrl/Cmd+S save · Ctrl/Cmd+F find · Tab indent</span>
+  </div>
+  <div class="code-editor-host">
     <textarea id="fedit" class="input mono" style="width:100%;height:60vh;white-space:pre"><?= e($content) ?></textarea>
   </div>
 </div>
 
+<script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/lib/codemirror.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/addon/edit/matchbrackets.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/addon/edit/closebrackets.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/addon/search/searchcursor.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/addon/search/search.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/addon/dialog/dialog.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/mode/xml/xml.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/mode/javascript/javascript.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/mode/css/css.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/mode/htmlmixed/htmlmixed.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/mode/clike/clike.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/mode/php/php.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/mode/yaml/yaml.min.js"></script>
 <script>
 const FEDIT_PATH = <?= json_encode($rel) ?>;
 document.addEventListener('DOMContentLoaded', () => {
   const { apiPost, toast } = window.Nebula;
   const ta = document.getElementById('fedit');
   const saved = document.getElementById('fsaved');
-  document.getElementById('fsave')?.addEventListener('click', async () => {
-    const res = await apiPost('file-save', { path: FEDIT_PATH, content: ta.value });
+  const extension = (FEDIT_PATH.split('.').pop() || '').toLowerCase();
+  const modes = { php:'application/x-httpd-php', phtml:'application/x-httpd-php', js:'javascript', mjs:'javascript', json:{name:'javascript',json:true}, ts:{name:'javascript',typescript:true}, css:'css', scss:'text/x-scss', html:'htmlmixed', htm:'htmlmixed', xml:'xml', svg:'xml', yml:'yaml', yaml:'yaml', c:'text/x-csrc', cpp:'text/x-c++src', h:'text/x-csrc', java:'text/x-java' };
+  let editor = null, dirty = false, wrapping = false;
+  if (window.CodeMirror) {
+    editor = CodeMirror.fromTextArea(ta, {
+      mode: modes[extension] || 'text/plain', theme: 'material-darker', lineNumbers: true,
+      indentUnit: 2, tabSize: 2, indentWithTabs: false, matchBrackets: true,
+      autoCloseBrackets: true, lineWrapping: false, viewportMargin: 20,
+      extraKeys: { Tab: (cm) => cm.somethingSelected() ? cm.indentSelection('add') : cm.replaceSelection('  ', 'end') }
+    });
+    editor.setSize('100%', '68vh');
+    editor.on('change', () => { dirty = true; saved.textContent = 'Unsaved changes'; saved.style.color = 'var(--orange-400)'; });
+    editor.on('cursorActivity', () => { const p=editor.getCursor(); document.getElementById('fcursor').textContent=`Ln ${p.line+1}, Col ${p.ch+1}`; });
+  }
+  document.getElementById('fmode').textContent = extension || 'text';
+  const value = () => editor ? editor.getValue() : ta.value;
+  const save = async () => {
+    const res = await apiPost('file-save', { path: FEDIT_PATH, content: value() });
     if (res.ok) {
       toast('Saved', 'success');
-      if (saved) { saved.style.display = ''; setTimeout(() => { saved.style.display = 'none'; }, 2000); }
+      dirty = false; saved.textContent = 'Saved'; saved.style.color = '';
     } else {
       toast(res.error || 'Save failed', 'error');
     }
-  });
+  };
+  document.getElementById('fsave')?.addEventListener('click', save);
+  document.getElementById('ffind')?.addEventListener('click', () => editor ? editor.execCommand('find') : ta.focus());
+  document.getElementById('fwrap')?.addEventListener('click', (event) => { wrapping=!wrapping; if(editor)editor.setOption('lineWrapping',wrapping); else ta.style.whiteSpace=wrapping?'pre-wrap':'pre'; event.currentTarget.classList.toggle('active',wrapping); });
+  document.addEventListener('keydown', (event) => { if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase()==='s') { event.preventDefault(); save(); } });
+  window.addEventListener('beforeunload', (event) => { if (dirty) { event.preventDefault(); event.returnValue=''; } });
 });
 </script>

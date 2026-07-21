@@ -85,6 +85,14 @@ if ($route === 'setup-wizard') {
     return;
 }
 
+// One-time, HMAC-signed phpMyAdmin signon handoff. Authentication is still
+// required, and database credentials are transferred server-side via a
+// dedicated PHP session rather than exposed in the URL.
+if ($route === 'pma-signon') {
+    require APP_ROOT . '/lib/mod_pma.php';
+    pma_accept_signon((string) ($_GET['token'] ?? ''));
+}
+
 // --------------------------------------------------------------------------
 // JSON API routes: api/<name> -> api/<name>.php
 // --------------------------------------------------------------------------

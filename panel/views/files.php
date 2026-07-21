@@ -111,7 +111,7 @@ foreach ($listing['files'] as $f) {
         'group'    => $f['group'],
         'icon'     => $ic,
         'color'    => $icColor,
-        'href'     => url('file-view', ['path' => $f['rel']]),
+        'href'     => url('file-edit', ['path' => $f['rel']]),
         'edit'     => url('file-edit', ['path' => $f['rel']]),
         'download' => url('file-download', ['path' => $f['rel']]),
     ];
@@ -172,7 +172,7 @@ if ($rel !== '') {
         <button class="icon-btn" id="fmCopySelected" title="Copy"><i data-lucide="copy"></i></button>
         <button class="icon-btn" id="fmCutSelected" title="Cut"><i data-lucide="scissors"></i></button>
         <button class="icon-btn" id="fmPaste" title="Paste"><i data-lucide="clipboard-paste"></i></button>
-        <button class="icon-btn" id="fmCompressSelected" title="Compress to .tar.gz"><i data-lucide="archive"></i></button>
+        <button class="icon-btn" id="fmCompressSelected" title="Compress selected items"><i data-lucide="archive"></i></button>
         <button class="icon-btn<?= $currentPinned ? ' active' : '' ?>" id="fmPinCurrent" title="<?= $currentPinned ? 'Unpin' : 'Pin' ?> this folder"><i data-lucide="pin"></i></button>
         <span class="sep"></span>
         <button class="icon-btn" id="fmDeleteSelected" title="Delete selected" style="color:var(--red-400)"><i data-lucide="trash-2"></i></button>
@@ -209,7 +209,6 @@ if ($rel !== '') {
           </a>
         <?php endforeach; ?>
 
-        <div class="fm-tree-section-title">Folders in <?= e($curName) ?></div>
         <?php if ($rel !== ''): ?>
           <a class="tree-node" href="<?= e(url('files', ['path' => $parentRel])) ?>">
             <i data-lucide="corner-left-up" class="folder-ic" style="color:var(--text-tertiary)"></i>
@@ -227,6 +226,12 @@ if ($rel !== '') {
         <?php else: ?>
           <div class="fm-empty-hint" style="padding:10px 8px;text-align:left">No subfolders</div>
         <?php endif; ?>
+        <?php foreach ($listing['files'] as $file): ?>
+          <?php [$treeIcon, $treeColor] = $fmIcon($file['ext']); ?>
+          <a class="tree-node" href="<?= e(url('file-edit', ['path' => $file['rel']])) ?>" style="margin-left:12px" title="Edit <?= e($file['name']) ?>">
+            <i data-lucide="<?= e($treeIcon) ?>" class="folder-ic" style="color:<?= e($treeColor) ?>"></i><span><?= e($file['name']) ?></span>
+          </a>
+        <?php endforeach; ?>
       </div>
       <div class="split-divider"></div>
 
@@ -293,6 +298,7 @@ if ($rel !== '') {
                         <a class="icon-btn" href="<?= e($en['edit']) ?>" title="Edit"><i data-lucide="pencil-line"></i></a>
                         <a class="icon-btn" href="<?= e($en['download']) ?>" title="Download"><i data-lucide="download"></i></a>
                       <?php endif; ?>
+                      <button class="icon-btn" data-fm-details title="Details"><i data-lucide="info"></i></button>
                       <button class="icon-btn" data-fm-rename="<?= e($en['rel']) ?>" data-name="<?= e($en['name']) ?>" title="Rename"><i data-lucide="pencil"></i></button>
                       <button class="icon-btn" data-fm-delete="<?= e($en['rel']) ?>" title="Delete" style="color:var(--red-400)"><i data-lucide="trash-2"></i></button>
                     </div>
@@ -324,6 +330,7 @@ if ($rel !== '') {
                  data-edit="<?= e($en['edit']) ?>"
                  data-download="<?= e($en['download']) ?>">
               <input type="checkbox" class="row-check">
+              <button class="icon-btn fm-card-details" data-fm-details title="Details"><i data-lucide="info"></i></button>
               <span class="f-ic-wrap"><i data-lucide="<?= e($en['icon']) ?>" style="color:<?= e($en['color']) ?>"></i></span>
               <a class="fname" href="<?= e($en['href']) ?>"><?= e($en['name']) ?></a>
               <span class="fm-card-meta"><?= $en['is_dir'] ? 'Folder' : e($en['size_h']) ?></span>
@@ -347,7 +354,7 @@ if ($rel !== '') {
           <div class="fm-collection-list">
             <?php if (!$recentEntries): ?><div class="fm-empty-hint">No recently accessed files yet.</div><?php endif; ?>
             <?php foreach ($recentEntries as $recent): ?>
-              <a class="fm-recent-row" href="<?= e(url('file-view', ['path' => $recent['rel']])) ?>"><i data-lucide="file-clock"></i><div><strong><?= e($recent['name']) ?></strong><span class="mono"><?= e($recent['rel']) ?></span></div><span><?= e(date('M j, H:i', $recent['mtime'])) ?></span><i data-lucide="chevron-right"></i></a>
+              <a class="fm-recent-row" href="<?= e(url('file-edit', ['path' => $recent['rel']])) ?>"><i data-lucide="file-clock"></i><div><strong><?= e($recent['name']) ?></strong><span class="mono"><?= e($recent['rel']) ?></span></div><span><?= e(date('M j, H:i', $recent['mtime'])) ?></span><i data-lucide="chevron-right"></i></a>
             <?php endforeach; ?>
           </div>
         </div>
@@ -385,9 +392,8 @@ if ($rel !== '') {
           <button class="btn btn-secondary btn-sm" id="fmSaveOwner" style="width:100%;justify-content:center;margin-top:8px"><i data-lucide="user-cog"></i>Change ownership</button>
 
           <div style="display:flex;flex-direction:column;gap:8px;margin-top:16px">
-            <a class="btn btn-secondary" id="fmPropOpen" style="width:100%;justify-content:center"><i data-lucide="external-link"></i>Open</a>
+            <a class="btn btn-secondary" id="fmPropOpen" style="width:100%;justify-content:center"><i data-lucide="pencil-line"></i><span id="fmPropOpenLabel">Open</span></a>
             <a class="btn btn-secondary" id="fmPropDownload" style="width:100%;justify-content:center"><i data-lucide="download"></i>Download</a>
-            <a class="btn btn-secondary" id="fmPropEdit" style="width:100%;justify-content:center"><i data-lucide="pencil-line"></i>Edit</a>
             <button class="btn btn-secondary" id="fmPropDelete" style="width:100%;justify-content:center;color:var(--red-400)"><i data-lucide="trash-2"></i>Delete</button>
           </div>
         </div>
@@ -409,8 +415,7 @@ if ($rel !== '') {
       <div class="ctx-item" data-ctx-act="new-file"><i data-lucide="file-plus"></i>New File</div>
       <div class="ctx-item" data-ctx-act="new-folder"><i data-lucide="folder-plus"></i>New Folder</div>
       <div class="ctx-sep"></div>
-      <div class="ctx-item" data-ctx-act="open"><i data-lucide="external-link"></i>Open</div>
-      <div class="ctx-item" data-ctx-act="edit"><i data-lucide="pencil-line"></i>Edit</div>
+      <div class="ctx-item" data-ctx-act="open"><i data-lucide="pencil-line"></i>Open / edit</div>
       <div class="ctx-item" data-ctx-act="copy"><i data-lucide="copy"></i>Copy</div>
       <div class="ctx-item" data-ctx-act="cut"><i data-lucide="scissors"></i>Cut</div>
       <div class="ctx-item" data-ctx-act="paste"><i data-lucide="clipboard-paste"></i>Paste</div>
@@ -635,19 +640,16 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const open = document.getElementById('fmPropOpen');
     const dl = document.getElementById('fmPropDownload');
-    const ed = document.getElementById('fmPropEdit');
     const del = document.getElementById('fmPropDelete');
     const nameLink = row.querySelector('a.fname');
     open.href = nameLink ? nameLink.getAttribute('href') : '#';
+    document.getElementById('fmPropOpenLabel').textContent = isDir ? 'Open folder' : 'Open in editor';
     open.style.display = '';
     if (isDir) {
       dl.style.display = 'none';
-      ed.style.display = 'none';
     } else {
       dl.style.display = '';
-      ed.style.display = '';
       dl.href = d.download || '#';
-      ed.href = d.edit || '#';
     }
     del.onclick = async () => {
       if (!confirm(`Delete "${d.path}"? This cannot be undone.`)) return;
@@ -686,11 +688,15 @@ document.addEventListener('DOMContentLoaded', () => {
 
   document.querySelectorAll('.fm-row').forEach((row) => {
     row.addEventListener('click', (e) => {
-      // Don't hijack clicks on links, buttons or the checkbox.
+      // Filename links navigate. Clicking row whitespace participates in
+      // multi-select; details open only from an explicit Details action.
       if (e.target.closest('a, button, input')) return;
-      markSelected(row);
-      showProps(row);
+      const cb = row.querySelector('.row-check');
+      if (cb) { cb.checked = !cb.checked; cb.dispatchEvent(new Event('change')); }
     });
+  });
+  document.querySelectorAll('[data-fm-details]').forEach((button) => {
+    button.addEventListener('click', (event) => { event.stopPropagation(); showProps(button.closest('.fm-row')); });
   });
 
   // ---- Multi-select --------------------------------------------------------
@@ -726,7 +732,7 @@ document.addEventListener('DOMContentLoaded', () => {
   async function compressPaths(paths) {
     if (!paths.length) { toast('Select at least one item', 'error'); return; }
     const suggested = paths.length === 1 ? (paths[0].split('/').pop() || 'archive') : 'archive';
-    const name = prompt('Archive name:', suggested.replace(/\.(tar\.gz|[^.]+)$/i, '') + '.tar.gz');
+    const name = prompt('Archive name (.zip or .tar.gz):', suggested.replace(/\.(tar\.gz|[^.]+)$/i, '') + '.zip');
     if (!name) return;
     const res = await apiPost('file-compress', { paths, dest: CURDIR, name });
     if (res.ok) { toast(`Created ${name}`, 'success'); reload(); }
@@ -780,13 +786,12 @@ document.addEventListener('DOMContentLoaded', () => {
         e.preventDefault();
         e.stopPropagation();
         ctxRow = row;
-        if (row) { markSelected(row); showProps(row); }
+        if (row) { markSelected(row); }
         const isFile = row && row.dataset.isdir !== '1';
         ['open', 'rename', 'chmod', 'delete', 'details', 'copy', 'cut', 'compress'].forEach((act) => {
           const el = ctx.querySelector(`[data-ctx-act="${act}"]`);
           if (el) el.style.display = row ? '' : 'none';
         });
-        ctx.querySelector('[data-ctx-act="edit"]').style.display = isFile ? '' : 'none';
         ctx.querySelector('[data-ctx-act="download"]').style.display = isFile ? '' : 'none';
         ctx.classList.remove('hidden');
         const mw = ctx.offsetWidth || 200, mh = ctx.offsetHeight || 260;
@@ -814,7 +819,6 @@ document.addEventListener('DOMContentLoaded', () => {
         if (act === 'compress') return compressPaths(selectedPaths(ctxRow));
         if (act === 'details' || act === 'chmod') return showProps(ctxRow);
         if (act === 'open') return ctxRow.querySelector('a.fname')?.click();
-        if (act === 'edit' && ctxRow.dataset.edit) { location.href = ctxRow.dataset.edit; return; }
         if (act === 'download' && ctxRow.dataset.download) { location.href = ctxRow.dataset.download; return; }
         if (act === 'rename') {
           const name = prompt('Rename to:', ctxRow.dataset.name || '');
