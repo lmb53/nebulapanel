@@ -20,6 +20,7 @@ require APP_ROOT . '/lib/helpers.php';
 require APP_ROOT . '/lib/auth.php';
 require APP_ROOT . '/lib/sys.php';
 require APP_ROOT . '/lib/mod_updates.php';
+require APP_ROOT . '/lib/mod_cron.php';
 require APP_ROOT . '/lib/modules.php';
 require APP_ROOT . '/lib/files.php';
 
@@ -84,6 +85,8 @@ $check(
 );
 
 $check(empty(upd_install_package('../bad')['ok']), 'unsafe package name was accepted');
+$disabledCron = cron_parse_job_line('15 3 * * 1 /usr/bin/example', 4, false);
+$check(($disabledCron['enabled'] ?? true) === false && ($disabledCron['schedule'] ?? '') === '15 3 * * 1', 'disabled cron job parsing failed');
 
 $helperSource = (string) file_get_contents(APP_ROOT . '/bin/nebula-helper');
 $check(strpos($helperSource, 'server_name $DOMAIN;') !== false, 'site vhost still adds an implicit hostname');
@@ -95,6 +98,8 @@ $check(strpos($helperSource, 'systemd-run --quiet') !== false, 'PHP-FPM reload i
 $check(strpos($helperSource, 'site-list)') !== false && strpos($helperSource, 'site-php)') !== false, 'website recovery or PHP reassignment helper is missing');
 $check(strpos($helperSource, 'php-extension)') !== false && strpos($helperSource, 'php-ini-replace)') !== false, 'expanded PHP management helper actions are missing');
 $check(strpos($helperSource, 'pma-signon)') !== false && strpos($helperSource, "SignonSession") !== false, 'phpMyAdmin signed signon support is missing');
+$pmaSource = (string) file_get_contents(APP_ROOT . '/lib/mod_pma.php');
+$check(preg_match("/session_write_close\(\);\s*session_id\(''\);\s*session_name\('NebulaPmaSignon'\)/", $pmaSource) === 1, 'phpMyAdmin signon session is not isolated from the panel session ID');
 $check(strpos($helperSource, 'cert-upload)') !== false && strpos($helperSource, 'openssl x509') !== false, 'custom certificate installation is missing');
 $check(strpos($helperSource, 'dns-zone-put)') !== false && strpos($helperSource, 'named-checkzone') !== false, 'authoritative DNS helper support is missing');
 $check(!is_page_route('file-view'), 'obsolete file viewer route is still enabled');
@@ -103,6 +108,11 @@ $check(strpos($installerSource, 'Reusing active panel prefix') !== false && strp
 $check(strpos($installerSource, 'bind9 bind9-utils') !== false && strpos($installerSource, 'ufw allow 53/udp') !== false, 'authoritative DNS packages or firewall rules are missing');
 $uploadSource = (string) file_get_contents(APP_ROOT . '/views/files.php');
 $check(strpos($uploadSource, 'Replace it with the uploaded file?') !== false, 'upload overwrite confirmation is missing');
+$check(strpos($uploadSource, 'fm-tree-section-title">Pinned') === false && strpos($uploadSource, 'No subfolders') === false, 'File Manager tree still includes removed sidebar placeholders');
+$editorSource = (string) file_get_contents(APP_ROOT . '/views/file-edit.php');
+$check(strpos($editorSource, 'nebula-editor-drafts-v2') !== false && strpos($editorSource, "execCommand('findNext')") !== false, 'persistent editor drafts or find navigation is missing');
+$cronSource = (string) file_get_contents(APP_ROOT . '/views/cron.php');
+$check(strpos($cronSource, 'data-cron-toggle') !== false && strpos($cronSource, 'data-cron-part') !== false, 'cron toggle or visual schedule controls are missing');
 
 @unlink($config['fm_root'] . '/site/index.txt');
 @rmdir($config['fm_root'] . '/site');
