@@ -11,6 +11,11 @@
 /** Is certbot installed and the privileged helper available? */
 function ssl_available(): bool
 {
+    return helper_available();
+}
+
+function ssl_certbot_available(): bool
+{
     return has_cmd('certbot') && helper_available();
 }
 
@@ -20,12 +25,26 @@ function ssl_domain_ok($d): bool
     return (bool) preg_match('/^[a-zA-Z0-9]([a-zA-Z0-9.-]{0,251}[a-zA-Z0-9])?$/', (string) $d);
 }
 
+function ssl_custom_file(): string
+{
+    return APP_ROOT . '/data/custom-certificates.json';
+}
+
+function ssl_custom_list(): array
+{
+    $items = @json_decode((string) @file_get_contents(ssl_custom_file()), true);
+    return is_array($items) ? array_values($items) : [];
+}
+
 /**
  * List certificates by parsing `certbot certificates` output.
  * Returns ['ok'=>bool, 'error'=>?string, 'certs'=>[[name,domains,expiry,days,valid]]].
  */
 function ssl_list(): array
 {
+    if (!ssl_certbot_available()) {
+        return ['ok' => true, 'certs' => ssl_custom_list()];
+    }
     [$c, $o] = helper_cmd('cert-list');
     if ($c !== 0) {
         return ['ok' => false, 'error' => trim($o) ?: 'cert-list failed', 'certs' => []];
@@ -72,7 +91,65 @@ function ssl_list(): array
         ];
     }
 
+    foreach (ssl_custom_list() as $custom) {
+        $certs[] = $custom;
+    }
     return ['ok' => true, 'certs' => $certs];
+}
+
+/** Validate and install a user-supplied PEM certificate/private-key pair. */
+function ssl_upload(string $domain, string $certificate, string $privateKey, string $chain = ''): array
+{
+    if (!ssl_domain_ok($domain)) { return ['ok' => false, 'error' => 'Invalid domain.']; }
+    foreach ([$certificate, $privateKey, $chain] as $pem) {
+        if (strlen($pem) > 65536) { return ['ok' => false, 'error' => 'Each PEM file must be smaller than 64 KB.']; }
+    }
+    if (!str_contains($certificate, '-----BEGIN CERTIFICATE-----') || !str_contains($privateKey, 'PRIVATE KEY-----')) {
+        return ['ok' => false, 'error' => 'Certificate and private key must be PEM encoded.'];
+    }
+    $cert = @openssl_x509_read($certificate);
+    $key = @openssl_pkey_get_private($privateKey);
+    if ($cert === false || $key === false) { return ['ok' => false, 'error' => 'Could not parse the certificate or private key.']; }
+    if (!@openssl_x509_check_private_key($cert, $key)) { return ['ok' => false, 'error' => 'Certificate and private key do not match.']; }
+    if (function_exists('openssl_x509_check_host') && @openssl_x509_check_host($cert, $domain) !== 1) {
+        return ['ok' => false, 'error' => 'The certificate does not cover ' . $domain . '.'];
+    }
+    $parsed = @openssl_x509_parse($cert);
+    if (!is_array($parsed) || (int) ($parsed['validTo_time_t'] ?? 0) <= time()) {
+        return ['ok' => false, 'error' => 'The certificate is expired or has no valid expiry.'];
+    }
+    require_once APP_ROOT . '/lib/mod_sites.php';
+    $siteFound = false;
+    foreach (sites_list() as $site) {
+        if (($site['domain'] ?? '') === $domain) { $siteFound = true; break; }
+    }
+    if (!$siteFound) { return ['ok' => false, 'error' => 'Create the website before uploading its certificate.']; }
+
+    [$c, $o] = helper_cmd('cert-upload ' . escapeshellarg($domain) . ' '
+        . escapeshellarg(base64_encode($certificate)) . ' '
+        . escapeshellarg(base64_encode($privateKey)) . ' '
+        . escapeshellarg($chain !== '' ? base64_encode($chain) : ''), 120);
+    if ($c !== 0) { return ['ok' => false, 'error' => trim($o) ?: 'Certificate installation failed.']; }
+
+    $expiry = (int) $parsed['validTo_time_t'];
+    $issuer = (string) ($parsed['issuer']['CN'] ?? $parsed['issuer']['O'] ?? 'Custom / Uploaded');
+    $items = ssl_custom_list();
+    $items = array_values(array_filter($items, fn($item) => ($item['name'] ?? '') !== $domain));
+    $items[] = [
+        'name' => $domain,
+        'domains' => $domain,
+        'expiry' => date('Y-m-d H:i:s O', $expiry),
+        'days' => max(0, (int) floor(($expiry - time()) / 86400)),
+        'valid' => true,
+        'issuer' => $issuer,
+        'custom' => true,
+    ];
+    if (!write_json_file(ssl_custom_file(), $items)) { return ['ok' => false, 'error' => 'Certificate installed, but its panel metadata could not be saved.']; }
+    $sites = sites_list();
+    foreach ($sites as &$site) { if (($site['domain'] ?? '') === $domain) { $site['ssl'] = true; } }
+    unset($site); sites_save($sites);
+    audit('ssl.upload', $domain);
+    return ['ok' => true];
 }
 
 /** Issue a Let's Encrypt certificate for an existing nginx site. */
@@ -114,10 +191,20 @@ function ssl_delete(string $name): array
     if (!ssl_domain_ok($name)) {
         return ['ok' => false, 'error' => 'Invalid certificate name.'];
     }
-    [$c, $o] = helper_cmd('cert-delete ' . escapeshellarg($name));
+    $custom = false;
+    foreach (ssl_custom_list() as $item) { if (($item['name'] ?? '') === $name) { $custom = true; break; } }
+    [$c, $o] = helper_cmd(($custom ? 'cert-custom-delete ' : 'cert-delete ') . escapeshellarg($name));
     audit('ssl.delete', $name);
     if ($c !== 0) {
         return ['ok' => false, 'error' => trim($o) ?: 'cert-delete failed'];
+    }
+    if ($custom) {
+        $items = array_values(array_filter(ssl_custom_list(), fn($item) => ($item['name'] ?? '') !== $name));
+        write_json_file(ssl_custom_file(), $items);
+        require_once APP_ROOT . '/lib/mod_sites.php';
+        $sites = sites_list();
+        foreach ($sites as &$site) { if (($site['domain'] ?? '') === $name) { $site['ssl'] = false; } }
+        unset($site); sites_save($sites);
     }
     return ['ok' => true];
 }

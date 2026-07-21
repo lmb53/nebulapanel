@@ -26,6 +26,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 json_out([
     'ok'           => true,
     'available'    => sites_available(),
-    'sites'        => sites_list(),
+    'sites'        => sites_with_runtime(),
     'php_versions' => php_versions(),
 ]);

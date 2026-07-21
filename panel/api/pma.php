@@ -20,6 +20,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $res = pma_install($emit);
     } elseif ($action === 'remove') {
         $res = pma_remove();
+    } elseif ($action === 'launch') {
+        $res = pma_launch((string) ($body['database'] ?? ''));
     } else {
         $res = ['ok' => false, 'error' => 'Unknown action.'];
     }

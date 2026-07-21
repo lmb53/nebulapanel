@@ -13,6 +13,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             (string) ($body['domain'] ?? ''),
             (string) ($body['email'] ?? '')
         );
+    } elseif ($action === 'upload') {
+        $res = ssl_upload(
+            (string) ($body['domain'] ?? ''),
+            (string) ($body['certificate'] ?? ''),
+            (string) ($body['private_key'] ?? ''),
+            (string) ($body['chain'] ?? '')
+        );
     } elseif ($action === 'renew') {
         $res = ssl_renew((string) ($body['name'] ?? ''));
     } elseif ($action === 'delete') {

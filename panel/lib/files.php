@@ -287,7 +287,7 @@ function fm_chown(string $rel, string $owner, string $group): array
     return $code === 0 ? ['ok' => true] : ['ok' => false, 'error' => trim($out) ?: 'Ownership change failed.'];
 }
 
-/** Create a .tar.gz archive in a directory within FM_ROOT. */
+/** Create a zip (default) or .tar.gz archive in a directory within FM_ROOT. */
 function fm_compress(array $paths, string $destDir, string $name): array
 {
     $dest = fm_resolve($destDir);
@@ -295,8 +295,8 @@ function fm_compress(array $paths, string $destDir, string $name): array
         return ['ok' => false, 'error' => 'Destination folder is not allowed.'];
     }
     $name = trim($name);
-    if (!preg_match('/^[A-Za-z0-9][A-Za-z0-9._-]{0,120}\.tar\.gz$/', $name)) {
-        return ['ok' => false, 'error' => 'Archive name must end in .tar.gz and use safe characters.'];
+    if (!preg_match('/^[A-Za-z0-9][A-Za-z0-9._-]{0,120}\.(zip|tar\.gz)$/i', $name, $match)) {
+        return ['ok' => false, 'error' => 'Archive name must end in .zip or .tar.gz and use safe characters.'];
     }
     $target = $dest . '/' . $name;
     if (file_exists($target)) {
@@ -313,9 +313,19 @@ function fm_compress(array $paths, string $destDir, string $name): array
     if (!$rels) {
         return ['ok' => false, 'error' => 'Select at least one item to compress.'];
     }
-    $args = implode(' ', array_map('escapeshellarg', $rels));
-    [$code, $out, $err] = run_cmd(
-        'tar -czf ' . escapeshellarg($target) . ' -C ' . escapeshellarg(fm_root()) . ' -- ' . $args,
+    $format = strtolower($match[1]) === 'zip' ? 'zip' : 'tar.gz';
+    $sources = [];
+    foreach ($rels as $sourceRel) {
+        $sourceAbs = fm_resolve($sourceRel);
+        if ($sourceAbs === null) {
+            return ['ok' => false, 'error' => 'One of the selected paths is no longer available.'];
+        }
+        $sources[] = escapeshellarg($sourceAbs);
+    }
+    // Hosting roots are commonly not writable by www-data. The root-owned
+    // helper re-validates every path against FM_ROOT before invoking zip/tar.
+    [$code, $out, $err] = helper_cmd(
+        'file-compress ' . escapeshellarg($format) . ' ' . escapeshellarg($target) . ' ' . implode(' ', $sources),
         300
     );
     if ($code !== 0) {

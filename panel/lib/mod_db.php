@@ -43,10 +43,11 @@ function db_run(string $sql): array
 /** List databases with total (data+index) size in bytes. */
 function db_list(): array
 {
-    $sql = "SELECT s.schema_name, COALESCE(SUM(t.data_length+t.index_length),0) "
+    $sql = "SELECT s.schema_name, COALESCE(SUM(t.data_length+t.index_length),0), "
+        . "COUNT(t.table_name), s.default_collation_name "
         . "FROM information_schema.schemata s "
         . "LEFT JOIN information_schema.tables t ON t.table_schema=s.schema_name "
-        . "GROUP BY s.schema_name;";
+        . "GROUP BY s.schema_name,s.default_collation_name;";
     [$c, $o] = db_run($sql);
     if ($c !== 0) {
         return ['ok' => false, 'error' => sudo_error($o, $c), 'databases' => []];
@@ -64,10 +65,97 @@ function db_list(): array
         $databases[] = [
             'name'   => $name,
             'size'   => (int) ($cols[1] ?? 0),
+            'tables' => (int) ($cols[2] ?? 0),
+            'collation' => (string) ($cols[3] ?? ''),
             'system' => in_array($name, SYSTEM_DBS, true),
         ];
     }
     return ['ok' => true, 'databases' => $databases];
+}
+
+/** Database engine/version string. */
+function db_version(): string
+{
+    [$c, $o] = db_run('SELECT VERSION();');
+    return $c === 0 ? trim((string) $o) : '';
+}
+
+/** Users with explicit schema privileges, keyed by database name. */
+function db_schema_users(): array
+{
+    [$c, $o] = db_run("SELECT TABLE_SCHEMA,GRANTEE FROM information_schema.SCHEMA_PRIVILEGES GROUP BY TABLE_SCHEMA,GRANTEE ORDER BY TABLE_SCHEMA,GRANTEE;");
+    if ($c !== 0) {
+        return [];
+    }
+    $map = [];
+    foreach (preg_split('/\r?\n/', trim($o)) as $line) {
+        if ($line === '') { continue; }
+        [$database, $grantee] = array_pad(explode("\t", $line, 2), 2, '');
+        $map[$database][] = trim($grantee, "'");
+    }
+    return $map;
+}
+
+function db_links_file(): string
+{
+    return APP_ROOT . '/data/database-links.json';
+}
+
+function db_links(): array
+{
+    $links = @json_decode((string) @file_get_contents(db_links_file()), true);
+    return is_array($links) ? $links : [];
+}
+
+/** Attach a database to a tracked website for navigation and ownership UI. */
+function db_link_website(string $database, string $website): array
+{
+    if (!db_ident_ok($database) || in_array($database, SYSTEM_DBS, true)) {
+        return ['ok' => false, 'error' => 'Invalid database name.'];
+    }
+    $exists = false;
+    foreach (db_list()['databases'] ?? [] as $db) {
+        if (($db['name'] ?? '') === $database) { $exists = true; break; }
+    }
+    if (!$exists) {
+        return ['ok' => false, 'error' => 'Database not found.'];
+    }
+    if ($website !== '') {
+        require_once APP_ROOT . '/lib/mod_sites.php';
+        $websiteExists = false;
+        foreach (sites_list() as $site) {
+            if (($site['domain'] ?? '') === $website) { $websiteExists = true; break; }
+        }
+        if (!$websiteExists) {
+            return ['ok' => false, 'error' => 'Website not found.'];
+        }
+    }
+    $links = db_links();
+    if ($website === '') { unset($links[$database]); } else { $links[$database] = $website; }
+    if (!write_json_file(db_links_file(), $links)) {
+        return ['ok' => false, 'error' => 'Could not save the website link.'];
+    }
+    audit('db.link', $database . ' -> ' . ($website ?: 'none'));
+    return ['ok' => true];
+}
+
+/** Create a database and, optionally, a user/grant and website link. */
+function db_create_bundle(string $name, string $user, string $host, string $password, string $website): array
+{
+    $created = db_create($name);
+    if (empty($created['ok'])) { return $created; }
+    if ($user !== '') {
+        $createdUser = db_create_user($user, $host ?: 'localhost', $password, $name);
+        if (empty($createdUser['ok'])) {
+            db_drop($name);
+            return $createdUser;
+        }
+    }
+    if ($website !== '') {
+        $linked = db_link_website($name, $website);
+        if (empty($linked['ok'])) { return $linked; }
+    }
+    return ['ok' => true];
 }
 
 /** List database user accounts. */
@@ -119,6 +207,11 @@ function db_drop(string $name): array
         return ['ok' => false, 'error' => sudo_error($o, $c)];
     }
     audit('db.drop', $name);
+    $links = db_links();
+    if (isset($links[$name])) {
+        unset($links[$name]);
+        write_json_file(db_links_file(), $links);
+    }
     return ['ok' => true];
 }
 

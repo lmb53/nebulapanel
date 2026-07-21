@@ -57,7 +57,7 @@ function nebula_sections(): array
 /** Routes that render a page but aren't top-level nav items. */
 function nebula_extra_routes(): array
 {
-    return ['file-view', 'file-edit', 'service'];
+    return ['file-edit', 'service'];
 }
 
 /** Is this a valid HTML page route? */

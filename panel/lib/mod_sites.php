@@ -29,6 +29,37 @@ function sites_list(): array
     return is_array($j) ? $j : [];
 }
 
+/** Enrich tracked sites with their underlying web service and disk usage. */
+function sites_with_runtime(): array
+{
+    $sites = sites_list();
+    $serviceCache = [];
+    foreach ($sites as &$site) {
+        $server = strtolower((string) ($site['server'] ?? 'nginx'));
+        if (!in_array($server, ['nginx', 'apache2'], true)) { $server = 'nginx'; }
+        if (!isset($serviceCache[$server])) {
+            $serviceCache[$server] = service_status($server);
+        }
+        $site['server'] = $server;
+        $site['service'] = $serviceCache[$server];
+        $site['disk_used'] = 0;
+        $site['file_count'] = 0;
+        $docroot = (string) ($site['docroot'] ?? '');
+        if (sv_path_ok($docroot)) {
+            [$c, $o] = helper_cmd('site-stats ' . escapeshellarg($docroot), 60);
+            if ($c === 0) {
+                [$bytes, $files] = array_pad(explode("\t", trim($o), 2), 2, 0);
+                $site['disk_used'] = max(0, (int) $bytes);
+                $site['file_count'] = max(0, (int) $files);
+            }
+            $site['disk_total'] = is_dir($docroot) ? (int) (@disk_total_space($docroot) ?: 0) : 0;
+            $site['disk_free'] = is_dir($docroot) ? (int) (@disk_free_space($docroot) ?: 0) : 0;
+        }
+    }
+    unset($site);
+    return $sites;
+}
+
 /** Persist the tracked sites (pretty JSON, private perms). */
 function sites_save(array $s): void
 {
@@ -90,6 +121,7 @@ function site_create(string $domain, string $docroot, string $php): array
         'docroot' => $docroot,
         'php'     => $php,
         'ssl'     => false,
+        'server'  => 'nginx',
         'created' => date('c'),
     ];
     sites_save($sites);
