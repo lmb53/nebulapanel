@@ -76,7 +76,7 @@ log "Installing packages (Nginx, PHP-FPM, tooling)…"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
 apt-get install -y -qq nginx php-fpm php-cli php-mysql php-curl php-mbstring php-xml php-zip \
-  rsync ufw sudo curl ca-certificates tar zip openssl \
+  rsync ufw sudo curl ca-certificates tar zip openssl bind9 bind9-utils \
   certbot python3-certbot-nginx >/dev/null
 ok "Packages installed"
 
@@ -218,7 +218,7 @@ done
 _missing=""
 for v in setup-wizard dashboard websites domains dns files services databases phpmyadmin \
          ssl php cron firewall logs updates users sshkeys docker backups terminal \
-         monitoring sysinfo diagnostics notifications apps selfupdate settings service \
+         sysinfo diagnostics notifications apps selfupdate settings service \
          file-edit login setup layout; do
   [[ -f "$DEST/views/$v.php" ]] || _missing="$_missing $v"
 done
@@ -383,6 +383,8 @@ ok "sudoers rule installed ($SUDOERS)"
 log "Configuring UFW firewall…"
 ufw allow OpenSSH >/dev/null 2>&1 || true
 ufw allow 'Nginx Full' >/dev/null 2>&1 || true
+ufw allow 53/tcp >/dev/null 2>&1 || true
+ufw allow 53/udp >/dev/null 2>&1 || true
 yes | ufw enable >/dev/null 2>&1 || true
 ok "Firewall allows SSH + HTTP/HTTPS"
 

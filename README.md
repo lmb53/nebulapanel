@@ -43,24 +43,23 @@ the URL (runtime state is migrated), or use a fixed name. Options (env vars):
 |---|---|
 | First-run admin setup (bcrypt) + login/logout | ✅ |
 | Session auth, idle timeout, POST-only logout, CSRF, login throttling, audit log | ✅ |
-| **Dashboard** — live resources + actionable health, update, service, reboot, and backup alerts | ✅ |
-| **Monitoring** — live charts + top processes (`ps`) | ✅ |
+| **Dashboard** — live charts, load/CPU, services, top processes and actionable health alerts | ✅ |
 | **Services** — tabbed per-instance manager, virtual hosts, logs, start / stop / restart + boot state | ✅ sudo |
 | **Install Apps** — install apache2/redis/mariadb/fail2ban + extra PHP versions with live output | ✅ sudo/helper |
 | **Updates** — list upgradable, update one/all, with persistent streaming apt output | ✅ sudo |
-| **Users** — system accounts from `/etc/passwd` (read-only) | ✅ |
+| **Users & RBAC** — panel accounts with administrator/operator/developer/auditor roles, plus system-account inventory | ✅ |
 | **SSH Keys** — list/add/revoke authorized keys for interactive users | ✅ helper |
 | **Cron** — full CRUD on the web user's crontab | ✅ |
 | **Firewall** — UFW status, enable/disable, add/delete rules | ✅ sudo |
 | **Logs** — journalctl per-unit + `/var/log` file tails | ✅ |
 | **Websites** — create/delete Nginx vhosts, PHP version, service health, docroot disk/file usage, Let's Encrypt | ✅ helper |
-| **Domains + DNS** — compare hosted domains with server IPs and inspect live public records | ✅ |
+| **Domains + DNS** — authoritative BIND zones and record CRUD for panel-managed domains | ✅ helper |
 | **SSL** — list / issue / renew / delete certbot certificates + validated custom PEM upload | ✅ helper |
 | **PHP** — per-version ini settings (memory_limit, upload size…) + modules | ✅ helper |
-| **Databases** — MariaDB/MySQL DB/user CRUD, website links, metadata and per-database quick access | ✅ sudo |
+| **Databases** — website-owned MariaDB/MySQL DB/user CRUD, metadata and per-database quick access | ✅ sudo |
 | **phpMyAdmin** — one-click install + password-free, short-lived signed per-database signon | ✅ helper |
-| **Docker** — containers (start/stop/restart/rm) + images | ✅ sudo |
-| **File Manager** — browse/pinned/recent, multi-select clipboard, ZIP/tar archives, code editor, ownership, permissions, drag-drop upload | ✅ helper |
+| **Docker** — create/control containers, pull/remove images, and manage volumes and networks | ✅ sudo |
+| **File Manager** — expandable tree previews, browse/pinned/recent, archives, popup multi-tab editor, ownership, permissions and drag-drop upload | ✅ helper |
 | **Diagnostics** — environment + per-privilege sudo checks with fix hints | ✅ |
 | **Backups** — create / verify / list / download / delete `.tar.gz` | ✅ |
 | **Terminal** — audited non-interactive command runner | ✅ |
@@ -124,6 +123,8 @@ sudo chmod 700 "/var/www/html/$PANEL_PREFIX/data"
 
 # 3. Choose which directory the File Manager may browse (default /var/www).
 #    Either edit config.php ('fm_root') or set an env var in your FPM pool.
+# 4. Set NEBULA_NS1 and NEBULA_NS2 in the FPM environment when the server's
+#    hostname is not already the desired authoritative nameserver base.
 ```
 
 ### Nginx
@@ -265,10 +266,9 @@ needed to self-update. Notes:
 
 ## Still to build (natural next steps)
 
-- **Authoritative DNS & Email hosting** — public DNS inspection is implemented;
-  safely operating a nameserver/mail stack remains intentionally separate
+- **Email hosting** — an SMTP/IMAP stack and reputation tooling remain separate
 - **PHP** — install additional versions (ondrej PPA), extensions, per-site `php.ini`
 - **Websites** — per-site logs viewer, clone/staging, wildcard certs, Apache mode
 - **Live PTY terminal** — real interactive shell (needs a WebSocket sidecar)
-- **Multi-user + roles, 2FA**
+- **Two-factor authentication** for panel users
 ```

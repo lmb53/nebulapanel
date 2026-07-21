@@ -51,10 +51,23 @@ $check(is_page_route('domains') && is_page_route('dns') && is_page_route('sshkey
 $check(!is_page_route('api') && !isset($modules['api']), 'removed public API page is still routed');
 $check(($modules['files'][2] ?? '') === 'Hosting', 'File Manager is not in Hosting');
 $check(($modules['backups'][2] ?? '') === 'Tools', 'Backups is not in Tools');
+$check(!isset($modules['monitoring']) && !is_page_route('monitoring'), 'removed Monitoring page is still routed');
+$check(role_route_allowed('users', 'admin') && !role_route_allowed('users', 'auditor') && role_route_allowed('logs', 'auditor'), 'RBAC route policy failed');
+$check(isset(panel_roles()['operator']) && isset(panel_roles()['developer']), 'panel roles are missing');
+$adminCreated = create_admin('smoke-admin', 'correct horse battery staple');
+$check(!empty($adminCreated['ok']) && count(panel_users()) === 1, 'initial panel administrator migration failed');
+$userCreated = panel_user_create('smoke-operator', 'another correct horse battery staple', 'operator');
+$createdUsers = panel_users();
+$operatorId = (int) ($createdUsers[1]['id'] ?? 0);
+$check(!empty($userCreated['ok']) && count($createdUsers) === 2 && $operatorId > 0, 'panel user creation failed');
+$_SESSION['uid'] = 1; $_SESSION['username'] = 'smoke-admin'; $_SESSION['role'] = 'admin';
+$check(!empty(panel_user_update($operatorId, 'developer', true)['ok']), 'panel role update failed');
+$check(!empty(panel_user_delete($operatorId)['ok']) && count(panel_users()) === 1, 'panel user deletion failed');
 $check(is_file(APP_ROOT . '/api/provision.php'), 'provisioning API endpoint is missing');
 $check(is_file(APP_ROOT . '/api/ssl.php'), 'SSL API endpoint is missing');
 $check(is_file(APP_ROOT . '/api/php.php'), 'PHP API endpoint is missing');
 $check(is_file(APP_ROOT . '/api/file-state.php') && is_file(APP_ROOT . '/api/file-owner.php') && is_file(APP_ROOT . '/api/file-compress.php'), 'extended File Manager endpoints are missing');
+$check(is_file(APP_ROOT . '/api/file-tree.php') && is_file(APP_ROOT . '/api/dns.php') && is_file(APP_ROOT . '/api/users.php'), 'tree, DNS, or panel-user API endpoint is missing');
 $check(human_bytes(1048576) === '1 MB', 'byte formatting failed');
 $check(fm_link_path($config['fm_root'] . '/site') === 'site', 'absolute file-manager link conversion failed');
 $pinResult = fm_toggle_pin('site');
@@ -83,9 +96,11 @@ $check(strpos($helperSource, 'site-list)') !== false && strpos($helperSource, 's
 $check(strpos($helperSource, 'php-extension)') !== false && strpos($helperSource, 'php-ini-replace)') !== false, 'expanded PHP management helper actions are missing');
 $check(strpos($helperSource, 'pma-signon)') !== false && strpos($helperSource, "SignonSession") !== false, 'phpMyAdmin signed signon support is missing');
 $check(strpos($helperSource, 'cert-upload)') !== false && strpos($helperSource, 'openssl x509') !== false, 'custom certificate installation is missing');
+$check(strpos($helperSource, 'dns-zone-put)') !== false && strpos($helperSource, 'named-checkzone') !== false, 'authoritative DNS helper support is missing');
 $check(!is_page_route('file-view'), 'obsolete file viewer route is still enabled');
 $installerSource = (string) file_get_contents(dirname(__DIR__) . '/install.sh');
 $check(strpos($installerSource, 'Reusing active panel prefix') !== false && strpos($installerSource, 'Migrated runtime state') !== false, 'reinstall state preservation is missing');
+$check(strpos($installerSource, 'bind9 bind9-utils') !== false && strpos($installerSource, 'ufw allow 53/udp') !== false, 'authoritative DNS packages or firewall rules are missing');
 $uploadSource = (string) file_get_contents(APP_ROOT . '/views/files.php');
 $check(strpos($uploadSource, 'Replace it with the uploaded file?') !== false, 'upload overwrite confirmation is missing');
 
@@ -94,6 +109,9 @@ $check(strpos($uploadSource, 'Replace it with the uploaded file?') !== false, 'u
 @rmdir($config['fm_root']);
 @unlink($jsonPath);
 @unlink(login_attempts_file());
+@unlink(admin_file());
+@unlink(panel_users_file());
+@unlink(DATA_DIR . '/setup.lock');
 @unlink(fm_state_file());
 @unlink(DATA_DIR . '/audit.log');
 @rmdir($testDir);
