@@ -123,9 +123,6 @@ function csrf_field(): string
  */
 function csrf_check(): void
 {
-    // Bearer credentials are not ambient browser credentials and therefore
-    // are not vulnerable to cross-site request forgery.
-    if (function_exists('is_api_token_authenticated') && is_api_token_authenticated()) { return; }
     $sent = $_POST['_csrf'] ?? ($_SERVER['HTTP_X_CSRF_TOKEN'] ?? '');
     if (empty($_SESSION['csrf']) || !hash_equals($_SESSION['csrf'], (string) $sent)) {
         if (is_json_request()) {

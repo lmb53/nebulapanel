@@ -13,6 +13,7 @@ function nebula_modules(): array
         'monitoring' => ['activity',         'Monitoring',   'Overview'],
 
         'websites'   => ['globe',            'Websites',     'Hosting'],
+        'files'      => ['folder-tree',      'File Manager', 'Hosting'],
         'domains'    => ['earth',            'Domains',      'Hosting'],
         'dns'        => ['network',          'DNS',          'Hosting'],
         'ssl'        => ['shield-check',     'SSL',          'Hosting'],
@@ -31,15 +32,12 @@ function nebula_modules(): array
 
         'docker'     => ['container',        'Docker',       'Services'],
 
-        'files'      => ['folder-tree',      'File Manager', 'Files'],
-        'backups'    => ['archive-restore',  'Backups',      'Files'],
-
         'terminal'   => ['square-terminal',  'Terminal',     'Tools'],
+        'backups'    => ['archive-restore',  'Backups',      'Tools'],
         'sysinfo'    => ['cpu',              'System Info',  'Tools'],
         'diagnostics'=> ['stethoscope',      'Diagnostics',  'Tools'],
         'notifications'=>['bell',            'Notifications','Tools'],
         'selfupdate' => ['git-branch',       'Panel Updates','Tools'],
-        'api'        => ['braces',           'API',          'Tools'],
         'settings'   => ['settings',         'Settings',     'Tools'],
     ];
 }

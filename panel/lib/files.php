@@ -97,6 +97,7 @@ function fm_list(string $absDir): array
             'perms'    => substr(sprintf('%o', @fileperms($full) ?: 0), -4),
             'readable' => is_readable($full),
             'owner'    => fm_owner($full),
+            'group'    => fm_group($full),
             'ext'      => $isDir ? '' : strtolower(pathinfo($full, PATHINFO_EXTENSION)),
         ];
         if ($isDir) {
@@ -153,6 +154,176 @@ function fm_owner(string $abs): string
         }
     }
     return (string) $uid;
+}
+
+/** Group name for an absolute path. Falls back to numeric gid. */
+function fm_group(string $abs): string
+{
+    $gid = @filegroup($abs);
+    if ($gid === false) {
+        return '?';
+    }
+    if (function_exists('posix_getgrgid')) {
+        $info = @posix_getgrgid($gid);
+        if (is_array($info) && isset($info['name'])) {
+            return (string) $info['name'];
+        }
+    }
+    return (string) $gid;
+}
+
+/** File-manager pins and history live in panel-private data/. */
+function fm_state_file(): string
+{
+    return DATA_DIR . '/file_manager.json';
+}
+
+function fm_state(): array
+{
+    $state = @json_decode((string) @file_get_contents(fm_state_file()), true);
+    return is_array($state) ? [
+        'pinned' => array_values(array_unique((array) ($state['pinned'] ?? []))),
+        'recent' => array_values(array_unique((array) ($state['recent'] ?? []))),
+    ] : ['pinned' => [], 'recent' => []];
+}
+
+function fm_save_state(array $state): bool
+{
+    return write_json_file(fm_state_file(), [
+        'pinned' => array_slice(array_values(array_unique((array) ($state['pinned'] ?? []))), 0, 30),
+        'recent' => array_slice(array_values(array_unique((array) ($state['recent'] ?? []))), 0, 30),
+    ]);
+}
+
+function fm_record_recent(string $rel): void
+{
+    $abs = fm_resolve($rel);
+    if ($abs === null || !is_file($abs)) {
+        return;
+    }
+    $rel = fm_rel($abs);
+    $state = fm_state();
+    $state['recent'] = array_values(array_filter($state['recent'], fn($p) => $p !== $rel));
+    array_unshift($state['recent'], $rel);
+    fm_save_state($state);
+}
+
+function fm_toggle_pin(string $rel): array
+{
+    $abs = fm_resolve($rel);
+    if ($abs === null || !is_dir($abs)) {
+        return ['ok' => false, 'error' => 'Only existing folders can be pinned.'];
+    }
+    $rel = fm_rel($abs);
+    $state = fm_state();
+    $pinned = in_array($rel, $state['pinned'], true);
+    $state['pinned'] = array_values(array_filter($state['pinned'], fn($p) => $p !== $rel));
+    if (!$pinned) {
+        array_unshift($state['pinned'], $rel);
+    }
+    $ok = fm_save_state($state);
+    if ($ok) { audit($pinned ? 'file.unpin' : 'file.pin', $rel); }
+    return $ok ? ['ok' => true, 'pinned' => !$pinned] : ['ok' => false, 'error' => 'Could not save pinned folders.'];
+}
+
+/** Resolve saved paths and discard stale/out-of-scope records. */
+function fm_state_entries(string $key): array
+{
+    $state = fm_state();
+    $items = [];
+    foreach ((array) ($state[$key] ?? []) as $rel) {
+        $abs = fm_resolve((string) $rel);
+        if ($abs === null || ($key === 'pinned' ? !is_dir($abs) : !is_file($abs))) {
+            continue;
+        }
+        $items[] = [
+            'name' => basename($abs),
+            'rel' => fm_rel($abs),
+            'is_dir' => is_dir($abs),
+            'size' => is_file($abs) ? (@filesize($abs) ?: 0) : null,
+            'mtime' => @filemtime($abs) ?: 0,
+            'perms' => substr(sprintf('%o', @fileperms($abs) ?: 0), -4),
+            'owner' => fm_owner($abs),
+            'group' => fm_group($abs),
+            'ext' => is_file($abs) ? strtolower(pathinfo($abs, PATHINFO_EXTENSION)) : '',
+        ];
+    }
+    return $items;
+}
+
+/** Common interactive/service accounts exposed by the ownership editor. */
+function fm_account_names(string $kind): array
+{
+    $file = $kind === 'group' ? '/etc/group' : '/etc/passwd';
+    $names = ['root', 'www-data'];
+    foreach (@file($file, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) ?: [] as $line) {
+        $parts = explode(':', $line);
+        $name = (string) ($parts[0] ?? '');
+        $id = (int) ($parts[2] ?? -1);
+        if ($name !== '' && ($id >= 1000 || in_array($name, ['root', 'www-data', 'staff'], true))) {
+            $names[] = $name;
+        }
+    }
+    $names = array_values(array_unique($names));
+    sort($names, SORT_NATURAL | SORT_FLAG_CASE);
+    return $names;
+}
+
+/** Change owner/group through the root-owned helper, confined to FM_ROOT. */
+function fm_chown(string $rel, string $owner, string $group): array
+{
+    $abs = fm_resolve($rel);
+    if ($abs === null || !file_exists($abs)) {
+        return ['ok' => false, 'error' => 'Path not found or not allowed.'];
+    }
+    if (!preg_match('/^[a-z_][a-z0-9_-]{0,31}$/', $owner)
+        || !preg_match('/^[a-z_][a-z0-9_-]{0,31}$/', $group)) {
+        return ['ok' => false, 'error' => 'Invalid owner or group.'];
+    }
+    [$code, $out] = helper_cmd(
+        'file-chown ' . escapeshellarg($abs) . ' ' . escapeshellarg($owner) . ' ' . escapeshellarg($group)
+    );
+    audit('file.chown', fm_rel($abs) . " $owner:$group");
+    return $code === 0 ? ['ok' => true] : ['ok' => false, 'error' => trim($out) ?: 'Ownership change failed.'];
+}
+
+/** Create a .tar.gz archive in a directory within FM_ROOT. */
+function fm_compress(array $paths, string $destDir, string $name): array
+{
+    $dest = fm_resolve($destDir);
+    if ($dest === null || !is_dir($dest)) {
+        return ['ok' => false, 'error' => 'Destination folder is not allowed.'];
+    }
+    $name = trim($name);
+    if (!preg_match('/^[A-Za-z0-9][A-Za-z0-9._-]{0,120}\.tar\.gz$/', $name)) {
+        return ['ok' => false, 'error' => 'Archive name must end in .tar.gz and use safe characters.'];
+    }
+    $target = $dest . '/' . $name;
+    if (file_exists($target)) {
+        return ['ok' => false, 'error' => 'An archive with that name already exists.'];
+    }
+    $rels = [];
+    foreach (array_slice(array_values(array_unique($paths)), 0, 100) as $rel) {
+        $abs = fm_resolve((string) $rel);
+        if ($abs === null || $abs === fm_root()) {
+            return ['ok' => false, 'error' => 'One of the selected paths is not allowed.'];
+        }
+        $rels[] = fm_rel($abs);
+    }
+    if (!$rels) {
+        return ['ok' => false, 'error' => 'Select at least one item to compress.'];
+    }
+    $args = implode(' ', array_map('escapeshellarg', $rels));
+    [$code, $out, $err] = run_cmd(
+        'tar -czf ' . escapeshellarg($target) . ' -C ' . escapeshellarg(fm_root()) . ' -- ' . $args,
+        300
+    );
+    if ($code !== 0) {
+        @unlink($target);
+        return ['ok' => false, 'error' => trim($out . "\n" . $err) ?: 'Compression failed.'];
+    }
+    audit('file.compress', implode(', ', $rels) . ' -> ' . fm_rel($target));
+    return ['ok' => true, 'path' => fm_rel($target)];
 }
 
 /** Validate a single path segment (no separators, not . or ..). */
@@ -237,7 +408,10 @@ function fm_chmod(string $rel, string $mode): array
         return ['ok' => false, 'error' => 'Invalid mode.'];
     }
     if (!@chmod($abs, octdec($mode))) {
-        return ['ok' => false, 'error' => 'chmod failed (permissions?).'];
+        [$code, $out] = helper_cmd('file-chmod ' . escapeshellarg($abs) . ' ' . escapeshellarg($mode));
+        if ($code !== 0) {
+            return ['ok' => false, 'error' => trim($out) ?: 'chmod failed (permissions?).'];
+        }
     }
     audit('file.chmod', fm_rel($abs) . ' ' . $mode);
     return ['ok' => true];
@@ -266,6 +440,11 @@ function fm_save(string $rel, string $content): array
 /** Recursively copy a file or directory tree. */
 function fm_copy_recursive(string $src, string $dst): bool
 {
+    // Never follow symlinks while recursively copying: a link below FM_ROOT
+    // may point outside the confined tree.
+    if (is_link($src)) {
+        return false;
+    }
     if (is_dir($src)) {
         if (!@mkdir($dst, 0755) && !is_dir($dst)) {
             return false;
@@ -304,6 +483,9 @@ function fm_op(string $rel, string $destDir, string $op): array
         return ['ok' => false, 'error' => 'Destination not found or not allowed.'];
     }
     $target = $destAbs . '/' . basename($abs);
+    if (is_dir($abs) && ($destAbs === $abs || strpos($destAbs, $abs . DIRECTORY_SEPARATOR) === 0)) {
+        return ['ok' => false, 'error' => 'A folder cannot be copied or moved into itself.'];
+    }
     if (file_exists($target)) {
         return ['ok' => false, 'error' => 'Target already exists in destination.'];
     }
