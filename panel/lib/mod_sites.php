@@ -220,6 +220,8 @@ function site_delete(string $domain, bool $purge = false): array
     }
     $sites = array_values(array_filter($sites, fn($s) => ($s['domain'] ?? '') !== $domain));
     sites_save($sites);
+    require_once APP_ROOT . '/lib/mod_dns.php';
+    dns_forget_zone($domain);
     audit('site.delete', $domain);
     return ['ok' => true];
 }

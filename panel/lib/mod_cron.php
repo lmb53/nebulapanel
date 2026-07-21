@@ -115,3 +115,19 @@ function cron_delete(int $index): array
     }
     return $res;
 }
+
+function cron_update(int $index,string $schedule,string $command): array
+{
+    $schedule=trim($schedule);$command=trim($command);$lines=cron_current_lines();
+    if(!isset($lines[$index]))return ['ok'=>false,'error'=>'Job not found.'];
+    if($schedule===''||$command===''||($schedule[0]!=='@'&&count(preg_split('/\s+/',$schedule))!==5))return ['ok'=>false,'error'=>'Enter a valid schedule and command.'];
+    $lines[$index]=$schedule.' '.$command;$res=cron_save($lines);if(!empty($res['ok']))audit('cron.update',$lines[$index]);return $res;
+}
+
+function cron_runs_file(): string { return DATA_DIR.'/cron-runs.json'; }
+function cron_runs(): array { $runs=@json_decode((string)@file_get_contents(cron_runs_file()),true);return is_array($runs)?$runs:[]; }
+function cron_run_now(int $index): array
+{
+    $lines=cron_current_lines();if(!isset($lines[$index]))return ['ok'=>false,'error'=>'Job not found.'];$parsed=null;foreach(cron_list() as $job)if(($job['index']??-1)===$index&&($job['type']??'')==='job'){$parsed=$job;break;}if(!$parsed)return ['ok'=>false,'error'=>'Only cron jobs can be run.'];
+    [$code,$out]=run_cmd((string)$parsed['command'],60);$runs=cron_runs();array_unshift($runs,['time'=>date('c'),'schedule'=>$parsed['schedule'],'command'=>$parsed['command'],'exit'=>$code,'output'=>substr($out,0,4000)]);write_json_file(cron_runs_file(),array_slice($runs,0,30));audit('cron.run',$parsed['command'].' (exit '.$code.')');return ['ok'=>$code===0,'exit'=>$code,'output'=>$out,'error'=>$code===0?'':('Command exited with code '.$code)];
+}

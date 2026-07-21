@@ -10,8 +10,6 @@ function nebula_modules(): array
 {
     return [
         'dashboard'  => ['layout-dashboard', 'Dashboard',    'Overview'],
-        'monitoring' => ['activity',         'Monitoring',   'Overview'],
-
         'websites'   => ['globe',            'Websites',     'Hosting'],
         'files'      => ['folder-tree',      'File Manager', 'Hosting'],
         'domains'    => ['earth',            'Domains',      'Hosting'],

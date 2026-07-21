@@ -142,6 +142,7 @@ function db_link_website(string $database, string $website): array
 /** Create a database and, optionally, a user/grant and website link. */
 function db_create_bundle(string $name, string $user, string $host, string $password, string $website): array
 {
+    if ($website === '') { return ['ok' => false, 'error' => 'A website owner is required.']; }
     $created = db_create($name);
     if (empty($created['ok'])) { return $created; }
     if ($user !== '') {

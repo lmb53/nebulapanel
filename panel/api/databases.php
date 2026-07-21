@@ -39,18 +39,29 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 $dbs = db_list();
 $schemaUsers = db_schema_users();
 $links = db_links();
-$databases = $dbs['databases'] ?? [];
+$databases = array_values(array_filter($dbs['databases'] ?? [], static function (array $database) use ($links): bool {
+    $name = (string) ($database['name'] ?? '');
+    return !in_array($name, SYSTEM_DBS, true) && !empty($links[$name]);
+}));
 foreach ($databases as &$database) {
     $name = (string) ($database['name'] ?? '');
     $database['users'] = $schemaUsers[$name] ?? [];
     $database['website'] = (string) ($links[$name] ?? '');
 }
 unset($database);
+$visibleUsers = [];
+foreach ($databases as $database) {
+    foreach (($database['users'] ?? []) as $grantee) {
+        if (preg_match("/^([^']+)'@'([^']+)$/", (string) $grantee, $match)) {
+            $visibleUsers[$match[1] . '@' . $match[2]] = ['user' => $match[1], 'host' => $match[2]];
+        }
+    }
+}
 require_once APP_ROOT . '/lib/mod_sites.php';
 json_out([
     'ok'        => true,
     'databases' => $databases,
-    'users'     => db_users()['users'] ?? [],
+    'users'     => array_values($visibleUsers),
     'version'   => db_version(),
     'websites'  => array_values(array_map(fn($site) => (string) ($site['domain'] ?? ''), sites_list())),
 ]);

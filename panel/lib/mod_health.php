@@ -29,16 +29,16 @@ function health_summary(): array
     if ($mem) {
         $pct = round($mem['used'] / max(1, $mem['total']) * 100, 1);
         if ($pct >= $critical) {
-            $add('critical', 'Memory pressure is critical', $pct . '% of RAM is in use', 'monitoring', 'memory-stick');
+            $add('critical', 'Memory pressure is critical', $pct . '% of RAM is in use', 'dashboard', 'memory-stick');
         } elseif ($pct >= $warn) {
-            $add('warning', 'Memory pressure is elevated', $pct . '% of RAM is in use', 'monitoring', 'memory-stick');
+            $add('warning', 'Memory pressure is elevated', $pct . '% of RAM is in use', 'dashboard', 'memory-stick');
         }
     }
 
     $cores = max(1, (int) (system_facts()['cpu_cores'] ?? 1));
     $load = load_avg();
     if (($load[0] ?? 0) >= $cores * 1.5) {
-        $add('warning', 'System load is high', '1-minute load ' . round($load[0], 2) . ' across ' . $cores . ' vCPU', 'monitoring', 'activity');
+        $add('warning', 'System load is high', '1-minute load ' . round($load[0], 2) . ' across ' . $cores . ' vCPU', 'dashboard', 'activity');
     }
 
     $allowed = array_values(array_unique(array_merge((array) ($config['services'] ?? []), manageable_units())));

@@ -11,6 +11,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $res = cron_add((string) ($body['schedule'] ?? ''), (string) ($body['command'] ?? ''));
     } elseif ($action === 'delete') {
         $res = cron_delete((int) ($body['index'] ?? -1));
+    } elseif ($action === 'update') {
+        $res = cron_update((int)($body['index']??-1),(string)($body['schedule']??''),(string)($body['command']??''));
+    } elseif ($action === 'run') {
+        $res = cron_run_now((int)($body['index']??-1));
     } else {
         $res = ['ok' => false, 'error' => 'Unknown action.'];
     }
