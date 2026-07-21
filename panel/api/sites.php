@@ -17,6 +17,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $res = site_delete((string) ($body['domain'] ?? ''), (bool) ($body['purge'] ?? false));
     } elseif ($action === 'ssl') {
         $res = site_ssl((string) ($body['domain'] ?? ''), (string) ($body['email'] ?? ''));
+    } elseif ($action === 'php') {
+        $res = site_set_php((string) ($body['domain'] ?? ''), (string) ($body['version'] ?? ''));
     } else {
         $res = ['ok' => false, 'error' => 'Unknown action.'];
     }

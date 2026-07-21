@@ -515,10 +515,11 @@ document.addEventListener('DOMContentLoaded', () => {
   bindClick('fmUploadBtn', () => fileInput?.click());
   bindClick('fmUploadBtn2', () => fileInput?.click());
 
-  async function uploadFile(file) {
+  async function uploadFile(file, overwrite = false) {
     const fd = new FormData();
     fd.append('dir', CURDIR);
     fd.append('file', file);
+    fd.append('overwrite', overwrite ? '1' : '0');
     try {
       const r = await fetch(window.Nebula.api('file-upload'), {
         method: 'POST',
@@ -526,7 +527,14 @@ document.addEventListener('DOMContentLoaded', () => {
         body: fd,
       });
       const res = await r.json();
-      if (res.ok) { toast(`Uploaded ${file.name}`, 'success'); return true; }
+      if (res.ok) { toast(`${res.overwritten ? 'Replaced' : 'Uploaded'} ${file.name}`, 'success'); return true; }
+      if (res.conflict) {
+        if (confirm(`"${file.name}" already exists. Replace it with the uploaded file?`)) {
+          return uploadFile(file, true);
+        }
+        toast(`Skipped ${file.name}`, 'info');
+        return false;
+      }
       toast(res.error || `Upload failed: ${file.name}`, 'error');
     } catch (e) { toast(`Upload failed: ${file.name}`, 'error'); }
     return false;
