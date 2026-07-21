@@ -97,14 +97,14 @@ function php_installed_versions(): array
 
 function php_installable_versions(): array
 {
-    $all = ['7.4', '8.0', '8.1', '8.2', '8.3', '8.4'];
+    $all = ['8.2', '8.3', '8.4', '8.5'];
     return array_values(array_diff($all, php_installed_versions()));
 }
 
 function php_install(string $ver, ?callable $onOutput = null): array
 {
-    if (!preg_match('/^\d+\.\d+$/', $ver)) {
-        return ['ok' => false, 'error' => 'Invalid version.'];
+    if (!in_array($ver, php_installable_versions(), true)) {
+        return ['ok' => false, 'error' => 'This PHP version is unavailable or already installed.'];
     }
     $args = 'php-install ' . escapeshellarg($ver);
     [$code, $out] = $onOutput ? helper_cmd_stream($args, $onOutput, 900) : helper_cmd($args, 900);

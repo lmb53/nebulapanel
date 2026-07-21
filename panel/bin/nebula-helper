@@ -22,6 +22,21 @@ valid_email()  { [[ -z "$1" || "$1" =~ ^[^@[:space:]]+@[^@[:space:]]+$ ]] || die
 valid_user()   { [[ "$1" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] || die "invalid user"; }
 valid_group()  { [[ "$1" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] || die "invalid group"; }
 
+# Schedule PHP-FPM work after the current panel FastCGI response can finish.
+schedule_php_service() {
+  local action="$1" ver="$2" unit
+  [[ "$action" == "reload" || "$action" == "restart" ]] || die "invalid PHP service action"
+  valid_php "$ver"
+  unit="nebula-php${ver//./-}-${action}-$(date +%s)-$$-$RANDOM"
+  if command -v systemd-run >/dev/null 2>&1; then
+    systemd-run --quiet --unit="$unit" --on-active=2s /bin/sh -c \
+      "systemctl ${action} php${ver}-fpm 2>/dev/null || systemctl restart php${ver}-fpm 2>/dev/null || true" || true
+  else
+    nohup /bin/sh -c "sleep 2; systemctl ${action} php${ver}-fpm 2>/dev/null || systemctl restart php${ver}-fpm 2>/dev/null || true" \
+      >/dev/null 2>&1 &
+  fi
+}
+
 # Resolve a path and prove it is inside the installer-owned File Manager root.
 fm_confined_path() {
   local requested="$1" root target
@@ -30,6 +45,19 @@ fm_confined_path() {
   target="$(realpath "$requested" 2>/dev/null || true)"
   [[ -n "$root" && -n "$target" ]] || die "path not found"
   [[ "$target" == "$root" || "$target" == "$root"/* ]] || die "path is outside file manager root"
+  printf '%s\n' "$target"
+}
+
+# Resolve a not-yet-created path by validating its existing parent.
+fm_confined_new_path() {
+  local requested="$1" root parent target
+  [[ -r "$FM_ROOT_FILE" ]] || die "file manager root is not configured; re-run install.sh"
+  root="$(realpath "$(head -n 1 "$FM_ROOT_FILE")" 2>/dev/null || true)"
+  parent="$(realpath "$(dirname "$requested")" 2>/dev/null || true)"
+  [[ -n "$root" && -n "$parent" ]] || die "destination parent not found"
+  [[ "$parent" == "$root" || "$parent" == "$root"/* ]] || die "destination is outside file manager root"
+  target="$parent/$(basename "$requested")"
+  [[ ! -e "$target" ]] || die "destination already exists"
   printf '%s\n' "$target"
 }
 
@@ -63,6 +91,35 @@ case "$CMD" in
     getent group "$GROUP" >/dev/null || die "group not found"
     chown "$OWNER:$GROUP" "$TARGET"
     echo "ownership updated"
+    ;;
+
+  # file-compress <zip|tar.gz> <absolute-target> <absolute-source> [...]
+  # Both destination and sources are independently confined below FM_ROOT.
+  file-compress)
+    FORMAT="${1:-}"; shift || true
+    TARGET="$(fm_confined_new_path "${1:-}")"; shift || true
+    [[ "$FORMAT" == "zip" || "$FORMAT" == "tar.gz" ]] || die "unsupported archive format"
+    [[ "$FORMAT" != "zip" || "$TARGET" == *.zip ]] || die "zip target must end in .zip"
+    [[ "$FORMAT" != "tar.gz" || "$TARGET" == *.tar.gz ]] || die "tar target must end in .tar.gz"
+    [[ "$#" -ge 1 && "$#" -le 100 ]] || die "select between 1 and 100 items"
+    ROOT="$(realpath "$(head -n 1 "$FM_ROOT_FILE")")"
+    RELS=()
+    FIRST=""
+    for REQUESTED in "$@"; do
+      SOURCE="$(fm_confined_path "$REQUESTED")"
+      [[ "$SOURCE" != "$ROOT" ]] || die "cannot archive the file manager root"
+      [[ -n "$FIRST" ]] || FIRST="$SOURCE"
+      RELS+=("${SOURCE#"$ROOT"/}")
+    done
+    if [[ "$FORMAT" == "zip" ]]; then
+      command -v zip >/dev/null || die "zip is not installed; re-run install.sh"
+      (cd "$ROOT" && zip -rq "$TARGET" -- "${RELS[@]}") || { rm -f "$TARGET"; die "zip creation failed"; }
+    else
+      tar -czf "$TARGET" -C "$ROOT" -- "${RELS[@]}" || { rm -f "$TARGET"; die "tar archive creation failed"; }
+    fi
+    chown --reference="$FIRST" "$TARGET" 2>/dev/null || true
+    chmod 0640 "$TARGET" 2>/dev/null || true
+    echo "created $TARGET"
     ;;
 
   # ssh-keys-list <user> / ssh-key-add <user> <base64-key> / ssh-key-delete <user> <line>
@@ -148,6 +205,51 @@ EOF
     echo "created $DOMAIN -> $DOCROOT (PHP $PHPVER)"
     ;;
 
+  # Discover simple per-domain Nginx vhosts managed in the same layout Nebula
+  # creates. Output: domain<TAB>docroot<TAB>php-version<TAB>ssl-state.
+  site-list)
+    shopt -s nullglob
+    for CONF in "$NGINX_AV"/*; do
+      [[ -f "$CONF" ]] || continue
+      DOMAIN="$(basename "$CONF")"
+      [[ "$DOMAIN" == "default" || "$DOMAIN" == "nebula" ]] && continue
+      [[ "$DOMAIN" =~ ^[a-zA-Z0-9]([a-zA-Z0-9.-]{0,251}[a-zA-Z0-9])?$ ]] || continue
+      SERVER_NAME="$(awk '/^[[:space:]]*server_name[[:space:]]+/ {gsub(/;/, "", $2); print $2; exit}' "$CONF")"
+      [[ "$SERVER_NAME" == "$DOMAIN" ]] || continue
+      DOCROOT="$(awk '/^[[:space:]]*root[[:space:]]+/ {gsub(/;/, "", $2); print $2; exit}' "$CONF")"
+      [[ "$DOCROOT" =~ ^/[a-zA-Z0-9._/-]+$ && "$DOCROOT" != *".."* ]] || continue
+      PHPVER="$(grep -m1 -E 'fastcgi_pass[[:space:]]+unix:/run/php/php[0-9]+\.[0-9]+-fpm\.sock;' "$CONF" 2>/dev/null \
+        | sed -E 's#.*fastcgi_pass[[:space:]]+unix:/run/php/php([0-9]+\.[0-9]+)-fpm\.sock;.*#\1#' || true)"
+      [[ -n "$PHPVER" ]] || PHPVER=""
+      SSL=no; grep -qE '^[[:space:]]*ssl_certificate[[:space:]]' "$CONF" && SSL=yes
+      printf '%s\t%s\t%s\t%s\n' "$DOMAIN" "$DOCROOT" "$PHPVER" "$SSL"
+    done
+    ;;
+
+  # Change the PHP-FPM socket used by an existing Nebula Nginx vhost.
+  site-php)
+    DOMAIN="${1:-}"; PHPVER="${2:-}"
+    valid_domain "$DOMAIN"; valid_php "$PHPVER"
+    CONF="$NGINX_AV/$DOMAIN"; SOCK="/run/php/php${PHPVER}-fpm.sock"
+    [[ -f "$CONF" ]] || die "website config not found"
+    [[ -S "$SOCK" ]] || die "PHP-FPM $PHPVER is not running"
+    grep -qE 'fastcgi_pass[[:space:]]+unix:/run/php/php[0-9.]+-fpm\.sock;' "$CONF" || die "website has no managed PHP-FPM socket"
+    TMP="$(mktemp)"; trap 'rm -f "$TMP"' EXIT; cp "$CONF" "$TMP"
+    sed -i -E "s#fastcgi_pass[[:space:]]+unix:/run/php/php[0-9.]+-fpm\.sock;#fastcgi_pass unix:$SOCK;#" "$CONF"
+    nginx -t >/dev/null 2>&1 || { cp "$TMP" "$CONF"; die "nginx config test failed"; }
+    systemctl reload nginx
+    echo "updated $DOMAIN to PHP $PHPVER"
+    ;;
+
+  # site-stats <docroot> -> bytes<TAB>files. Read-only but privileged so
+  # sites with restrictive ownership are still measured accurately.
+  site-stats)
+    DOCROOT="${1:-}"; valid_path "$DOCROOT"; [[ -d "$DOCROOT" ]] || die "document root not found"
+    BYTES="$(du -sb -- "$DOCROOT" 2>/dev/null | awk '{print $1}')"
+    FILES="$(find "$DOCROOT" -xdev -type f 2>/dev/null | wc -l | tr -d ' ')"
+    printf '%s\t%s\n' "${BYTES:-0}" "${FILES:-0}"
+    ;;
+
   # site-delete <domain> [purge] [docroot]
   site-delete)
     DOMAIN="${1:-}"; PURGE="${2:-no}"; DOCROOT="${3:-}"
@@ -178,7 +280,7 @@ EOF
   # php-install <version>  (adds ondrej/php PPA on Ubuntu, installs php<ver>-fpm + common extensions)
   php-install)
     VER="${1:-}"
-    [[ "$VER" =~ ^[0-9]+\.[0-9]+$ ]] || die "invalid php version"
+    case "$VER" in 8.2|8.3|8.4|8.5) ;; *) die "unsupported php version" ;; esac
     export DEBIAN_FRONTEND=noninteractive
     if ! command -v add-apt-repository >/dev/null 2>&1; then
         apt-get -o Dpkg::Use-Pty=0 -o APT::Color=0 update
@@ -193,6 +295,90 @@ EOF
       || die "apt install failed for php ${VER}"
     systemctl enable --now "php${VER}-fpm" || true
     echo "installed php ${VER}"
+    ;;
+
+  # php-extension <install|enable|disable> <version> <extension>
+  php-extension)
+    ACTION="${1:-}"; VER="${2:-}"; EXTENSION="${3:-}"
+    valid_php "$VER"
+    case "$ACTION" in install|enable|disable) ;; *) die "invalid extension action" ;; esac
+    case "$EXTENSION" in curl|mbstring|xml|gd|zip|mysql|intl|bcmath|soap|imagick|redis|xdebug|imap|opcache) ;;
+      *) die "extension is not managed" ;;
+    esac
+    PACKAGE="php${VER}-${EXTENSION}"
+    if [[ "$ACTION" == "install" ]]; then
+      export DEBIAN_FRONTEND=noninteractive
+      apt-get -o Dpkg::Use-Pty=0 -o APT::Color=0 update
+      apt-get -o Dpkg::Use-Pty=0 -o APT::Color=0 install -y "$PACKAGE" || die "extension install failed"
+    else
+      MODULES=("$EXTENSION")
+      case "$EXTENSION" in
+        mysql) MODULES=(mysqlnd mysqli pdo_mysql) ;;
+        xml) MODULES=(dom simplexml xml xmlreader xmlwriter xsl) ;;
+      esac
+      for MODULE in "${MODULES[@]}"; do
+        [[ -f "/etc/php/$VER/mods-available/$MODULE.ini" ]] || continue
+        if [[ "$ACTION" == "enable" ]]; then phpenmod -v "$VER" -s ALL "$MODULE"
+        else phpdismod -v "$VER" -s ALL "$MODULE"; fi
+      done
+    fi
+    schedule_php_service reload "$VER"
+    echo "$ACTION complete for PHP $VER $EXTENSION"
+    ;;
+
+  # Restart one or every running PHP-FPM version without dropping this request.
+  php-restart)
+    VER="${1:-}"
+    if [[ "$VER" == "all" ]]; then
+      FOUND=0
+      for SOCK in /run/php/php*-fpm.sock; do
+        [[ -S "$SOCK" ]] || continue
+        ITEM="$(basename "$SOCK" | sed -E 's/php([0-9.]+)-fpm\.sock/\1/')"
+        valid_php "$ITEM"; schedule_php_service restart "$ITEM"; FOUND=1
+      done
+      [[ "$FOUND" == 1 ]] || die "no running PHP-FPM pools found"
+    else
+      valid_php "$VER"; schedule_php_service restart "$VER"
+    fi
+    echo "PHP-FPM restart scheduled"
+    ;;
+
+  # Replace/restore the FPM php.ini after decoding and validating a bounded
+  # payload. A single previous version is retained for the Revert action.
+  php-ini-replace)
+    VER="${1:-}"; INI_B64="${2:-}"; valid_php "$VER"
+    [[ "$INI_B64" =~ ^[A-Za-z0-9+/=]+$ && "${#INI_B64}" -le 500000 ]] || die "invalid or oversized php.ini payload"
+    INI="/etc/php/$VER/fpm/php.ini"; [[ -f "$INI" ]] || die "FPM php.ini not found"
+    TMP="$(mktemp)"; trap 'rm -f "$TMP"' EXIT
+    printf '%s' "$INI_B64" | base64 -d > "$TMP" 2>/dev/null || die "invalid php.ini encoding"
+    [[ -s "$TMP" && "$(wc -c < "$TMP")" -le 350000 ]] || die "php.ini is empty or too large"
+    CHECK="$("php$VER" -c "$TMP" -r 'exit(0);' 2>&1)" || die "php.ini validation failed: $CHECK"
+    [[ "$CHECK" != *"syntax error"* ]] || die "php.ini validation failed: $CHECK"
+    cp "$INI" "$INI.nebula-backup"
+    chown --reference="$INI" "$INI.nebula-backup" 2>/dev/null || true
+    chmod --reference="$INI" "$INI.nebula-backup" 2>/dev/null || true
+    install -m 0644 -o root -g root "$TMP" "$INI"
+    schedule_php_service reload "$VER"
+    echo "php.ini saved; reload scheduled"
+    ;;
+
+  php-ini-restore)
+    VER="${1:-}"; valid_php "$VER"
+    INI="/etc/php/$VER/fpm/php.ini"; BACKUP="$INI.nebula-backup"
+    [[ -f "$INI" && -f "$BACKUP" ]] || die "no php.ini backup is available"
+    TMP="$(mktemp)"; trap 'rm -f "$TMP"' EXIT; cp "$INI" "$TMP"
+    install -m 0644 -o root -g root "$BACKUP" "$INI"
+    install -m 0644 -o root -g root "$TMP" "$BACKUP"
+    schedule_php_service reload "$VER"
+    echo "php.ini restored; reload scheduled"
+    ;;
+
+  composer-install)
+    command -v composer >/dev/null 2>&1 && die "Composer is already installed"
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get -o Dpkg::Use-Pty=0 -o APT::Color=0 update
+    apt-get -o Dpkg::Use-Pty=0 -o APT::Color=0 install -y composer || die "Composer installation failed"
+    echo "Composer installed"
     ;;
 
   # pma-install <targetdir>
@@ -230,6 +416,31 @@ EOF
     echo "removed $TARGET"
     ;;
 
+  # Configure phpMyAdmin's documented signon authentication mode. The panel
+  # creates the short-lived signed launch URL and writes credentials only to a
+  # dedicated server-side PHP session; no database password appears in a URL.
+  pma-signon)
+    TARGET="${1:-}"; SIGNON_URL="${2:-}"
+    valid_path "$TARGET"
+    [[ "$SIGNON_URL" =~ ^https?://[A-Za-z0-9._:/?=%-]+$ ]] || die "invalid signon URL"
+    LOGOUT_URL="${SIGNON_URL/pma-signon/databases}"
+    COOKIE_SECURE=false; [[ "$SIGNON_URL" == https://* ]] && COOKIE_SECURE=true
+    CONFIG="$TARGET/config.inc.php"
+    [[ -f "$CONFIG" ]] || die "phpMyAdmin config not found"
+    if ! grep -q 'NEBULA_SIGNON' "$CONFIG"; then
+      cat >> "$CONFIG" <<EOF
+
+/* NEBULA_SIGNON: managed by Nebula Panel */
+\$cfg['Servers'][\$i]['auth_type'] = 'signon';
+\$cfg['Servers'][\$i]['SignonSession'] = 'NebulaPmaSignon';
+\$cfg['Servers'][\$i]['SignonCookieParams'] = ['lifetime' => 0, 'path' => '/', 'domain' => '', 'secure' => $COOKIE_SECURE, 'httponly' => true, 'samesite' => 'Lax'];
+\$cfg['Servers'][\$i]['SignonURL'] = '$SIGNON_URL';
+\$cfg['Servers'][\$i]['LogoutURL'] = '$LOGOUT_URL';
+EOF
+    fi
+    echo "phpMyAdmin signon enabled"
+    ;;
+
   # cert-list  -> raw `certbot certificates` output (parsed by the panel)
   cert-list)
     command -v certbot >/dev/null || die "certbot not installed"
@@ -257,29 +468,108 @@ EOF
     echo "deleted $NAME"
     ;;
 
+  # cert-upload <domain> <cert-b64> <key-b64> [chain-b64]
+  cert-upload)
+    DOMAIN="${1:-}"; CERT_B64="${2:-}"; KEY_B64="${3:-}"; CHAIN_B64="${4:-}"
+    valid_domain "$DOMAIN"
+    [[ "$CERT_B64" =~ ^[A-Za-z0-9+/=]+$ && "$KEY_B64" =~ ^[A-Za-z0-9+/=]+$ ]] || die "invalid certificate encoding"
+    [[ -z "$CHAIN_B64" || "$CHAIN_B64" =~ ^[A-Za-z0-9+/=]+$ ]] || die "invalid chain encoding"
+    CONF="$NGINX_AV/$DOMAIN"; [[ -f "$CONF" ]] || die "website nginx config not found"
+    if grep -qE '^[[:space:]]*ssl_certificate[[:space:]]' "$CONF" && ! grep -q 'NEBULA_CUSTOM_SSL_BEGIN' "$CONF"; then
+      die "the website already has a non-Nebula certificate; remove it before uploading a replacement"
+    fi
+    TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
+    printf '%s' "$CERT_B64" | base64 -d > "$TMP/cert.pem" 2>/dev/null || die "invalid certificate data"
+    printf '%s' "$KEY_B64" | base64 -d > "$TMP/key.pem" 2>/dev/null || die "invalid private key data"
+    openssl x509 -in "$TMP/cert.pem" -noout >/dev/null 2>&1 || die "invalid X.509 certificate"
+    openssl x509 -in "$TMP/cert.pem" -checkhost "$DOMAIN" -noout >/dev/null 2>&1 || die "certificate does not cover $DOMAIN"
+    openssl pkey -in "$TMP/key.pem" -noout >/dev/null 2>&1 || die "invalid private key"
+    CERT_PUB="$(openssl x509 -in "$TMP/cert.pem" -pubkey -noout | openssl sha256)"
+    KEY_PUB="$(openssl pkey -in "$TMP/key.pem" -pubout | openssl sha256)"
+    [[ "$CERT_PUB" == "$KEY_PUB" ]] || die "certificate and private key do not match"
+    CERT_DIR="/etc/nebula-panel/certs/$DOMAIN"
+    [[ -f "$CERT_DIR/fullchain.pem" ]] && cp "$CERT_DIR/fullchain.pem" "$TMP/old-fullchain.pem"
+    [[ -f "$CERT_DIR/privkey.pem" ]] && cp "$CERT_DIR/privkey.pem" "$TMP/old-privkey.pem"
+    install -d -m 0700 -o root -g root "$CERT_DIR"
+    cp "$TMP/cert.pem" "$TMP/fullchain.pem"
+    if [[ -n "$CHAIN_B64" ]]; then
+      printf '%s' "$CHAIN_B64" | base64 -d > "$TMP/chain.pem" 2>/dev/null || die "invalid chain data"
+      grep -q -- '-----BEGIN CERTIFICATE-----' "$TMP/chain.pem" || die "invalid certificate chain"
+      printf '\n' >> "$TMP/fullchain.pem"; cat "$TMP/chain.pem" >> "$TMP/fullchain.pem"
+    fi
+    install -m 0644 -o root -g root "$TMP/fullchain.pem" "$CERT_DIR/fullchain.pem"
+    install -m 0600 -o root -g root "$TMP/key.pem" "$CERT_DIR/privkey.pem"
+    cp "$CONF" "$TMP/nginx.conf"
+    sed -i '/# NEBULA_CUSTOM_SSL_BEGIN/,/# NEBULA_CUSTOM_SSL_END/d' "$CONF"
+    awk -v cert="$CERT_DIR/fullchain.pem" -v key="$CERT_DIR/privkey.pem" '
+      { print }
+      !done && /^[[:space:]]*server[[:space:]]*\{/ {
+        print "    # NEBULA_CUSTOM_SSL_BEGIN"
+        print "    listen 443 ssl;"
+        print "    listen [::]:443 ssl;"
+        print "    ssl_certificate " cert ";"
+        print "    ssl_certificate_key " key ";"
+        print "    # NEBULA_CUSTOM_SSL_END"
+        done=1
+      }
+    ' "$CONF" > "$TMP/new.conf"
+    install -m 0644 -o root -g root "$TMP/new.conf" "$CONF"
+    if ! nginx -t >/dev/null 2>&1; then
+      install -m 0644 -o root -g root "$TMP/nginx.conf" "$CONF"
+      if [[ -f "$TMP/old-fullchain.pem" && -f "$TMP/old-privkey.pem" ]]; then
+        install -m 0644 -o root -g root "$TMP/old-fullchain.pem" "$CERT_DIR/fullchain.pem"
+        install -m 0600 -o root -g root "$TMP/old-privkey.pem" "$CERT_DIR/privkey.pem"
+      else
+        rm -rf "$CERT_DIR"
+      fi
+      die "nginx rejected the uploaded certificate configuration"
+    fi
+    systemctl reload nginx
+    echo "custom certificate installed for $DOMAIN"
+    ;;
+
+  cert-custom-delete)
+    DOMAIN="${1:-}"; valid_domain "$DOMAIN"
+    CONF="$NGINX_AV/$DOMAIN"; CERT_DIR="/etc/nebula-panel/certs/$DOMAIN"
+    if [[ -f "$CONF" ]]; then
+      TMP="$(mktemp)"; trap 'rm -f "$TMP"' EXIT
+      cp "$CONF" "$TMP"
+      sed -i '/# NEBULA_CUSTOM_SSL_BEGIN/,/# NEBULA_CUSTOM_SSL_END/d' "$CONF"
+      nginx -t >/dev/null 2>&1 || { cp "$TMP" "$CONF"; die "nginx config test failed"; }
+      systemctl reload nginx
+    fi
+    rm -rf "$CERT_DIR"
+    echo "custom certificate removed for $DOMAIN"
+    ;;
+
   # php-ini <version> <key> <value>  (whitelisted keys; sets fpm+cli, reloads fpm)
   php-ini)
     VER="${1:-}"; KEY="${2:-}"; VAL="${3:-}"
     valid_php "$VER"
     case "$KEY" in
-      memory_limit|upload_max_filesize|post_max_size|max_execution_time|max_input_time|max_input_vars|display_errors) ;;
+      memory_limit|upload_max_filesize|post_max_size|max_execution_time|max_input_time|max_input_vars|display_errors|log_errors|max_file_uploads|default_socket_timeout|opcache.enable|opcache.memory_consumption|opcache.max_accelerated_files|opcache.validate_timestamps|xdebug.mode|xdebug.client_port|xdebug.start_with_request) ;;
       *) die "ini key not allowed" ;;
     esac
-    [[ "$VAL" =~ ^[A-Za-z0-9_.]+$ ]] || die "invalid value"
+    [[ "$VAL" =~ ^[A-Za-z0-9_.,-]+$ ]] || die "invalid value"
+    KEY_RE="${KEY//./\\.}"
     changed=0
     for SAPI in fpm cli; do
       INI="/etc/php/${VER}/${SAPI}/php.ini"
       [[ -f "$INI" ]] || continue
-      if grep -qE "^;?[[:space:]]*${KEY}[[:space:]]*=" "$INI"; then
-        sed -i -E "s|^;?[[:space:]]*(${KEY})[[:space:]]*=.*|\1 = ${VAL}|" "$INI"
+      if grep -qE "^;?[[:space:]]*${KEY_RE}[[:space:]]*=" "$INI"; then
+        sed -i -E "s|^;?[[:space:]]*(${KEY_RE})[[:space:]]*=.*|\1 = ${VAL}|" "$INI"
       else
         echo "${KEY} = ${VAL}" >> "$INI"
       fi
       changed=1
     done
     [[ "$changed" == 1 ]] || die "no php.ini found for ${VER}"
-    systemctl reload "php${VER}-fpm" 2>/dev/null || systemctl restart "php${VER}-fpm" 2>/dev/null || true
-    echo "set ${KEY}=${VAL} for php ${VER}"
+    # Do not reload the FPM pool synchronously: this helper is normally called
+    # by that same pool, and tearing down its FastCGI request produces an Nginx
+    # 502 even though the ini edit succeeded. Schedule the reload after the API
+    # response has had time to reach the browser.
+    schedule_php_service reload "$VER"
+    echo "set ${KEY}=${VAL} for php ${VER}; reload scheduled"
     ;;
 
   *)

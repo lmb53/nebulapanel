@@ -19,7 +19,7 @@ function sites_file(): string
 }
 
 /** Load the tracked sites (always an array). */
-function sites_list(): array
+function sites_stored(): array
 {
     $file = sites_file();
     if (!is_file($file)) {
@@ -27,6 +27,64 @@ function sites_list(): array
     }
     $j = json_decode((string) file_get_contents($file), true);
     return is_array($j) ? $j : [];
+}
+
+/** Read existing Nebula-style Nginx vhosts from the privileged helper. */
+function sites_discover(): array
+{
+    if (!helper_available()) { return []; }
+    [$code, $output] = helper_cmd('site-list', 30);
+    if ($code !== 0) { return []; }
+    $found = [];
+    foreach (preg_split('/\r?\n/', trim($output)) as $line) {
+        if ($line === '') { continue; }
+        [$domain, $docroot, $php, $ssl] = array_pad(explode("\t", $line, 4), 4, '');
+        if (!sv_domain_ok($domain) || !sv_path_ok($docroot)) { continue; }
+        $found[] = [
+            'domain' => $domain,
+            'docroot' => $docroot,
+            'php' => php_valid_version_for_site($php) ? $php : '',
+            'ssl' => $ssl === 'yes',
+            'server' => 'nginx',
+            'created' => null,
+            'discovered' => true,
+        ];
+    }
+    return $found;
+}
+
+function php_valid_version_for_site(string $version): bool
+{
+    return $version === '' || (bool) preg_match('/^[0-9]+\.[0-9]+$/', $version);
+}
+
+/** Load tracked sites and reconcile any surviving Nginx vhosts. */
+function sites_list(): array
+{
+    $stored = sites_stored();
+    $byDomain = [];
+    foreach ($stored as $site) {
+        if (!empty($site['domain'])) { $byDomain[(string) $site['domain']] = $site; }
+    }
+    $changed = false;
+    foreach (sites_discover() as $site) {
+        $domain = (string) $site['domain'];
+        if (!isset($byDomain[$domain])) {
+            $byDomain[$domain] = $site;
+            $changed = true;
+        } else {
+            // Nginx is authoritative for runtime fields after manual changes.
+            foreach (['docroot', 'php', 'ssl', 'server'] as $field) {
+                if (($byDomain[$domain][$field] ?? null) !== $site[$field]) {
+                    $byDomain[$domain][$field] = $site[$field];
+                    $changed = true;
+                }
+            }
+        }
+    }
+    $sites = array_values($byDomain);
+    if ($changed) { sites_save($sites); }
+    return $sites;
 }
 
 /** Enrich tracked sites with their underlying web service and disk usage. */
@@ -115,15 +173,24 @@ function site_create(string $domain, string $docroot, string $php): array
     if ($c !== 0) {
         return ['ok' => false, 'error' => trim($o) ?: 'site-create failed'];
     }
+    // sites_list() may have already rediscovered the vhost the helper just
+    // created. Enrich that record instead of adding a duplicate row.
     $sites = sites_list();
-    $sites[] = [
-        'domain'  => $domain,
-        'docroot' => $docroot,
-        'php'     => $php,
-        'ssl'     => false,
-        'server'  => 'nginx',
-        'created' => date('c'),
+    $record = [
+        'domain' => $domain, 'docroot' => $docroot, 'php' => $php,
+        'ssl' => false, 'server' => 'nginx', 'created' => date('c'),
     ];
+    $recorded = false;
+    foreach ($sites as &$site) {
+        if (($site['domain'] ?? '') === $domain) {
+            $site = array_merge($site, $record);
+            unset($site['discovered']);
+            $recorded = true;
+            break;
+        }
+    }
+    unset($site);
+    if (!$recorded) { $sites[] = $record; }
     sites_save($sites);
     audit('site.create', $domain);
     return ['ok' => true];
@@ -184,5 +251,24 @@ function site_ssl(string $domain, string $email = ''): array
     unset($s);
     sites_save($sites);
     audit('site.ssl', $domain);
+    return ['ok' => true];
+}
+
+/** Switch an existing managed Nginx website to another installed PHP-FPM version. */
+function site_set_php(string $domain, string $version): array
+{
+    if (!sv_domain_ok($domain)) { return ['ok' => false, 'error' => 'Invalid domain.']; }
+    if (!in_array($version, php_versions(), true)) { return ['ok' => false, 'error' => 'PHP version is not installed.']; }
+    $found = false;
+    foreach (sites_list() as $site) {
+        if (($site['domain'] ?? '') === $domain) { $found = true; break; }
+    }
+    if (!$found) { return ['ok' => false, 'error' => 'Website not found.']; }
+    [$code, $output] = helper_cmd('site-php ' . escapeshellarg($domain) . ' ' . escapeshellarg($version));
+    if ($code !== 0) { return ['ok' => false, 'error' => trim($output) ?: 'Could not switch PHP version.']; }
+    $sites = sites_list();
+    foreach ($sites as &$site) { if (($site['domain'] ?? '') === $domain) { $site['php'] = $version; } }
+    unset($site); sites_save($sites);
+    audit('site.php', $domain . ' -> ' . $version);
     return ['ok' => true];
 }

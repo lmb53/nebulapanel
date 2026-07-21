@@ -512,7 +512,7 @@ function fm_op(string $rel, string $destDir, string $op): array
 }
 
 /** Handle an uploaded file into relative directory $relDir. */
-function fm_upload(string $relDir, array $file): array
+function fm_upload(string $relDir, array $file, bool $overwrite = false): array
 {
     $abs = fm_resolve($relDir);
     if ($abs === null || !is_dir($abs)) {
@@ -533,11 +533,16 @@ function fm_upload(string $relDir, array $file): array
     }
     $target = $abs . '/' . $name;
     if (file_exists($target)) {
-        return ['ok' => false, 'error' => 'A file with that name already exists.'];
+        if (!$overwrite) {
+            return ['ok' => false, 'conflict' => true, 'name' => $name, 'error' => 'A file with that name already exists.'];
+        }
+        if (!is_file($target) || is_link($target)) {
+            return ['ok' => false, 'error' => 'Only an existing regular file can be overwritten.'];
+        }
     }
     if (!@move_uploaded_file($file['tmp_name'], $target)) {
         return ['ok' => false, 'error' => 'Could not save uploaded file (permissions?).'];
     }
-    audit('file.upload', fm_rel($target));
-    return ['ok' => true];
+    audit($overwrite ? 'file.upload.overwrite' : 'file.upload', fm_rel($target));
+    return ['ok' => true, 'overwritten' => $overwrite];
 }
