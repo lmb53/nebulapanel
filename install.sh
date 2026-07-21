@@ -76,7 +76,7 @@ log "Installing packages (Nginx, PHP-FPM, tooling)…"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
 apt-get install -y -qq nginx php-fpm php-cli php-mysql php-curl php-mbstring php-xml php-zip \
-  rsync ufw sudo curl ca-certificates tar \
+  rsync ufw sudo curl ca-certificates tar zip openssl \
   certbot python3-certbot-nginx >/dev/null
 ok "Packages installed"
 
@@ -193,7 +193,7 @@ _missing=""
 for v in setup-wizard dashboard websites domains dns files services databases phpmyadmin \
          ssl php cron firewall logs updates users sshkeys docker backups terminal \
          monitoring sysinfo diagnostics notifications apps selfupdate settings service \
-         file-view file-edit login setup layout; do
+         file-edit login setup layout; do
   [[ -f "$DEST/views/$v.php" ]] || _missing="$_missing $v"
 done
 if [[ -n "$_missing" ]]; then

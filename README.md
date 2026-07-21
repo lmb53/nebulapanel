@@ -51,14 +51,14 @@ directory; `random` or an unset value generates a new one. Options (env vars):
 | **Cron** — full CRUD on the web user's crontab | ✅ |
 | **Firewall** — UFW status, enable/disable, add/delete rules | ✅ sudo |
 | **Logs** — journalctl per-unit + `/var/log` file tails | ✅ |
-| **Websites** — create/delete Nginx vhosts, docroot, PHP ver, Let's Encrypt | ✅ helper |
+| **Websites** — create/delete Nginx vhosts, PHP version, service health, docroot disk/file usage, Let's Encrypt | ✅ helper |
 | **Domains + DNS** — compare hosted domains with server IPs and inspect live public records | ✅ |
-| **SSL** — list / issue / renew / delete certbot certificates | ✅ helper |
+| **SSL** — list / issue / renew / delete certbot certificates + validated custom PEM upload | ✅ helper |
 | **PHP** — per-version ini settings (memory_limit, upload size…) + modules | ✅ helper |
-| **Databases** — MariaDB/MySQL: DBs + users CRUD (`sudo mysql`) | ✅ sudo |
-| **phpMyAdmin** — one-click install + launch (auto blowfish config) | ✅ helper |
+| **Databases** — MariaDB/MySQL DB/user CRUD, website links, metadata and per-database quick access | ✅ sudo |
+| **phpMyAdmin** — one-click install + password-free, short-lived signed per-database signon | ✅ helper |
 | **Docker** — containers (start/stop/restart/rm) + images | ✅ sudo |
-| **File Manager** — tabbed browse/pinned/recent views, clipboard, archives, ownership, permission grid, drag-drop upload | ✅ helper |
+| **File Manager** — browse/pinned/recent, multi-select clipboard, ZIP/tar archives, code editor, ownership, permissions, drag-drop upload | ✅ helper |
 | **Diagnostics** — environment + per-privilege sudo checks with fix hints | ✅ |
 | **Backups** — create / verify / list / download / delete `.tar.gz` | ✅ |
 | **Terminal** — audited non-interactive command runner | ✅ |
