@@ -81,6 +81,9 @@ On macOS/Windows the pages load but most metrics show `n/a`.
 - PHP 8.0+ with FPM, and `proc_open` enabled (default)
 - Nginx or Apache
 
+## Screenshot
+![Dashboard UI](https://i.imgur.com/Th0TvGm.png)
+
 ## Development checks
 
 Run the cross-platform smoke test and syntax checks before deploying:
