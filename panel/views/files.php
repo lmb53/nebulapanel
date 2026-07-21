@@ -192,13 +192,6 @@ if ($rel !== '') {
 
       <!-- LEFT: tree -->
       <div class="split-pane fm-tree-pane">
-        <div class="fm-tree-section-title">Pinned</div>
-        <?php if (!$pinnedEntries): ?><div class="fm-empty-hint" style="padding:8px;text-align:left">No pinned folders</div><?php endif; ?>
-        <?php foreach ($pinnedEntries as $pin): ?>
-          <a class="tree-node" href="<?= e(url('files', ['path' => $pin['rel']])) ?>">
-            <i data-lucide="pin" class="chev"></i><i data-lucide="folder" class="folder-ic" style="color:var(--purple-400)"></i><span><?= e($pin['name']) ?></span>
-          </a>
-        <?php endforeach; ?>
         <div class="fm-tree-section-title">Location</div>
         <?php if ($rel !== ''): ?>
           <a class="tree-node tree-up" href="<?= e(url('files', ['path' => $parentRel])) ?>">
@@ -222,8 +215,6 @@ if ($rel !== '') {
               <a href="<?= e(url('files', ['path' => $d['rel']])) ?>"><span><?= e($d['name']) ?></span></a>
             </div>
           <?php endforeach; ?>
-        <?php else: ?>
-          <div class="fm-empty-hint" style="padding:10px 8px;text-align:left">No subfolders</div>
         <?php endif; ?>
         <?php foreach ($listing['files'] as $file): ?>
           <?php [$treeIcon, $treeColor] = $fmIcon($file['ext']); ?>
@@ -673,6 +664,11 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   bindClick('fmPropsClose', () => propsPane?.classList.remove('open'));
+  document.addEventListener('click', (event) => {
+    if (!propsPane?.classList.contains('open')) return;
+    if (propsPane.contains(event.target) || event.target.closest('[data-fm-details]')) return;
+    propsPane.classList.remove('open');
+  });
   bindClick('fmSavePerms', async () => {
     if (!propsRow) return;
     const mode = permissionMode();
