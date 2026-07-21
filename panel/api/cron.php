@@ -15,6 +15,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $res = cron_update((int)($body['index']??-1),(string)($body['schedule']??''),(string)($body['command']??''));
     } elseif ($action === 'run') {
         $res = cron_run_now((int)($body['index']??-1));
+    } elseif ($action === 'toggle') {
+        $res = cron_toggle((int)($body['index']??-1), (bool)($body['enabled']??false));
     } else {
         $res = ['ok' => false, 'error' => 'Unknown action.'];
     }
