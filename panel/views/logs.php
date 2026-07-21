@@ -1,58 +1,9 @@
-<?php
-require_once APP_ROOT . '/lib/mod_logs.php';
-$sources = log_sources();
-?>
-<div class="page-header">
-  <div>
-    <h1 class="page-title">Logs</h1>
-    <p class="page-subtitle">System journals and log files</p>
-  </div>
-</div>
-
-<?php if (!$sources): ?>
-  <div class="card"><div class="empty-state">
-    <div class="es-icon"><i data-lucide="scroll-text"></i></div>
-    <div style="font-weight:600;color:var(--text-secondary)">No log sources available</div>
-    <div style="font-size:13px;margin-top:4px">No configured services or readable log files were found on this system.</div>
-  </div></div>
-<?php else: ?>
-  <div class="card">
-    <div class="card-header" style="gap:12px;flex-wrap:wrap">
-      <select id="logSource" class="input" style="max-width:320px">
-        <?php foreach ($sources as $s): ?>
-          <option value="<?= e($s['id']) ?>"><?= e($s['label']) ?></option>
-        <?php endforeach; ?>
-      </select>
-      <select id="logLines" class="input" style="max-width:120px">
-        <option value="100">100 lines</option>
-        <option value="200" selected>200 lines</option>
-        <option value="500">500 lines</option>
-        <option value="1000">1000 lines</option>
-      </select>
-      <button class="btn btn-secondary btn-sm" id="logRefresh"><i data-lucide="refresh-cw"></i>Refresh</button>
-    </div>
-    <pre id="logOutput" class="mono" style="margin:0;padding:16px;overflow:auto;font-size:12px;line-height:1.55;max-height:70vh;white-space:pre-wrap">Select a source…</pre>
-  </div>
+<?php require_once APP_ROOT.'/lib/mod_logs.php';$sources=log_sources(); ?>
+<div class="page-header"><div><h1 class="page-title">Logs</h1><p class="page-subtitle">Centralized log viewer across services</p></div><div class="page-actions"><button class="btn btn-secondary" id="logDownload"><i data-lucide="download"></i>Download view</button></div></div>
+<?php if(!$sources): ?><div class="card"><div class="empty-state"><div class="es-icon"><i data-lucide="scroll-text"></i></div><div>No log sources available.</div></div></div><?php else: ?>
+<div class="log-layout"><aside class="card log-sources"><?php foreach($sources as $i=>$source): ?><button class="log-source<?= $i===0?' active':'' ?>" data-log-source="<?= e($source['id']) ?>"><i data-lucide="<?= str_starts_with($source['id'],'unit:')?'server':'file-text' ?>"></i><span><?= e($source['label']) ?></span></button><?php endforeach; ?></aside>
+<section class="log-main"><div class="log-toolbar"><div class="log-search"><i data-lucide="search"></i><input id="logSearch" placeholder="Search log lines…"></div><button class="chip active" data-log-level="all">All</button><button class="chip" data-log-level="warning">Warning</button><button class="chip" data-log-level="error">Error</button><div class="topbar-spacer"></div><select class="select" id="logLines"><option value="100">100 lines</option><option value="200" selected>200 lines</option><option value="500">500 lines</option><option value="1000">1,000 lines</option></select><button class="btn btn-secondary btn-sm" id="logLive"><i data-lucide="pause"></i><span>Pause</span></button><button class="btn btn-secondary btn-sm" id="logRefresh"><i data-lucide="refresh-cw"></i>Refresh</button></div>
+<div class="term-window log-window"><div class="term-titlebar"><span class="term-dot" style="background:#ff5f56"></span><span class="term-dot" style="background:#ffbd2e"></span><span class="term-dot" style="background:#27c93f"></span><span id="logTitle" style="margin-left:8px"></span><span class="topbar-spacer"></span><span class="live-badge" id="logLiveBadge"><span class="live-dot"></span>live tail</span></div><pre class="term-body" id="logOutput">Loading…</pre></div>
+<div class="log-stats"><div class="log-stat"><div class="lv" id="logErrors" style="color:var(--red-400)">0</div><div class="ll">Errors in view</div></div><div class="log-stat"><div class="lv" id="logWarnings" style="color:var(--orange-400)">0</div><div class="ll">Warnings in view</div></div><div class="log-stat"><div class="lv" id="logVisible">0</div><div class="ll">Visible lines</div></div><div class="log-stat"><div class="lv" id="logTotal">0</div><div class="ll">Loaded lines</div></div></div></section></div>
+<script>document.addEventListener('DOMContentLoaded',()=>{let raw='',paused=false,level='all';const out=document.getElementById('logOutput'),search=document.getElementById('logSearch');const activeSource=()=>document.querySelector('[data-log-source].active');function render(){const q=search.value.toLowerCase();let lines=raw.split(/\r?\n/).filter(Boolean);const errors=lines.filter(l=>/\berror\b|\bfatal\b|\bcrit/i.test(l)).length,warnings=lines.filter(l=>/\bwarn(?:ing)?\b/i.test(l)).length;const filtered=lines.filter(l=>(!q||l.toLowerCase().includes(q))&&(level==='all'||(level==='error'?/\berror\b|\bfatal\b|\bcrit/i.test(l):/\bwarn(?:ing)?\b/i.test(l))));out.textContent=filtered.join('\n')||'(no matching lines)';document.getElementById('logErrors').textContent=errors;document.getElementById('logWarnings').textContent=warnings;document.getElementById('logVisible').textContent=filtered.length;document.getElementById('logTotal').textContent=lines.length;if(!paused)out.scrollTop=out.scrollHeight;}async function load(){const src=activeSource();if(!src)return;document.getElementById('logTitle').textContent=src.textContent.trim();try{const r=await fetch(window.Nebula.api('logs')+'&source='+encodeURIComponent(src.dataset.logSource)+'&lines='+document.getElementById('logLines').value),d=await r.json();raw=d.text||'';render();}catch(e){window.Nebula.toast('Failed to load log','error');}}document.querySelectorAll('[data-log-source]').forEach(b=>b.onclick=()=>{document.querySelectorAll('[data-log-source]').forEach(x=>x.classList.toggle('active',x===b));load();});document.querySelectorAll('[data-log-level]').forEach(b=>b.onclick=()=>{document.querySelectorAll('[data-log-level]').forEach(x=>x.classList.toggle('active',x===b));level=b.dataset.logLevel;render();});search.oninput=render;document.getElementById('logLines').onchange=load;document.getElementById('logRefresh').onclick=load;document.getElementById('logLive').onclick=()=>{paused=!paused;document.getElementById('logLive').querySelector('span').textContent=paused?'Resume':'Pause';document.getElementById('logLiveBadge').classList.toggle('paused',paused);};document.getElementById('logDownload').onclick=()=>{const blob=new Blob([out.textContent],{type:'text/plain'}),a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='nebula-log-'+new Date().toISOString().slice(0,10)+'.log';a.click();URL.revokeObjectURL(a.href);};load();setInterval(()=>{if(!paused)load();},5000);});</script>
 <?php endif; ?>
-
-<script>
-document.addEventListener('DOMContentLoaded', () => {
-  const select = document.getElementById('logSource');
-  const linesSelect = document.getElementById('logLines');
-  const refresh = document.getElementById('logRefresh');
-  if (!select) return;
-
-  function load() {
-    const s = select.value, n = linesSelect.value;
-    fetch(window.Nebula.api('logs') + '&source=' + encodeURIComponent(s) + '&lines=' + n)
-      .then(r => r.json())
-      .then(d => { document.getElementById('logOutput').textContent = d.text || '(empty)'; })
-      .catch(() => window.Nebula.toast('Failed to load log', 'error'));
-  }
-
-  select.addEventListener('change', load);
-  linesSelect.addEventListener('change', load);
-  refresh?.addEventListener('click', load);
-  if (select.value) load();
-});
-</script>

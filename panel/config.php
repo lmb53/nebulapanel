@@ -41,6 +41,12 @@ return [
     // Leave empty when Nginx talks directly to PHP-FPM (the normal install).
     'trusted_proxies' => [],
 
+    // Authoritative hostnames customers delegate their domains to.
+    'nameservers' => array_values(array_filter([
+        getenv('NEBULA_NS1') ?: ('ns1.' . (gethostname() ?: 'nebula.local')),
+        getenv('NEBULA_NS2') ?: ('ns2.' . (gethostname() ?: 'nebula.local')),
+    ])),
+
     // Resource thresholds used by the dashboard health summary.
     'health_warn_percent'     => 80,
     'health_critical_percent' => 90,

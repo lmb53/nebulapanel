@@ -13,6 +13,8 @@ set -euo pipefail
 NGINX_AV=/etc/nginx/sites-available
 NGINX_EN=/etc/nginx/sites-enabled
 FM_ROOT_FILE=/etc/nebula-panel/fm-root
+BIND_ZONE_DIR=/etc/bind/nebula-zones
+BIND_ZONE_CONF=/etc/bind/nebula-zones.conf
 
 die() { echo "$*" >&2; exit 2; }
 valid_domain() { [[ "$1" =~ ^[a-zA-Z0-9]([a-zA-Z0-9.-]{0,251}[a-zA-Z0-9])?$ ]] || die "invalid domain"; }
@@ -75,6 +77,45 @@ human_user_info() {
 CMD="${1:-}"; shift || true
 
 case "$CMD" in
+
+  # dns-zone-put <domain> <base64-zone-file>
+  dns-zone-put)
+    DOMAIN="${1:-}"; ZONE_B64="${2:-}"; valid_domain "$DOMAIN"
+    [[ "$ZONE_B64" =~ ^[A-Za-z0-9+/=]+$ ]] || die "invalid zone encoding"
+    command -v named-checkzone >/dev/null || die "BIND 9 is not installed; re-run install.sh"
+    TMP="$(mktemp)"; trap 'rm -f "$TMP"' EXIT
+    printf '%s' "$ZONE_B64" | base64 -d > "$TMP" 2>/dev/null || die "invalid zone data"
+    named-checkzone "$DOMAIN" "$TMP" >/dev/null || die "BIND rejected the zone"
+    install -d -m 0755 -o root -g bind "$BIND_ZONE_DIR"
+    install -m 0644 -o root -g bind "$TMP" "$BIND_ZONE_DIR/db.$DOMAIN"
+    touch "$BIND_ZONE_CONF"; chown root:bind "$BIND_ZONE_CONF"; chmod 0644 "$BIND_ZONE_CONF"
+    if ! grep -qF "zone \"$DOMAIN\"" "$BIND_ZONE_CONF"; then
+      printf 'zone "%s" {\n  type primary;\n  file "%s/db.%s";\n};\n' "$DOMAIN" "$BIND_ZONE_DIR" "$DOMAIN" >> "$BIND_ZONE_CONF"
+    fi
+    if ! grep -qF 'include "/etc/bind/nebula-zones.conf";' /etc/bind/named.conf.local; then
+      printf '\ninclude "/etc/bind/nebula-zones.conf";\n' >> /etc/bind/named.conf.local
+    fi
+    named-checkconf >/dev/null || die "BIND configuration validation failed"
+    systemctl reload bind9 2>/dev/null || systemctl restart bind9
+    echo "published authoritative zone $DOMAIN"
+    ;;
+
+  dns-zone-delete)
+    DOMAIN="${1:-}"; valid_domain "$DOMAIN"
+    if [[ -f "$BIND_ZONE_CONF" ]]; then
+      TMP="$(mktemp)"; trap 'rm -f "$TMP"' EXIT
+      awk -v target="zone \"$DOMAIN\"" '
+        index($0,target)==1 { skip=1 }
+        skip && /^};[[:space:]]*$/ { skip=0; next }
+        !skip { print }
+      ' "$BIND_ZONE_CONF" > "$TMP"
+      install -m 0644 -o root -g bind "$TMP" "$BIND_ZONE_CONF"
+    fi
+    rm -f "$BIND_ZONE_DIR/db.$DOMAIN"
+    named-checkconf >/dev/null || die "BIND configuration validation failed"
+    systemctl reload bind9 2>/dev/null || systemctl restart bind9
+    echo "removed authoritative zone $DOMAIN"
+    ;;
 
   # File metadata operations are confined by /etc/nebula-panel/fm-root.
   file-chmod)

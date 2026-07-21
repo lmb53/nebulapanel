@@ -10,7 +10,7 @@ $selectedWebsite = (string) ($_GET['website'] ?? '');
 <div class="page-header">
   <div>
     <h1 class="page-title">Databases</h1>
-    <p class="page-subtitle">Create databases and users, attach them to websites, and open them securely in phpMyAdmin</p>
+    <p class="page-subtitle">Website-owned databases and users, with secure phpMyAdmin access</p>
   </div>
   <?php if ($available): ?>
     <div class="page-actions">
@@ -28,14 +28,14 @@ $selectedWebsite = (string) ($_GET['website'] ?? '');
   </div></div>
 <?php else: ?>
   <div class="card hidden" id="dbCreateCard" style="margin-bottom:16px">
-    <div class="card-header"><div><h3>Create database</h3><span class="muted">Optionally create its first user and link it to a website in one step.</span></div></div>
+    <div class="card-header"><div><h3>Create website database</h3><span class="muted">Every database is owned by one of your panel-managed websites.</span></div></div>
     <div class="card-pad">
       <div class="grid" style="grid-template-columns:1.2fr 1fr .8fr 1fr 1.2fr auto;gap:12px;align-items:end">
         <div><label class="field-label" for="dbName">Database name</label><input class="input mono" id="dbName" placeholder="site_database" autocomplete="off"></div>
         <div><label class="field-label" for="dbUser">User (optional)</label><input class="input mono" id="dbUser" placeholder="site_user" autocomplete="off"></div>
         <div><label class="field-label" for="dbHost">Host</label><input class="input mono" id="dbHost" value="localhost" autocomplete="off"></div>
         <div><label class="field-label" for="dbPassword">Password</label><input class="input mono" id="dbPassword" type="password" autocomplete="new-password"></div>
-        <div><label class="field-label" for="dbWebsite">Website</label><select class="select" id="dbWebsite"><option value="">Not linked</option><?php foreach ($sites as $site): ?><?php $siteDomain=(string)($site['domain']??''); ?><option value="<?= e($siteDomain) ?>"<?= $siteDomain===$selectedWebsite?' selected':'' ?>><?= e($siteDomain) ?></option><?php endforeach; ?></select></div>
+        <div><label class="field-label" for="dbWebsite">Website</label><select class="select" id="dbWebsite"><option value="">Select website…</option><?php foreach ($sites as $site): ?><?php $siteDomain=(string)($site['domain']??''); ?><option value="<?= e($siteDomain) ?>"<?= $siteDomain===$selectedWebsite?' selected':'' ?>><?= e($siteDomain) ?></option><?php endforeach; ?></select></div>
         <button class="btn btn-primary" id="dbCreate"><i data-lucide="database-zap"></i>Create</button>
       </div>
     </div>
@@ -48,7 +48,7 @@ $selectedWebsite = (string) ($_GET['website'] ?? '');
   </div>
 
   <div class="card" style="margin-bottom:16px">
-    <div class="card-header"><div><h3>All databases</h3><span class="muted" id="dbEngine">Loading database service…</span></div></div>
+    <div class="card-header"><div><h3>Website databases</h3><span class="muted" id="dbEngine">Loading database service…</span></div></div>
     <div class="table-wrap"><table class="data-table">
       <thead><tr><th>Database name</th><th>Engine</th><th>Owner website</th><th>Size</th><th>Tables</th><th>Collation</th><th>Users</th><th style="text-align:right">Actions</th></tr></thead>
       <tbody id="dbBody"><tr><td colspan="8" class="text-tertiary" style="text-align:center;padding:28px">Loading…</td></tr></tbody>
@@ -84,7 +84,7 @@ $selectedWebsite = (string) ($_GET['website'] ?? '');
       let data;
       try { data = await apiGet('databases'); } catch (e) { toast('Failed to load databases', 'error'); return; }
       websites = data.websites || websites;
-      const dbs = data.databases || [], userDbs = dbs.filter((db) => !db.system), users = data.users || [];
+      const dbs = data.databases || [], userDbs = dbs, users = data.users || [];
       document.getElementById('dbStatCount').textContent = userDbs.length;
       document.getElementById('dbStatSize').textContent = fmtBytes(userDbs.reduce((n, db) => n + Number(db.size || 0), 0));
       document.getElementById('dbStatUsers').textContent = users.length;
@@ -95,12 +95,12 @@ $selectedWebsite = (string) ($_GET['website'] ?? '');
       userDbs.forEach((db) => { const o = make('option', '', db.name); o.value = db.name; grant.appendChild(o); });
 
       const body = document.getElementById('dbBody'); body.innerHTML = '';
-      if (!dbs.length) { const tr=make('tr'); const td=make('td','text-tertiary','No databases.'); td.colSpan=8; td.style.cssText='text-align:center;padding:28px'; tr.appendChild(td); body.appendChild(tr); }
+      if (!dbs.length) { const tr=make('tr'); const td=make('td','text-tertiary','No website databases. Create one and assign it to a website.'); td.colSpan=8; td.style.cssText='text-align:center;padding:28px'; tr.appendChild(td); body.appendChild(tr); }
       dbs.forEach((db) => {
         const tr = make('tr');
         const name = make('td'); const strong = make('div','mono',db.name); strong.style.fontWeight='700'; name.appendChild(strong); if (db.system) name.appendChild(make('span','badge badge-slate','system')); tr.appendChild(name);
         tr.appendChild(make('td','text-tertiary', data.version ? (String(data.version).toLowerCase().includes('mariadb') ? 'MariaDB' : 'MySQL') : 'MySQL'));
-        const siteTd=make('td'); const select=make('select','select'); select.style.cssText='min-width:150px;padding:6px 28px 6px 9px'; select.disabled=!!db.system; let opt=make('option','','Not linked'); opt.value=''; select.appendChild(opt); websites.forEach((site)=>{ const o=make('option','',site); o.value=site; o.selected=site===db.website; select.appendChild(o); }); select.addEventListener('change',async()=>{ const res=await apiPost('databases',{action:'link_website',database:db.name,website:select.value}); toast(res.ok?'Website link updated':(res.error||'Could not update link'),res.ok?'success':'error'); }); siteTd.appendChild(select); tr.appendChild(siteTd);
+        const siteTd=make('td'); const select=make('select','select'); select.style.cssText='min-width:150px;padding:6px 28px 6px 9px'; websites.forEach((site)=>{ const o=make('option','',site); o.value=site; o.selected=site===db.website; select.appendChild(o); }); select.addEventListener('change',async()=>{ const res=await apiPost('databases',{action:'link_website',database:db.name,website:select.value}); toast(res.ok?'Website link updated':(res.error||'Could not update link'),res.ok?'success':'error'); }); siteTd.appendChild(select); tr.appendChild(siteTd);
         tr.appendChild(make('td','mono text-tertiary',fmtBytes(db.size)));
         tr.appendChild(make('td','mono text-tertiary',String(db.tables || 0)));
         tr.appendChild(make('td','mono text-tertiary',db.collation || '–'));
@@ -117,7 +117,7 @@ $selectedWebsite = (string) ($_GET['website'] ?? '');
     }
 
     document.getElementById('dbCreateToggle')?.addEventListener('click',()=>{const card=document.getElementById('dbCreateCard');card.classList.toggle('hidden');if(!card.classList.contains('hidden'))document.getElementById('dbName').focus();});
-    document.getElementById('dbCreate')?.addEventListener('click',async()=>{const name=document.getElementById('dbName').value.trim(),user=document.getElementById('dbUser').value.trim(),host=document.getElementById('dbHost').value.trim()||'localhost',password=document.getElementById('dbPassword').value,website=document.getElementById('dbWebsite').value;if(!name){toast('Enter a database name','warning');return;}if(user&&!password){toast('Enter a password for the new user','warning');return;}const res=await apiPost('databases',{action:'create_bundle',name,user,host,password,website});if(res.ok){toast('Database created','success');['dbName','dbUser','dbPassword'].forEach(id=>document.getElementById(id).value='');loadAll();}else toast(res.error||'Failed','error');});
+    document.getElementById('dbCreate')?.addEventListener('click',async()=>{const name=document.getElementById('dbName').value.trim(),user=document.getElementById('dbUser').value.trim(),host=document.getElementById('dbHost').value.trim()||'localhost',password=document.getElementById('dbPassword').value,website=document.getElementById('dbWebsite').value;if(!name){toast('Enter a database name','warning');return;}if(!website){toast('Select the website that owns this database','warning');return;}if(user&&!password){toast('Enter a password for the new user','warning');return;}const res=await apiPost('databases',{action:'create_bundle',name,user,host,password,website});if(res.ok){toast('Database created','success');['dbName','dbUser','dbPassword'].forEach(id=>document.getElementById(id).value='');loadAll();}else toast(res.error||'Failed','error');});
     document.getElementById('duCreate')?.addEventListener('click',async()=>{const user=document.getElementById('duUser').value.trim(),host=document.getElementById('duHost').value.trim()||'localhost',password=document.getElementById('duPass').value,grant_db=document.getElementById('duGrant').value;if(!user||!password){toast('Enter a user and password','warning');return;}const res=await apiPost('databases',{action:'create_user',user,host,password,grant_db});if(res.ok){toast('User created','success');document.getElementById('duUser').value='';document.getElementById('duPass').value='';loadAll();}else toast(res.error||'Failed','error');});
     loadAll();
   });

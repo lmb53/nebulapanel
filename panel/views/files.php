@@ -200,28 +200,27 @@ if ($rel !== '') {
           </a>
         <?php endforeach; ?>
         <div class="fm-tree-section-title">Location</div>
-        <?php foreach ($breadcrumbs as $i => $c): ?>
-          <?php $isCur = $i === count($breadcrumbs) - 1; ?>
-          <a class="tree-node<?= $isCur ? ' active' : '' ?>" href="<?= e(url('files', ['path' => $c['rel']])) ?>" style="margin-left:<?= (int) ($i * 12) ?>px">
-            <i data-lucide="<?= $isCur ? 'chevron-down' : 'chevron-right' ?>" class="chev<?= $isCur ? ' open' : '' ?>"></i>
-            <i data-lucide="<?= $isCur ? 'folder-open' : 'folder' ?>" class="folder-ic" style="color:<?= $isCur ? 'var(--blue-400)' : 'var(--text-tertiary)' ?>"></i>
-            <span><?= e($c['name']) ?></span>
-          </a>
-        <?php endforeach; ?>
-
         <?php if ($rel !== ''): ?>
-          <a class="tree-node" href="<?= e(url('files', ['path' => $parentRel])) ?>">
-            <i data-lucide="corner-left-up" class="folder-ic" style="color:var(--text-tertiary)"></i>
-            <span>..</span>
+          <a class="tree-node tree-up" href="<?= e(url('files', ['path' => $parentRel])) ?>">
+            <i data-lucide="corner-left-up" class="folder-ic"></i><span>Up one directory</span>
           </a>
         <?php endif; ?>
+        <?php foreach ($breadcrumbs as $i => $c): ?>
+          <?php $isCur = $i === count($breadcrumbs) - 1; ?>
+          <div class="tree-node<?= $isCur ? ' active' : '' ?>" style="margin-left:<?= (int) ($i * 12) ?>px" data-tree-row>
+            <button class="tree-toggle<?= $isCur ? ' open' : '' ?>" type="button" data-tree-path="<?= e($c['rel']) ?>" aria-label="Preview <?= e($c['name']) ?>"><i data-lucide="<?= $isCur ? 'chevron-down' : 'chevron-right' ?>"></i></button>
+            <i data-lucide="<?= $isCur ? 'folder-open' : 'folder' ?>" class="folder-ic" style="color:<?= $isCur ? 'var(--blue-400)' : 'var(--text-tertiary)' ?>"></i>
+            <a href="<?= e(url('files', ['path' => $c['rel']])) ?>"><span><?= e($c['name']) ?></span></a>
+          </div>
+          <?php if ($isCur): ?><div class="tree-children" data-tree-children data-tree-parent="<?= e($c['rel']) ?>"><?php endif; ?>
+        <?php endforeach; ?>
         <?php if ($listing['dirs']): ?>
           <?php foreach ($listing['dirs'] as $d): ?>
-            <a class="tree-node" href="<?= e(url('files', ['path' => $d['rel']])) ?>">
-              <i data-lucide="chevron-right" class="chev"></i>
+            <div class="tree-node" data-tree-row>
+              <button class="tree-toggle" type="button" data-tree-path="<?= e($d['rel']) ?>" aria-label="Preview <?= e($d['name']) ?>"><i data-lucide="chevron-right"></i></button>
               <i data-lucide="folder" class="folder-ic" style="color:var(--purple-400)"></i>
-              <span><?= e($d['name']) ?></span>
-            </a>
+              <a href="<?= e(url('files', ['path' => $d['rel']])) ?>"><span><?= e($d['name']) ?></span></a>
+            </div>
           <?php endforeach; ?>
         <?php else: ?>
           <div class="fm-empty-hint" style="padding:10px 8px;text-align:left">No subfolders</div>
@@ -232,6 +231,7 @@ if ($rel !== '') {
             <i data-lucide="<?= e($treeIcon) ?>" class="folder-ic" style="color:<?= e($treeColor) ?>"></i><span><?= e($file['name']) ?></span>
           </a>
         <?php endforeach; ?>
+        </div>
       </div>
       <div class="split-divider"></div>
 

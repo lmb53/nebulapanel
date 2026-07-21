@@ -1,166 +1,25 @@
-<?php
-require_once APP_ROOT . '/lib/mod_docker.php';
-$available = dk_available();
-?>
-<div class="page-header">
-  <div>
-    <h1 class="page-title">Docker</h1>
-    <p class="page-subtitle">Manage containers and images</p>
-  </div>
-</div>
+<?php require_once APP_ROOT.'/lib/mod_docker.php';$available=dk_available(); ?>
+<div class="page-header"><div><h1 class="page-title">Docker</h1><p class="page-subtitle" id="dockerSubtitle">Containers, images, volumes and networks</p></div><?php if($available): ?><div class="page-actions"><button class="btn btn-secondary" id="dkPullOpen"><i data-lucide="download"></i>Pull image</button><button class="btn btn-primary" id="dkCreateOpen"><i data-lucide="plus"></i>New container</button></div><?php endif; ?></div>
+<?php if(!$available): ?><div class="card"><div class="empty-state"><div class="es-icon"><i data-lucide="box"></i></div><div style="font-weight:600">Docker not installed</div><div style="font-size:13px;margin-top:4px">Install Docker Engine to manage containers here.</div></div></div><?php else: ?>
+<div class="grid grid-4" style="margin-bottom:16px"><div class="stat-card"><div class="stat-val" id="dkCountC">–</div><div class="stat-label">Containers</div></div><div class="stat-card"><div class="stat-val" id="dkCountR">–</div><div class="stat-label">Running</div></div><div class="stat-card"><div class="stat-val" id="dkCountI">–</div><div class="stat-label">Images</div></div><div class="stat-card"><div class="stat-val" id="dkCountV">–</div><div class="stat-label">Volumes</div></div></div>
+<div class="card docker-manager"><div class="tabs" id="dockerTabs"><button class="tab active" data-tab-target="dkPanelContainers"><i data-lucide="container"></i>Containers <span class="badge badge-slate" id="dkBadgeC">0</span></button><button class="tab" data-tab-target="dkPanelImages"><i data-lucide="layers-3"></i>Images <span class="badge badge-slate" id="dkBadgeI">0</span></button><button class="tab" data-tab-target="dkPanelVolumes"><i data-lucide="database"></i>Volumes <span class="badge badge-slate" id="dkBadgeV">0</span></button><button class="tab" data-tab-target="dkPanelNetworks"><i data-lucide="network"></i>Networks <span class="badge badge-slate" id="dkBadgeN">0</span></button></div>
+<div data-tab-panels>
+  <section data-tab-panel id="dkPanelContainers"><div class="table-wrap"><table class="data-table"><thead><tr><th>Name</th><th>Image</th><th>Status</th><th>Container ID</th><th style="text-align:right">Actions</th></tr></thead><tbody id="dkContainers"></tbody></table></div></section>
+  <section data-tab-panel id="dkPanelImages" class="hidden"><div class="table-wrap"><table class="data-table"><thead><tr><th>Repository:tag</th><th>Image ID</th><th>Size</th><th style="text-align:right">Actions</th></tr></thead><tbody id="dkImages"></tbody></table></div></section>
+  <section data-tab-panel id="dkPanelVolumes" class="hidden"><div class="resource-create"><input class="input" id="dkVolumeName" placeholder="volume_name"><button class="btn btn-primary btn-sm" data-resource-create="volume"><i data-lucide="plus"></i>Create volume</button></div><div class="table-wrap"><table class="data-table"><thead><tr><th>Name</th><th>Driver</th><th>Mountpoint</th><th style="text-align:right">Actions</th></tr></thead><tbody id="dkVolumes"></tbody></table></div></section>
+  <section data-tab-panel id="dkPanelNetworks" class="hidden"><div class="resource-create"><input class="input" id="dkNetworkName" placeholder="network_name"><button class="btn btn-primary btn-sm" data-resource-create="network"><i data-lucide="plus"></i>Create network</button></div><div class="table-wrap"><table class="data-table"><thead><tr><th>Name</th><th>Driver</th><th>Scope</th><th>Network ID</th><th style="text-align:right">Actions</th></tr></thead><tbody id="dkNetworks"></tbody></table></div></section>
+</div></div>
 
-<?php if (!$available): ?>
-  <div class="card"><div class="empty-state">
-    <div class="es-icon"><i data-lucide="box"></i></div>
-    <div style="font-weight:600;color:var(--text-secondary)">Docker not installed</div>
-    <div style="font-size:13px;margin-top:4px">The <span class="mono">docker</span> command was not found on this system.</div>
-  </div></div>
-<?php else: ?>
-  <div class="card" style="margin-bottom:16px">
-    <div class="card-header"><h3>Containers</h3></div>
-    <div class="table-wrap">
-      <table class="data-table">
-        <thead><tr><th>Name</th><th>Image</th><th>Status</th><th style="text-align:right">Actions</th></tr></thead>
-        <tbody id="dkContainers">
-          <tr><td colspan="4" class="text-tertiary" style="text-align:center;padding:24px">Loading…</td></tr>
-        </tbody>
-      </table>
-    </div>
-  </div>
-
-  <div class="card">
-    <div class="card-header"><h3>Images</h3></div>
-    <div class="table-wrap">
-      <table class="data-table">
-        <thead><tr><th>Repository:Tag</th><th>Size</th><th style="text-align:right">Actions</th></tr></thead>
-        <tbody id="dkImages">
-          <tr><td colspan="3" class="text-tertiary" style="text-align:center;padding:24px">Loading…</td></tr>
-        </tbody>
-      </table>
-    </div>
-  </div>
-
-  <div class="muted" style="font-size:12px;margin-top:12px">
-    Requires a sudoers rule allowing <span class="mono">sudo docker</span>.
-  </div>
-
-  <script>
-  document.addEventListener('DOMContentLoaded', () => {
-    const { apiGet, apiPost, toast } = window.Nebula;
-
-    function badge(state) {
-      const cls = state === 'running' ? 'badge-emerald' : 'badge-slate';
-      const span = document.createElement('span');
-      span.className = 'badge ' + cls;
-      const dot = document.createElement('span');
-      dot.className = 'bdot';
-      span.appendChild(dot);
-      return span;
-    }
-
-    function actionBtn(cls, icon, title, id, op) {
-      const b = document.createElement('button');
-      b.className = 'btn ' + cls + ' btn-sm';
-      b.title = title;
-      b.dataset.dkId = id;
-      b.dataset.dkOp = op;
-      const i = document.createElement('i');
-      i.setAttribute('data-lucide', icon);
-      b.appendChild(i);
-      return b;
-    }
-
-    async function load() {
-      let data;
-      try { data = await apiGet('docker'); }
-      catch (e) { toast('Failed to load Docker data', 'error'); return; }
-
-      const cbody = document.getElementById('dkContainers');
-      cbody.innerHTML = '';
-      const containers = data.containers || [];
-      if (!containers.length) {
-        const tr = document.createElement('tr');
-        const td = document.createElement('td');
-        td.colSpan = 4; td.className = 'text-tertiary';
-        td.style.textAlign = 'center'; td.style.padding = '24px';
-        td.textContent = 'No containers.';
-        tr.appendChild(td); cbody.appendChild(tr);
-      } else {
-        containers.forEach((c) => {
-          const tr = document.createElement('tr');
-          const tdName = document.createElement('td');
-          tdName.style.fontWeight = '600';
-          tdName.textContent = c.name;
-          const tdImage = document.createElement('td');
-          tdImage.className = 'mono'; tdImage.style.fontSize = '12.5px';
-          tdImage.textContent = c.image;
-          const tdStatus = document.createElement('td');
-          const b = badge(c.state);
-          b.appendChild(document.createTextNode(c.status || c.state));
-          tdStatus.appendChild(b);
-          const tdActions = document.createElement('td');
-          tdActions.style.textAlign = 'right';
-          tdActions.appendChild(actionBtn('btn-secondary', 'play', 'Start', c.id, 'start'));
-          tdActions.appendChild(actionBtn('btn-secondary', 'rotate-cw', 'Restart', c.id, 'restart'));
-          tdActions.appendChild(actionBtn('btn-secondary', 'square', 'Stop', c.id, 'stop'));
-          tdActions.appendChild(actionBtn('btn-danger', 'trash-2', 'Remove', c.id, 'remove'));
-          tr.appendChild(tdName); tr.appendChild(tdImage);
-          tr.appendChild(tdStatus); tr.appendChild(tdActions);
-          cbody.appendChild(tr);
-        });
-      }
-
-      const ibody = document.getElementById('dkImages');
-      ibody.innerHTML = '';
-      const images = data.images || [];
-      if (!images.length) {
-        const tr = document.createElement('tr');
-        const td = document.createElement('td');
-        td.colSpan = 3; td.className = 'text-tertiary';
-        td.style.textAlign = 'center'; td.style.padding = '24px';
-        td.textContent = 'No images.';
-        tr.appendChild(td); ibody.appendChild(tr);
-      } else {
-        images.forEach((im) => {
-          const tr = document.createElement('tr');
-          const tdRepo = document.createElement('td');
-          tdRepo.className = 'mono'; tdRepo.style.fontSize = '12.5px';
-          tdRepo.textContent = (im.repo || '') + ':' + (im.tag || '');
-          const tdSize = document.createElement('td');
-          tdSize.textContent = im.size;
-          const tdActions = document.createElement('td');
-          tdActions.style.textAlign = 'right';
-          const rm = actionBtn('btn-danger', 'trash-2', 'Remove', im.id, 'image_remove');
-          tdActions.appendChild(rm);
-          tr.appendChild(tdRepo); tr.appendChild(tdSize); tr.appendChild(tdActions);
-          ibody.appendChild(tr);
-        });
-      }
-
-      if (window.lucide) lucide.createIcons();
-    }
-
-    document.getElementById('dkContainers')?.addEventListener('click', async (ev) => {
-      const btn = ev.target.closest('[data-dk-op]');
-      if (!btn) return;
-      const id = btn.dataset.dkId;
-      const op = btn.dataset.dkOp;
-      if (op === 'remove' && !confirm('Remove this container?')) return;
-      const res = await apiPost('docker', { action: 'container', id, op });
-      if (res.ok) { toast('Done', 'success'); load(); }
-      else toast(res.error || 'Failed', 'error');
-    });
-
-    document.getElementById('dkImages')?.addEventListener('click', async (ev) => {
-      const btn = ev.target.closest('[data-dk-op]');
-      if (!btn) return;
-      if (!confirm('Remove this image?')) return;
-      const res = await apiPost('docker', { action: 'image_remove', id: btn.dataset.dkId });
-      if (res.ok) { toast('Image removed', 'success'); load(); }
-      else toast(res.error || 'Failed', 'error');
-    });
-
-    load();
-  });
-  </script>
+<div class="drawer-overlay hidden" id="dkCreateDrawer"><div class="drawer"><div class="drawer-header"><div><strong>New container</strong><div class="muted" style="font-size:11px">Create and start a Docker container</div></div><button class="icon-btn" data-close-docker><i data-lucide="x"></i></button></div><div class="drawer-body"><div class="form-stack"><div><label class="field-label">Name</label><input class="input" id="dkName" placeholder="web-app"></div><div><label class="field-label">Image</label><input class="input mono" id="dkImage" placeholder="nginx:latest"></div><div><label class="field-label">Port mappings</label><input class="input mono" id="dkPorts" placeholder="8080:80, 8443:443"><div class="field-help">Comma-separated host:container mappings.</div></div><div><label class="field-label">Volume mounts</label><textarea class="input mono" id="dkMounts" rows="4" placeholder="app_data:/var/lib/app&#10;/srv/config:/etc/app:ro"></textarea></div><div><label class="field-label">Environment variables</label><textarea class="input mono" id="dkEnv" rows="4" placeholder="APP_ENV=production&#10;TZ=Europe/London"></textarea></div><div><label class="field-label">Restart policy</label><select class="select" id="dkRestart"><option>unless-stopped</option><option>always</option><option>on-failure</option><option>no</option></select></div></div></div><div class="drawer-footer"><button class="btn btn-secondary" data-close-docker>Cancel</button><button class="btn btn-primary" id="dkCreate"><i data-lucide="play"></i>Create &amp; start</button></div></div></div>
+<div class="drawer-overlay hidden" id="dkPullDrawer"><div class="drawer"><div class="drawer-header"><strong>Pull image</strong><button class="icon-btn" data-close-docker><i data-lucide="x"></i></button></div><div class="drawer-body"><label class="field-label">Registry image</label><input class="input mono" id="dkPullImage" placeholder="redis:7-alpine"><div class="field-help">Docker Hub images work without a registry prefix.</div></div><div class="drawer-footer"><button class="btn btn-secondary" data-close-docker>Cancel</button><button class="btn btn-primary" id="dkPull"><i data-lucide="download"></i>Pull image</button></div></div></div>
+<script>
+document.addEventListener('DOMContentLoaded',()=>{const{apiGet,apiPost,toast}=window.Nebula;let data={};const mk=(tag,cls,text)=>{const e=document.createElement(tag);if(cls)e.className=cls;if(text!==undefined)e.textContent=text;return e;};const empty=(body,cols,text)=>{const tr=mk('tr'),td=mk('td','text-tertiary',text);td.colSpan=cols;td.style.cssText='text-align:center;padding:28px';tr.append(td);body.append(tr);};const action=(icon,title,fn,danger=false)=>{const b=mk('button','icon-btn');b.title=title;if(danger)b.style.color='var(--red-400)';b.innerHTML=`<i data-lucide="${icon}"></i>`;b.addEventListener('click',fn);return b;};
+async function op(payload,success){const r=await apiPost('docker',payload);toast(r.ok?success:(r.error||'Docker operation failed'),r.ok?'success':'error');if(r.ok)load();return r;}
+function render(){const c=data.containers||[],i=data.images||[],v=data.volumes||[],n=data.networks||[];document.getElementById('dockerSubtitle').textContent=`Docker Engine ${data.version||'–'} · ${c.length} containers · ${c.filter(x=>x.state==='running').length} running`;[['dkCountC',c.length],['dkCountR',c.filter(x=>x.state==='running').length],['dkCountI',i.length],['dkCountV',v.length],['dkBadgeC',c.length],['dkBadgeI',i.length],['dkBadgeV',v.length],['dkBadgeN',n.length]].forEach(([id,val])=>document.getElementById(id).textContent=val);
+const cb=document.getElementById('dkContainers');cb.innerHTML='';c.forEach(x=>{const tr=mk('tr');tr.append(mk('td','',x.name),mk('td','mono',x.image));const st=mk('td');st.append(mk('span',`badge ${x.state==='running'?'badge-emerald':'badge-slate'}`,x.status||x.state));tr.append(st,mk('td','mono text-tertiary',x.id));const td=mk('td');td.style.textAlign='right';if(x.state!=='running')td.append(action('play','Start',()=>op({action:'container',id:x.id,op:'start'},'Container started')));else td.append(action('square','Stop',()=>op({action:'container',id:x.id,op:'stop'},'Container stopped')));td.append(action('rotate-cw','Restart',()=>op({action:'container',id:x.id,op:'restart'},'Container restarted')),action('trash-2','Remove',()=>confirm(`Remove ${x.name}?`)&&op({action:'container',id:x.id,op:'remove'},'Container removed'),true));tr.append(td);cb.append(tr);});if(!c.length)empty(cb,5,'No containers. Create one to get started.');
+const ib=document.getElementById('dkImages');ib.innerHTML='';i.forEach(x=>{const tr=mk('tr');tr.append(mk('td','mono',`${x.repo}:${x.tag}`),mk('td','mono text-tertiary',x.id),mk('td','text-tertiary',x.size));const td=mk('td');td.style.textAlign='right';td.append(action('trash-2','Remove image',()=>confirm('Remove this image?')&&op({action:'image_remove',id:x.id},'Image removed'),true));tr.append(td);ib.append(tr);});if(!i.length)empty(ib,4,'No local images.');
+const vb=document.getElementById('dkVolumes');vb.innerHTML='';v.forEach(x=>{const tr=mk('tr');tr.append(mk('td','mono',x.name),mk('td','text-tertiary',x.driver),mk('td','mono text-tertiary',x.mountpoint||'–'));const td=mk('td');td.style.textAlign='right';td.append(action('trash-2','Remove volume',()=>confirm(`Remove volume ${x.name}?`)&&op({action:'volume_remove',name:x.name},'Volume removed'),true));tr.append(td);vb.append(tr);});if(!v.length)empty(vb,4,'No volumes.');
+const nb=document.getElementById('dkNetworks');nb.innerHTML='';n.forEach(x=>{const tr=mk('tr');tr.append(mk('td','mono',x.name),mk('td','text-tertiary',x.driver),mk('td','text-tertiary',x.scope),mk('td','mono text-tertiary',x.id));const td=mk('td');td.style.textAlign='right';if(!['bridge','host','none'].includes(x.name))td.append(action('trash-2','Remove network',()=>confirm(`Remove network ${x.name}?`)&&op({action:'network_remove',name:x.name},'Network removed'),true));tr.append(td);nb.append(tr);});if(!n.length)empty(nb,5,'No networks.');if(window.lucide)lucide.createIcons();}
+async function load(){try{data=await apiGet('docker');render();}catch(e){toast(e.message||'Could not load Docker','error');}}document.getElementById('dkCreateOpen').onclick=()=>document.getElementById('dkCreateDrawer').classList.remove('hidden');document.getElementById('dkPullOpen').onclick=()=>document.getElementById('dkPullDrawer').classList.remove('hidden');document.querySelectorAll('[data-close-docker]').forEach(b=>b.onclick=()=>b.closest('.drawer-overlay').classList.add('hidden'));document.getElementById('dkCreate').onclick=async()=>{const r=await op({action:'create_container',name:document.getElementById('dkName').value,image:document.getElementById('dkImage').value,ports:document.getElementById('dkPorts').value,volumes:document.getElementById('dkMounts').value,env:document.getElementById('dkEnv').value,restart:document.getElementById('dkRestart').value},'Container created');if(r.ok)document.getElementById('dkCreateDrawer').classList.add('hidden');};document.getElementById('dkPull').onclick=async()=>{const r=await op({action:'image_pull',image:document.getElementById('dkPullImage').value},'Image pulled');if(r.ok)document.getElementById('dkPullDrawer').classList.add('hidden');};document.querySelectorAll('[data-resource-create]').forEach(b=>b.onclick=()=>{const kind=b.dataset.resourceCreate,id=kind==='volume'?'dkVolumeName':'dkNetworkName',name=document.getElementById(id).value.trim();if(name)op({action:`${kind}_create`,name},`${kind} created`);});load();});
+</script>
 <?php endif; ?>

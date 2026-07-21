@@ -1,4 +1,5 @@
 <?php /** @var array $config */ $facts = system_facts(); ?>
+<?php if (!empty($permissionError)): ?><div class="notice notice-warning" style="margin-bottom:16px"><i data-lucide="shield-alert"></i><div><strong>Access restricted</strong><div>Your role does not have permission to open that area.</div></div></div><?php endif; ?>
 <div class="page-header">
   <div>
     <h1 class="page-title">Dashboard</h1>
@@ -15,7 +16,7 @@
       <div class="stat-icon" style="background:rgba(59,130,246,.12)"><i data-lucide="cpu" style="color:var(--blue-400)"></i></div>
     </div>
     <div class="stat-val" data-stat="cpu">–<span style="font-size:14px;color:var(--text-tertiary)">%</span></div>
-    <div class="stat-label" data-stat="load">Load –, –, –</div>
+    <div class="stat-label" data-stat="load">CPU · Load –, –, –</div>
     <div class="progress" style="margin-top:10px"><div data-stat-bar="cpu" style="width:0;background:var(--blue-500)"></div></div>
   </div>
   <div class="stat-card">
@@ -51,10 +52,15 @@
   </div>
   <div class="card">
     <div class="card-header"><h3>Services</h3><a href="<?= e(url('services')) ?>" class="btn btn-ghost btn-sm">Manage</a></div>
-    <div class="card-pad" id="svcSummary" style="display:flex;flex-direction:column;gap:8px;max-height:280px;overflow-y:auto">
+    <div class="card-pad dashboard-services" id="svcSummary">
       <div class="text-tertiary" style="font-size:13px">Loading…</div>
     </div>
   </div>
+</div>
+
+<div class="card" style="margin-bottom:16px">
+  <div class="card-header"><div><h3>Top processes</h3><span class="muted"><span id="procCount">–</span> processes running · sorted by CPU</span></div><button class="btn btn-secondary btn-sm" id="procRefresh"><i data-lucide="refresh-cw"></i>Refresh</button></div>
+  <div class="table-wrap"><table class="data-table"><thead><tr><th>Process</th><th>User</th><th style="text-align:right">CPU %</th><th style="text-align:right">Memory %</th><th style="text-align:right">RSS</th><th style="text-align:right">PID</th></tr></thead><tbody id="procBody"><tr><td colspan="6" class="text-tertiary" style="text-align:center;padding:24px">Loading…</td></tr></tbody></table></div>
 </div>
 
 <div class="card" style="margin-bottom:16px">
@@ -69,7 +75,7 @@
 
 <script>
 document.addEventListener('DOMContentLoaded', () => {
-  const { apiGet } = window.Nebula;
+  const { apiGet, fmtBytes } = window.Nebula;
   const box = document.getElementById('healthItems');
   const status = document.getElementById('healthStatus');
   const levelMap = {
@@ -110,6 +116,28 @@ document.addEventListener('DOMContentLoaded', () => {
     status.className = 'badge badge-red'; status.textContent = 'Check failed';
     box.textContent = error.message || 'Could not load system health.';
   });
+
+  const procBody = document.getElementById('procBody');
+  async function loadProcesses() {
+    try {
+      const res = await apiGet('processes');
+      document.getElementById('procCount').textContent = res.count ?? 0;
+      procBody.replaceChildren();
+      (res.processes || []).forEach((row) => {
+        const tr = document.createElement('tr');
+        [row.command, row.user, (+row.cpu).toFixed(1), (+row.mem).toFixed(1), fmtBytes(row.rss), row.pid].forEach((value, index) => {
+          const td = document.createElement('td'); td.textContent = value;
+          if (index > 1) { td.className = 'mono'; td.style.textAlign = 'right'; }
+          if (index === 0) td.style.fontWeight = '600';
+          tr.appendChild(td);
+        });
+        procBody.appendChild(tr);
+      });
+      if (!procBody.children.length) { const tr=document.createElement('tr');const td=document.createElement('td');td.colSpan=6;td.className='text-tertiary';td.style.cssText='text-align:center;padding:24px';td.textContent='No process data available.';tr.appendChild(td);procBody.appendChild(tr); }
+    } catch (error) { /* Keep the dashboard usable if process inspection is unavailable. */ }
+  }
+  document.getElementById('procRefresh')?.addEventListener('click', loadProcesses);
+  loadProcesses(); setInterval(loadProcesses, 5000);
 });
 </script>
 <script>window.NEBULA_PAGE = 'dashboard';</script>

@@ -29,7 +29,17 @@ if (!fm_is_text($abs)) {
 }
 $content = file_get_contents($abs);
 $size = filesize($abs);
+$siblingListing = fm_list(dirname($abs));
+$siblingFiles = array_values(array_filter($siblingListing['files'], fn($file) => fm_is_text(dirname($abs) . DIRECTORY_SEPARATOR . $file['name'])));
 ?>
+<div class="editor-workspace">
+<aside class="editor-sidebar">
+  <div class="editor-sidebar-head"><div><strong><?= e(basename(dirname($rel)) ?: 'root') ?></strong><span class="mono"><?= e($dir ?: '/') ?></span></div><a class="icon-btn" href="<?= e(url('files',['path'=>$dir])) ?>" target="_blank" title="Open folder in File Manager"><i data-lucide="folder-open"></i></a></div>
+  <div class="editor-file-list">
+    <?php foreach($siblingFiles as $file): ?><a class="editor-file-link<?= $file['rel']===$rel?' active':'' ?>" href="<?= e(url('file-edit',['path'=>$file['rel']])) ?>"><i data-lucide="file-code-2"></i><span><?= e($file['name']) ?></span></a><?php endforeach; ?>
+  </div>
+</aside>
+<section class="editor-main">
 <div class="page-header">
   <div>
     <div class="breadcrumb"><a href="<?= e(url('files', ['path' => $dir])) ?>"><i data-lucide="corner-left-up"></i>Back to folder</a></div>
@@ -47,6 +57,7 @@ $size = filesize($abs);
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/lib/codemirror.min.css">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/theme/material-darker.min.css">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/addon/dialog/dialog.min.css">
+<div class="editor-tabs" id="editorTabs"></div>
 <div class="card code-editor-card">
   <div class="code-editor-toolbar">
     <span class="badge badge-slate mono" id="fmode">text</span>
@@ -57,6 +68,8 @@ $size = filesize($abs);
   <div class="code-editor-host">
     <textarea id="fedit" class="input mono" style="width:100%;height:60vh;white-space:pre"><?= e($content) ?></textarea>
   </div>
+</div>
+</section>
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/lib/codemirror.min.js"></script>
@@ -79,6 +92,18 @@ document.addEventListener('DOMContentLoaded', () => {
   const ta = document.getElementById('fedit');
   const saved = document.getElementById('fsaved');
   const extension = (FEDIT_PATH.split('.').pop() || '').toLowerCase();
+  const tabStore = 'nebula-editor-tabs';
+  let openTabs = [];
+  try { openTabs = JSON.parse(localStorage.getItem(tabStore) || '[]'); } catch (e) { openTabs = []; }
+  openTabs = openTabs.filter((item) => item && item.path && item.href);
+  const currentTab = { path: FEDIT_PATH, name: FEDIT_PATH.split('/').pop(), href: location.href };
+  openTabs = openTabs.filter((item) => item.path !== FEDIT_PATH); openTabs.push(currentTab); openTabs = openTabs.slice(-12);
+  const persistTabs = () => localStorage.setItem(tabStore, JSON.stringify(openTabs));
+  const renderTabs = () => {
+    const host = document.getElementById('editorTabs'); host.replaceChildren();
+    openTabs.forEach((item) => { const tab=document.createElement('div');tab.className='editor-tab'+(item.path===FEDIT_PATH?' active':'');const link=document.createElement('a');link.href=item.href;link.textContent=item.name;link.title=item.path;const close=document.createElement('button');close.type='button';close.title='Close tab';close.textContent='×';close.addEventListener('click',(event)=>{event.preventDefault();event.stopPropagation();const wasCurrent=item.path===FEDIT_PATH;openTabs=openTabs.filter(t=>t.path!==item.path);persistTabs();if(wasCurrent&&openTabs.length)location.href=openTabs[openTabs.length-1].href;else if(wasCurrent)window.close();else renderTabs();});tab.append(link,close);host.append(tab); });
+  };
+  persistTabs(); renderTabs();
   const modes = { php:'application/x-httpd-php', phtml:'application/x-httpd-php', js:'javascript', mjs:'javascript', json:{name:'javascript',json:true}, ts:{name:'javascript',typescript:true}, css:'css', scss:'text/x-scss', html:'htmlmixed', htm:'htmlmixed', xml:'xml', svg:'xml', yml:'yaml', yaml:'yaml', c:'text/x-csrc', cpp:'text/x-c++src', h:'text/x-csrc', java:'text/x-java' };
   let editor = null, dirty = false, wrapping = false;
   if (window.CodeMirror) {

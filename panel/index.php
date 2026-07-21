@@ -105,6 +105,9 @@ if (strpos($route, 'api/') === 0) {
     $name = substr($route, 4);
     $file = APP_ROOT . '/api/' . $name . '.php';
     if (preg_match('/^[a-z0-9_-]+$/', $name) && is_file($file)) {
+        if (!can_access_api($name, $method)) {
+            json_out(['ok' => false, 'error' => 'Your role does not have permission for this action.'], 403);
+        }
         require $file;
         return;
     }
@@ -149,6 +152,11 @@ if ($route === 'backup-download') {
 // HTML page routes: views load their own data.
 // --------------------------------------------------------------------------
 if (is_page_route($route)) {
+    if (!role_route_allowed($route)) {
+        http_response_code(403);
+        render('dashboard', ['permissionError' => true], true);
+        return;
+    }
     render($route, [], true);
     return;
 }

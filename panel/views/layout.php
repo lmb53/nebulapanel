@@ -8,9 +8,9 @@ $activeName = $_GET['name'] ?? '';
 // Build nav grouped by section from the module registry.
 $nav = [];
 foreach (nebula_modules() as $route => $m) {
+    if (!role_route_allowed($route)) { continue; }
     $nav[$m[2]][] = [$route, $m[0], $m[1]];
 }
-$installedServices = manageable_services();
 function nav_link(string $route, string $icon, string $label, string $active): string
 {
     $cls = $route === $active ? 'nav-item active' : 'nav-item';
@@ -32,7 +32,7 @@ function nav_link(string $route, string $icon, string $label, string $active): s
 <meta name="csrf-token" content="<?= e(csrf_token()) ?>">
 <meta name="base-url" content="<?= e(base_url()) ?>">
 </head>
-<body>
+<body class="<?= $active === 'file-edit' ? 'editor-window' : '' ?>">
 <div class="app-shell">
   <aside class="sidebar" id="sidebar">
     <div class="sidebar-brand">
@@ -47,15 +47,6 @@ function nav_link(string $route, string $icon, string $label, string $active): s
         <?php endforeach; ?>
       <?php endforeach; ?>
 
-      <?php if ($installedServices): ?>
-        <div class="nav-section-title">Service instances</div>
-        <?php foreach ($installedServices as $s): ?>
-          <?php $on = ($active === 'service' && $activeName === $s['unit']); ?>
-          <a class="nav-item<?= $on ? ' active' : '' ?>" href="<?= e(url('service', ['name' => $s['unit']])) ?>">
-            <i data-lucide="<?= e($s['icon']) ?>"></i><span class="nav-label"><?= e($s['label']) ?></span>
-          </a>
-        <?php endforeach; ?>
-      <?php endif; ?>
     </div>
     <div class="sidebar-footer">
       <form method="post" action="<?= e(url('logout')) ?>" style="margin:0">
@@ -87,10 +78,10 @@ function nav_link(string $route, string $icon, string $label, string $active): s
           <a class="dropdown-foot" href="<?= e(url('notifications')) ?>">View all notifications <i data-lucide="arrow-right"></i></a>
         </div>
       </div>
-      <div class="avatar" title="<?= e(current_user() ?? '') ?>"><?= e(strtoupper(substr(current_user() ?? 'U', 0, 2))) ?></div>
+      <div class="avatar" title="<?= e((current_user() ?? '') . ' · ' . ucfirst(current_role())) ?>"><?= e(strtoupper(substr(current_user() ?? 'U', 0, 2))) ?></div>
     </header>
 
-    <main class="page<?= $active === 'files' ? ' page-file-manager' : '' ?>">
+    <main class="page<?= $active === 'files' ? ' page-file-manager' : ($active === 'file-edit' ? ' page-file-editor' : '') ?>">
       <?php require $__view; ?>
     </main>
   </div>
@@ -102,6 +93,7 @@ function nav_link(string $route, string $icon, string $label, string $active): s
     <div class="cmdk-input"><i data-lucide="search" style="width:16px;height:16px;color:var(--text-tertiary)"></i><input id="cmdkInput" placeholder="Search pages…" autocomplete="off"></div>
     <div class="cmdk-list" id="cmdkList">
       <?php foreach (nebula_modules() as $route => $m): ?>
+        <?php if (!role_route_allowed($route)) continue; ?>
         <div class="cmdk-item" data-href="<?= e(url($route)) ?>" data-label="<?= e(strtolower($m[1] . ' ' . $m[2])) ?>">
           <i data-lucide="<?= e($m[0]) ?>"></i><span><?= e($m[1]) ?></span>
           <span style="margin-left:auto;font-size:11px;color:var(--text-tertiary)"><?= e($m[2]) ?></span>
