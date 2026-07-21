@@ -351,45 +351,54 @@
         if (popup) popup.focus(); else toast('Allow pop-ups to use the multi-tab file editor', 'warning');
       });
     });
-    const wireTreeToggle = (toggle) => {
-      if (toggle.dataset.treeWired) return;
-      toggle.dataset.treeWired = '1';
-      toggle.addEventListener('click', async (event) => {
-        event.preventDefault(); event.stopPropagation();
-        const row = toggle.closest('[data-tree-row]');
-        let children = row?.nextElementSibling;
-        const matching = children?.matches?.(`[data-tree-children][data-tree-parent="${CSS.escape(toggle.dataset.treePath)}"]`);
-        if (!matching) {
-          children = document.createElement('div'); children.className = 'tree-children'; children.dataset.treeChildren = ''; children.dataset.treeParent = toggle.dataset.treePath;
-          row?.after(children);
+    const treePane = document.querySelector('.fm-tree-pane');
+    treePane?.addEventListener('click', async (event) => {
+      const toggle = event.target.closest('.tree-toggle');
+      if (!toggle || !treePane.contains(toggle)) return;
+      event.preventDefault(); event.stopPropagation();
+      const row = toggle.closest('[data-tree-row]');
+      const path = toggle.dataset.treePath || '';
+      let children = row?.nextElementSibling;
+      if (!children?.hasAttribute?.('data-tree-children') || children.dataset.treeParent !== path) {
+        children = document.createElement('div');
+        children.className = 'tree-children hidden';
+        children.dataset.treeChildren = '';
+        children.dataset.treeParent = path;
+        row?.after(children);
+      }
+      const opening = children.classList.contains('hidden');
+      children.classList.toggle('hidden', !opening);
+      toggle.classList.toggle('open', opening);
+      toggle.setAttribute('aria-expanded', opening ? 'true' : 'false');
+      toggle.innerHTML = `<i data-lucide="${opening ? 'chevron-down' : 'chevron-right'}"></i>`;
+      if (opening && !children.dataset.loaded && !children.children.length) {
+        children.innerHTML = '<div class="tree-loading">Loading…</div>';
+        try {
+          const res = await apiGet('file-tree&path=' + encodeURIComponent(path));
+          children.replaceChildren();
+          (res.entries || []).forEach((entry) => {
+            const item = document.createElement(entry.dir ? 'div' : 'a');
+            item.className = 'tree-node';
+            if (entry.dir) {
+              item.dataset.treeRow = '';
+              item.innerHTML = '<button class="tree-toggle" type="button" aria-expanded="false"><i data-lucide="chevron-right"></i></button><i data-lucide="folder" class="folder-ic" style="color:var(--purple-400)"></i><a><span></span></a>';
+              item.querySelector('.tree-toggle').dataset.treePath = entry.path;
+              const link = item.querySelector('a'); link.href = entry.href; link.querySelector('span').textContent = entry.name;
+            } else {
+              item.href = entry.href;
+              item.innerHTML = '<i data-lucide="file" class="folder-ic" style="color:var(--text-tertiary)"></i><span></span>';
+              item.querySelector('span').textContent = entry.name;
+            }
+            children.appendChild(item);
+          });
+          children.dataset.loaded = '1';
+          wireEditorLinks(children);
+        } catch (error) {
+          children.innerHTML = '<div class="tree-loading">Preview unavailable</div>';
         }
-        const opening = children.classList.contains('hidden') || !toggle.classList.contains('open');
-        children.classList.toggle('hidden', !opening); toggle.classList.toggle('open', opening);
-        const icon = toggle.querySelector('svg'); if (icon) icon.outerHTML = `<i data-lucide="${opening ? 'chevron-down' : 'chevron-right'}"></i>`;
-        if (opening && !children.dataset.loaded && !children.children.length) {
-          children.innerHTML = '<div class="tree-loading">Loading…</div>';
-          try {
-            const res = await apiGet('file-tree&path=' + encodeURIComponent(toggle.dataset.treePath)); children.innerHTML = '';
-            (res.entries || []).forEach((entry) => {
-              const item = document.createElement(entry.dir ? 'div' : 'a'); item.className = 'tree-node';
-              if (entry.dir) {
-                item.dataset.treeRow = '';
-                item.innerHTML = `<button class="tree-toggle" type="button" data-tree-path=""><i data-lucide="chevron-right"></i></button><i data-lucide="folder" class="folder-ic" style="color:var(--purple-400)"></i><a><span></span></a>`;
-                const childToggle=item.querySelector('[data-tree-path]');childToggle.dataset.treePath=entry.path;const link=item.querySelector('a');link.href=entry.href;link.querySelector('span').textContent=entry.name;wireTreeToggle(childToggle);
-              } else {
-                item.href = entry.href; item.innerHTML = '<i data-lucide="file" class="folder-ic" style="color:var(--text-tertiary)"></i><span></span>'; item.querySelector('span').textContent = entry.name;
-              }
-              children.appendChild(item);
-            });
-            if (!children.children.length) children.innerHTML = '<div class="tree-loading">Empty folder</div>';
-            children.dataset.loaded = '1';
-            wireEditorLinks(children);
-          } catch (error) { children.innerHTML = '<div class="tree-loading">Preview unavailable</div>'; }
-        }
-        if (window.lucide) lucide.createIcons();
-      });
-    };
-    document.querySelectorAll('[data-tree-path]').forEach(wireTreeToggle);
+      }
+      if (window.lucide) lucide.createIcons();
+    });
     function wireEditorLinks(root) {
       root.querySelectorAll('a[href*="r=file-edit"]').forEach((link) => link.addEventListener('click', (event) => {
         event.preventDefault(); const popup=window.open(link.href,'nebulaFileEditor','popup,width=1280,height=840,resizable=yes,scrollbars=yes'); if(popup)popup.focus();
