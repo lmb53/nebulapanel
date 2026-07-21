@@ -73,18 +73,8 @@ switch ($route) {
 }
 
 // --------------------------------------------------------------------------
-// Everything below requires authentication. JSON routes additionally accept
-// a hashed bearer token generated on the API page.
+// Everything below requires an authenticated panel session.
 // --------------------------------------------------------------------------
-if (strpos($route, 'api/') === 0 && !is_logged_in()) {
-    $auth = (string) ($_SERVER['HTTP_AUTHORIZATION'] ?? '');
-    if (preg_match('/^Bearer\s+(.+)$/i', $auth, $m)) {
-        api_token_authenticate(trim($m[1]));
-    }
-    if (!is_api_token_authenticated()) {
-        json_out(['ok' => false, 'error' => 'Authentication required'], 401);
-    }
-}
 require_auth();
 
 // --------------------------------------------------------------------------
@@ -123,6 +113,7 @@ if ($route === 'file-download') {
         http_response_code(404);
         exit('Not found');
     }
+    fm_record_recent(fm_rel($abs));
     audit('file.download', fm_rel($abs));
     header('Content-Type: application/octet-stream');
     header('Content-Disposition: attachment; filename="' . basename($abs) . '"');

@@ -288,6 +288,59 @@
     } catch (e) { box.innerHTML = '<div class="text-tertiary" style="font-size:13px">Could not load services.</div>'; }
   }
 
+  // ---- Top-bar notifications ---------------------------------------------
+  function wireNotifications() {
+    const trigger = document.getElementById('notificationTrigger');
+    const menu = document.getElementById('notificationMenu');
+    const list = document.getElementById('notificationMenuList');
+    const dot = document.getElementById('notificationDot');
+    const count = document.getElementById('notificationCount');
+    if (!trigger || !menu || !list) return;
+
+    const color = (level) => level === 'critical' ? 'var(--red-400)' : (level === 'warning' ? 'var(--orange-400)' : 'var(--blue-400)');
+    const render = async () => {
+      try {
+        const res = await apiGet('notifications');
+        dot?.classList.toggle('hidden', !res.unread);
+        if (count) count.textContent = `${res.unread} unread`;
+        list.innerHTML = '';
+        const items = (res.items || []).slice(0, 6);
+        if (!items.length) {
+          const empty = document.createElement('div'); empty.className = 'fm-empty-hint'; empty.textContent = 'No current notifications.'; list.appendChild(empty); return;
+        }
+        items.forEach((item) => {
+          const row = document.createElement('div'); row.className = 'notification-menu-item' + (item.read ? '' : ' unread');
+          const icon = document.createElement('a'); icon.className = 'notif-icon'; icon.href = `${BASE}/?r=${encodeURIComponent(item.route || 'dashboard')}`; icon.innerHTML = `<i data-lucide="${item.icon || 'bell'}"></i>`; icon.style.color = color(item.level);
+          const copy = document.createElement('a'); copy.className = 'notification-menu-copy'; copy.href = icon.href;
+          const title = document.createElement('strong'); title.textContent = item.title || '';
+          const detail = document.createElement('span'); detail.textContent = item.detail || '';
+          copy.append(title, detail);
+          const actions = document.createElement('div'); actions.className = 'notification-menu-actions';
+          if (!item.read) {
+            const read = document.createElement('button'); read.className = 'icon-btn'; read.title = 'Mark as read'; read.innerHTML = '<i data-lucide="check"></i>';
+            read.addEventListener('click', async () => { await apiPost('notifications', { action: 'mark-read', id: item.id }); await render(); }); actions.appendChild(read);
+          }
+          const del = document.createElement('button'); del.className = 'icon-btn'; del.title = 'Delete'; del.innerHTML = '<i data-lucide="trash-2"></i>';
+          del.addEventListener('click', async () => { await apiPost('notifications', { action: 'delete', id: item.id }); await render(); }); actions.appendChild(del);
+          row.append(icon, copy, actions); list.appendChild(row);
+        });
+        if (window.lucide) lucide.createIcons();
+      } catch (e) {
+        list.innerHTML = '<div class="fm-empty-hint">Could not load notifications.</div>';
+      }
+    };
+    trigger.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const opening = menu.classList.contains('hidden');
+      menu.classList.toggle('hidden', !opening); trigger.setAttribute('aria-expanded', opening ? 'true' : 'false');
+      if (opening) await render();
+    });
+    menu.addEventListener('click', (e) => e.stopPropagation());
+    document.addEventListener('click', () => { menu.classList.add('hidden'); trigger.setAttribute('aria-expanded', 'false'); });
+    document.getElementById('notificationReadAll')?.addEventListener('click', async () => { await apiPost('notifications', { action: 'mark-all-read' }); await render(); });
+    render();
+  }
+
   // ---- File manager -------------------------------------------------------
   function wireFiles() {
     document.querySelectorAll('[data-fm-delete]').forEach((btn) => {
@@ -313,6 +366,20 @@
       if (window.lucide) lucide.createIcons();
     });
     document.getElementById('refreshBtn')?.addEventListener('click', pollMetrics);
+  }
+
+  // Shared tab behaviour used by service instances and mockup-parity pages.
+  function wireTabs() {
+    document.querySelectorAll('.tabs').forEach((group) => {
+      group.querySelectorAll(':scope > .tab[data-tab-target]').forEach((tab) => {
+        tab.addEventListener('click', () => {
+          group.querySelectorAll(':scope > .tab').forEach((item) => item.classList.toggle('active', item === tab));
+          const panels = document.querySelector(tab.dataset.tabPanelGroup || '[data-tab-panels]');
+          panels?.querySelectorAll(':scope > [data-tab-panel]').forEach((panel) => panel.classList.add('hidden'));
+          document.getElementById(tab.dataset.tabTarget)?.classList.remove('hidden');
+        });
+      });
+    });
   }
 
   // ---- Command palette (⌘K / Ctrl+K) -------------------------------------
@@ -361,6 +428,8 @@
     if (window.lucide) lucide.createIcons();
     wireChrome();
     wireCmdk();
+    wireTabs();
+    wireNotifications();
 
     const page = window.NEBULA_PAGE;
     // Live metrics run on every authenticated page (topbar), chart on dashboard.

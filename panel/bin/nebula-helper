@@ -12,6 +12,7 @@ set -euo pipefail
 
 NGINX_AV=/etc/nginx/sites-available
 NGINX_EN=/etc/nginx/sites-enabled
+FM_ROOT_FILE=/etc/nebula-panel/fm-root
 
 die() { echo "$*" >&2; exit 2; }
 valid_domain() { [[ "$1" =~ ^[a-zA-Z0-9]([a-zA-Z0-9.-]{0,251}[a-zA-Z0-9])?$ ]] || die "invalid domain"; }
@@ -19,6 +20,18 @@ valid_path()   { [[ "$1" =~ ^/[a-zA-Z0-9._/-]+$ && "$1" != *".."* ]] || die "inv
 valid_php()    { [[ "$1" =~ ^[0-9]+\.[0-9]+$ ]] || die "invalid php version"; }
 valid_email()  { [[ -z "$1" || "$1" =~ ^[^@[:space:]]+@[^@[:space:]]+$ ]] || die "invalid email"; }
 valid_user()   { [[ "$1" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] || die "invalid user"; }
+valid_group()  { [[ "$1" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] || die "invalid group"; }
+
+# Resolve a path and prove it is inside the installer-owned File Manager root.
+fm_confined_path() {
+  local requested="$1" root target
+  [[ -r "$FM_ROOT_FILE" ]] || die "file manager root is not configured; re-run install.sh"
+  root="$(realpath "$(head -n 1 "$FM_ROOT_FILE")" 2>/dev/null || true)"
+  target="$(realpath "$requested" 2>/dev/null || true)"
+  [[ -n "$root" && -n "$target" ]] || die "path not found"
+  [[ "$target" == "$root" || "$target" == "$root"/* ]] || die "path is outside file manager root"
+  printf '%s\n' "$target"
+}
 
 # Print "uid:gid:home" for a real interactive account; reject system users.
 human_user_info() {
@@ -34,6 +47,23 @@ human_user_info() {
 CMD="${1:-}"; shift || true
 
 case "$CMD" in
+
+  # File metadata operations are confined by /etc/nebula-panel/fm-root.
+  file-chmod)
+    TARGET="$(fm_confined_path "${1:-}")"; MODE="${2:-}"
+    [[ "$MODE" =~ ^[0-7]{3,4}$ ]] || die "invalid mode"
+    chmod "$MODE" "$TARGET"
+    echo "permissions updated"
+    ;;
+
+  file-chown)
+    TARGET="$(fm_confined_path "${1:-}")"; OWNER="${2:-}"; GROUP="${3:-}"
+    valid_user "$OWNER"; valid_group "$GROUP"
+    getent passwd "$OWNER" >/dev/null || die "owner not found"
+    getent group "$GROUP" >/dev/null || die "group not found"
+    chown "$OWNER:$GROUP" "$TARGET"
+    echo "ownership updated"
+    ;;
 
   # ssh-keys-list <user> / ssh-key-add <user> <base64-key> / ssh-key-delete <user> <line>
   ssh-keys-list)
