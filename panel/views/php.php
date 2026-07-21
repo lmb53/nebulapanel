@@ -135,7 +135,7 @@ document.addEventListener('DOMContentLoaded', () => {
   <section data-tab-panel id="php-sites" class="card">
     <div class="card-header"><h3>Website PHP versions</h3><span class="muted">Changes reload Nginx after its configuration passes validation</span></div>
     <?php if (!$sites): ?><div class="empty-state"><div class="es-icon"><i data-lucide="globe"></i></div><div>No websites configured</div></div>
-    <?php else: ?><div class="table-wrap"><table><thead><tr><th>Website</th><th>Document root</th><th>PHP version</th><th>SSL</th></tr></thead><tbody>
+    <?php else: ?><div class="table-wrap"><table class="data-table"><thead><tr><th>Website</th><th>Document root</th><th>PHP version</th><th>SSL</th></tr></thead><tbody>
       <?php foreach ($sites as $site): ?><tr>
         <td><a href="<?= e((!empty($site['ssl']) ? 'https://' : 'http://') . ($site['domain'] ?? '')) ?>" target="_blank" rel="noopener"><?= e((string) ($site['domain'] ?? '')) ?></a></td>
         <td class="mono text-tertiary"><?= e((string) ($site['docroot'] ?? '')) ?></td>
@@ -163,7 +163,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   <section data-tab-panel id="php-extensions" class="card hidden">
     <div class="card-header"><div><h3>PHP <?= e($sel) ?> extensions</h3><div class="muted" style="font-size:11.5px">Install packages or enable and disable modules per version</div></div><span class="badge badge-blue"><?= count(array_filter($extensions, fn($ext) => !empty($ext['enabled']))) ?> enabled</span></div>
-    <div class="table-wrap"><table><thead><tr><th>Extension</th><th>Purpose</th><th>Installed</th><th>Runtime</th><th></th></tr></thead><tbody>
+    <div class="table-wrap"><table class="data-table"><thead><tr><th>Extension</th><th>Purpose</th><th>Installed</th><th>Runtime</th><th></th></tr></thead><tbody>
       <?php foreach ($extensions as $extension):
         $operation = empty($extension['installed']) ? 'install' : (!empty($extension['enabled']) ? 'disable' : 'enable');
       ?><tr>
@@ -208,7 +208,7 @@ document.addEventListener('DOMContentLoaded', () => {
   <section data-tab-panel id="php-pools" class="card hidden">
     <div class="card-header"><h3>PHP <?= e($sel) ?> FPM pools</h3><button class="btn btn-secondary btn-sm" data-php-restart="<?= e($sel) ?>"><i data-lucide="refresh-cw"></i>Restart PHP <?= e($sel) ?></button></div>
     <?php if (!$pools): ?><div class="empty-state"><div class="es-icon"><i data-lucide="network"></i></div><div>No readable pool configurations found</div></div>
-    <?php else: ?><div class="table-wrap"><table><thead><tr><th>Pool</th><th>User</th><th>Process manager</th><th>Max children</th><th>Listen</th><th>Config</th></tr></thead><tbody>
+    <?php else: ?><div class="table-wrap"><table class="data-table"><thead><tr><th>Pool</th><th>User</th><th>Process manager</th><th>Max children</th><th>Listen</th><th>Config</th></tr></thead><tbody>
       <?php foreach ($pools as $pool): ?><tr><td><strong><?= e((string) $pool['name']) ?></strong></td><td class="mono"><?= e((string) $pool['user']) ?></td><td class="mono"><?= e((string) $pool['pm']) ?></td><td class="mono"><?= e((string) $pool['max_children']) ?></td><td class="mono text-tertiary"><?= e((string) $pool['listen']) ?></td><td class="mono text-tertiary"><?= e((string) $pool['file']) ?></td></tr><?php endforeach; ?>
     </tbody></table></div><?php endif; ?>
   </section>
@@ -334,7 +334,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
   const iniTextarea = document.getElementById('phpIniContent');
   if (iniTextarea && window.CodeMirror) {
-    iniEditor = CodeMirror.fromTextArea(iniTextarea, {mode:'text/x-properties',theme:'material-darker',lineNumbers:true,lineWrapping:false,indentUnit:2,viewportMargin:20});
+    iniEditor = CodeMirror.fromTextArea(iniTextarea, {mode:'text/x-properties',theme:window.Nebula.cmTheme(),lineNumbers:true,lineWrapping:false,indentUnit:2,viewportMargin:20});
+    window.Nebula.registerCM(iniEditor);
     iniEditor.setSize('100%', '65vh');
     if (location.hash === '#php-ini') setTimeout(() => iniEditor.refresh(), 0);
   }

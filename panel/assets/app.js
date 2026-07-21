@@ -5,6 +5,12 @@
   const CSRF = META('csrf-token');
   const api = (endpoint) => `${BASE}/?r=api/${endpoint}`;
 
+  // Apply the persisted theme immediately (before any DOMContentLoaded handler,
+  // e.g. code editors) so light/dark is settled when views initialise.
+  if (localStorage.getItem('nebula-theme') === 'light') {
+    document.documentElement.classList.add('light');
+  }
+
   async function apiGet(endpoint) {
     const r = await fetch(api(endpoint), { headers: { Accept: 'application/json' } });
     const data = await r.json().catch(() => ({ ok: false, error: `Invalid server response (HTTP ${r.status})` }));
@@ -87,8 +93,23 @@
     return (b / Math.pow(1024, i)).toFixed(1) + ' ' + u[i];
   }
 
+  // ---- CodeMirror theming -------------------------------------------------
+  // Editors registered here follow the active light/dark panel theme.
+  const codeMirrors = new Set();
+  const cmTheme = () => (document.documentElement.classList.contains('light') ? 'default' : 'material-darker');
+  function registerCM(cm) {
+    if (!cm) return cm;
+    codeMirrors.add(cm);
+    cm.setOption('theme', cmTheme());
+    return cm;
+  }
+  function syncCmThemes() {
+    const theme = cmTheme();
+    codeMirrors.forEach((cm) => cm.setOption('theme', theme));
+  }
+
   // Public API for per-module view scripts (available by DOMContentLoaded).
-  window.Nebula = { api, apiGet, apiPost, streamPost, toast, fmtBytes };
+  window.Nebula = { api, apiGet, apiPost, streamPost, toast, fmtBytes, cmTheme, registerCM };
 
   // ---- Toasts -------------------------------------------------------------
   function toast(msg, type = 'success') {
@@ -430,10 +451,10 @@
     const sidebar = document.getElementById('sidebar');
     document.getElementById('collapseBtn')?.addEventListener('click', () => sidebar.classList.toggle('collapsed'));
     const themeBtn = document.getElementById('themeToggle');
-    if (localStorage.getItem('nebula-theme') === 'light') document.documentElement.classList.add('light');
     themeBtn?.addEventListener('click', () => {
       document.documentElement.classList.toggle('light');
       localStorage.setItem('nebula-theme', document.documentElement.classList.contains('light') ? 'light' : 'dark');
+      syncCmThemes();
       if (window.lucide) lucide.createIcons();
     });
     document.getElementById('refreshBtn')?.addEventListener('click', pollMetrics);
