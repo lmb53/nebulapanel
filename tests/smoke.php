@@ -79,9 +79,15 @@ $check(strpos($helperSource, "tr -dc 'a-zA-Z0-9' </dev/urandom | head") === fals
 $check(strpos($helperSource, 'FM_ROOT_FILE=/etc/nebula-panel/fm-root') !== false, 'privileged File Manager confinement is missing');
 $check(strpos($helperSource, 'file-compress)') !== false && strpos($helperSource, 'zip -rq') !== false, 'privileged zip compression is missing');
 $check(strpos($helperSource, 'systemd-run --quiet') !== false, 'PHP-FPM reload is not deferred');
+$check(strpos($helperSource, 'site-list)') !== false && strpos($helperSource, 'site-php)') !== false, 'website recovery or PHP reassignment helper is missing');
+$check(strpos($helperSource, 'php-extension)') !== false && strpos($helperSource, 'php-ini-replace)') !== false, 'expanded PHP management helper actions are missing');
 $check(strpos($helperSource, 'pma-signon)') !== false && strpos($helperSource, "SignonSession") !== false, 'phpMyAdmin signed signon support is missing');
 $check(strpos($helperSource, 'cert-upload)') !== false && strpos($helperSource, 'openssl x509') !== false, 'custom certificate installation is missing');
 $check(!is_page_route('file-view'), 'obsolete file viewer route is still enabled');
+$installerSource = (string) file_get_contents(dirname(__DIR__) . '/install.sh');
+$check(strpos($installerSource, 'Reusing active panel prefix') !== false && strpos($installerSource, 'Migrated runtime state') !== false, 'reinstall state preservation is missing');
+$uploadSource = (string) file_get_contents(APP_ROOT . '/views/files.php');
+$check(strpos($uploadSource, 'Replace it with the uploaded file?') !== false, 'upload overwrite confirmation is missing');
 
 @unlink($config['fm_root'] . '/site/index.txt');
 @rmdir($config['fm_root'] . '/site');

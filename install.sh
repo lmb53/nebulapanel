@@ -20,7 +20,7 @@
 #   REPO=lmb53/nebulapanel   GitHub repo to pull from
 #   REPO_REF=main            Branch, tag, or commit to install
 #   SOURCE=auto|remote|local Where to get files (default: auto = local else remote)
-#   PANEL_PREFIX=myprefix    Fixed URL prefix (default: fresh random hex each run)
+#   PANEL_PREFIX=myprefix    Fixed URL prefix (default: reuse active install, random on first run)
 #   FM_ROOT=/var/www         Directory the File Manager may browse
 #   DOMAIN=panel.example.com Provision HTTPS via certbot for this domain
 #   ADMIN_IP=203.0.113.7     Restrict panel access to this IP (recommended)
@@ -143,13 +143,24 @@ SRC_NAME="$(basename "$PANEL_SRC")"
 ok "Panel source: $PANEL_SRC"
 
 # Decide the deployed directory below the public HTML root:
-#   PANEL_PREFIX unset / "random" -> fresh random hex prefix (DEFAULT)
-#   PANEL_PREFIX=foo              -> use "foo" (fixed, e.g. to redeploy in place)
+#   PANEL_PREFIX unset    -> reuse the active Nebula prefix, or random on first install
+#   PANEL_PREFIX=random   -> intentionally rotate to a fresh prefix and migrate state
+#   PANEL_PREFIX=foo      -> use "foo" (fixed, e.g. to redeploy in place)
 # `od` reads a fixed number of bytes, avoiding the SIGPIPE failure caused by
 # `/dev/urandom | head` when `set -o pipefail` is active.
 [[ "$WEBROOT" == /* ]] || die "WEBROOT must be an absolute path."
 mkdir -p "$WEBROOT"
 WEBROOT="$(readlink -f "$WEBROOT")"
+
+ACTIVE_PREFIX=""
+if [[ -f /etc/nginx/sites-available/nebula ]]; then
+  ACTIVE_PREFIX="$(grep -m1 -E '^[[:space:]]*location /[A-Za-z0-9_-]+/[[:space:]]*\{' /etc/nginx/sites-available/nebula 2>/dev/null \
+    | sed -E 's#^[[:space:]]*location /([A-Za-z0-9_-]+)/[[:space:]]*\{.*#\1#' || true)"
+fi
+if [[ -z "$PANEL_PREFIX" && -n "$ACTIVE_PREFIX" && -d "$WEBROOT/$ACTIVE_PREFIX" ]]; then
+  PANEL_PREFIX="$ACTIVE_PREFIX"
+  ok "Reusing active panel prefix: $PANEL_PREFIX"
+fi
 
 if [[ -z "$PANEL_PREFIX" || "$PANEL_PREFIX" == "random" ]]; then
   for _attempt in {1..10}; do
@@ -163,6 +174,17 @@ elif [[ ! "$PANEL_PREFIX" =~ ^[A-Za-z0-9][A-Za-z0-9_-]{2,63}$ ]]; then
 fi
 DEST="$WEBROOT/$PANEL_PREFIX"
 
+# A random-prefix reinstall should retain private runtime state from the panel
+# currently referenced by Nginx. Without this, Nginx vhosts/docroots survive
+# but sites.json, the admin account, settings, and other panel metadata appear
+# to vanish in the new URL.
+PREVIOUS_DEST=""
+if [[ -n "$ACTIVE_PREFIX" ]]; then
+  if [[ "$ACTIVE_PREFIX" != "$PANEL_PREFIX" && -d "$WEBROOT/$ACTIVE_PREFIX/data" ]]; then
+    PREVIOUS_DEST="$WEBROOT/$ACTIVE_PREFIX"
+  fi
+fi
+
 # --------------------------------------------------------------------------
 # 3. Deploy the panel files
 # --------------------------------------------------------------------------
@@ -174,6 +196,10 @@ rsync -a --delete \
 # Runtime state survives a fixed-prefix reinstall. On a fresh random install,
 # seed only the web-denial/ignore guards from the source data directory.
 mkdir -p "$DEST/data"
+if [[ -n "$PREVIOUS_DEST" ]]; then
+  rsync -a "$PREVIOUS_DEST/data/" "$DEST/data/"
+  ok "Migrated runtime state from $PREVIOUS_DEST"
+fi
 for _guard in .htaccess .gitignore; do
   [[ -f "$PANEL_SRC/data/$_guard" ]] && cp -f "$PANEL_SRC/data/$_guard" "$DEST/data/$_guard"
 done

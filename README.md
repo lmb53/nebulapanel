@@ -2,7 +2,7 @@
 
 A working, self-hosted server control panel. The repository's application source
 lives in the clearly named `panel/` directory. Installation copies those files
-to a fresh **random public URL prefix**, e.g. `http://YOUR_IP/a1b2c3d4e5f6/`.
+to a **random public URL prefix** on first install, e.g. `http://YOUR_IP/a1b2c3d4e5f6/`.
 
 > The random directory name is *obscurity*, not real security. Always pair it with
 > HTTPS, a strong admin password, and ideally IP allow-listing. See "Hardening".
@@ -11,8 +11,9 @@ to a fresh **random public URL prefix**, e.g. `http://YOUR_IP/a1b2c3d4e5f6/`.
 
 On a fresh **Ubuntu 22.04 or 24.04** box, one command installs and configures
 everything (Nginx + PHP-FPM, the panel, sudoers rules, the privileged helper,
-firewall). By default it creates a fresh random directory at
-`/var/www/html/<random-prefix>/` and serves it publicly through Nginx:
+firewall). The first run creates a random directory at
+`/var/www/html/<random-prefix>/`; later runs reuse that active installation and
+retain its private runtime state:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/lmb53/nebulapanel/main/install.sh | sudo bash
@@ -27,8 +28,9 @@ curl -fsSL https://raw.githubusercontent.com/lmb53/nebulapanel/main/install.sh \
 
 The installer prints both the random public URL and its filesystem path when it
 finishes — open the URL to create the admin account and run the provisioning
-wizard. Set `PANEL_PREFIX=my-fixed-name` only when you deliberately want a stable
-directory; `random` or an unset value generates a new one. Options (env vars):
+wizard. An unset `PANEL_PREFIX` reuses an existing active install and generates a
+random one only on the first run. Set `PANEL_PREFIX=random` to deliberately rotate
+the URL (runtime state is migrated), or use a fixed name. Options (env vars):
 `PANEL_PREFIX`, `WEBROOT`, `ADMIN_IP`, `DOMAIN`, `FM_ROOT`, `REPO`, `REPO_REF`
 (see [install.sh](install.sh)).
 
