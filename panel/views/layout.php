@@ -104,6 +104,7 @@ function nav_link(string $route, string $icon, string $label, string $active): s
 </div>
 
 <div class="toast-stack" id="toastStack"></div>
+<script>window.NEBULA_PAGE = window.NEBULA_PAGE || <?= json_encode($active) ?>;</script>
 <script src="<?= e(asset('app.js')) ?>"></script>
 </body>
 </html>

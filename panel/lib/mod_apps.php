@@ -79,7 +79,11 @@ function php_installed_versions(): array
     $v = [];
     foreach (glob('/etc/php/*', GLOB_ONLYDIR) ?: [] as $d) {
         $b = basename($d);
-        if (preg_match('/^\d+\.\d+$/', $b)) {
+        // Only count a version whose runtime binary is actually present. `apt
+        // remove` (without purge) leaves /etc/php/<ver> config behind, which
+        // would otherwise be reported as an installed version.
+        if (preg_match('/^\d+\.\d+$/', $b)
+            && (is_executable("/usr/sbin/php-fpm$b") || is_executable("/usr/bin/php$b"))) {
             $v[] = $b;
         }
     }
