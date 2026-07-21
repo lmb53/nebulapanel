@@ -82,21 +82,49 @@ ok "Packages installed"
 
 # Detect PHP-FPM version, socket and service name.
 #
-# Pick the HIGHEST installed PHP-FPM socket and derive the version, socket and
-# service name from that single choice so they always agree. (Deriving the
-# version from the CLI `php` while picking the socket with `head -1` could
-# disagree on a box with several PHP versions — e.g. reporting 8.4 next to the
-# 8.3 socket — and wire the default vhost to the wrong runtime.)
-select_fpm_socket() { ls /run/php/php*-fpm.sock 2>/dev/null | sort -V | tail -1 || true; }
-FPM_SOCK="$(select_fpm_socket)"
-if [[ -z "$FPM_SOCK" ]]; then
-  systemctl start "php*-fpm" 2>/dev/null || true
-  FPM_SOCK="$(select_fpm_socket)"
-fi
-[[ -z "$FPM_SOCK" ]] && die "Could not find a PHP-FPM socket in /run/php/."
-PHP_VER="$(basename "$FPM_SOCK" | sed -E 's/^php([0-9]+\.[0-9]+)-fpm\.sock$/\1/')"
-[[ "$PHP_VER" =~ ^[0-9]+\.[0-9]+$ ]] || die "Could not parse a PHP version from socket $FPM_SOCK."
+# The installed PHP version is the source of truth: we derive it from the FPM
+# config tree (/etc/php/<ver>/fpm), picking the HIGHEST, then locate that
+# version's socket and service so the three always agree.
+#
+# We deliberately do NOT derive the version from the socket file name. The
+# default pool can listen on a generic, unversioned socket like
+# /run/php/php-fpm.sock (which the `php*-fpm.sock` glob also matches), and a
+# name like that has no version to parse — that mismatch is what broke a fresh
+# install with "Could not parse a PHP version from socket /run/php/php-fpm.sock".
+
+# Highest PHP version that has an installed FPM config tree.
+detect_php_version() {
+  local d ver=""
+  for d in $(ls -d /etc/php/*/fpm 2>/dev/null | sort -V); do
+    ver="$(basename "$(dirname "$d")")"
+  done
+  # Fall back to a php-fpm binary on PATH if no config tree was found.
+  if [[ ! "$ver" =~ ^[0-9]+\.[0-9]+$ ]]; then
+    ver="$(php-fpm -v 2>/dev/null | sed -nE 's/^PHP ([0-9]+\.[0-9]+).*/\1/p' | head -1)"
+  fi
+  echo "$ver"
+}
+PHP_VER="$(detect_php_version)"
+[[ "$PHP_VER" =~ ^[0-9]+\.[0-9]+$ ]] || die "Could not determine an installed PHP-FPM version (looked in /etc/php/*/fpm)."
 FPM_SVC="php${PHP_VER}-fpm"
+
+# Start the service so its socket appears, then locate the socket. Prefer the
+# versioned socket; else read the pool's configured `listen` path; else fall
+# back to any socket present in /run/php.
+systemctl start "$FPM_SVC" 2>/dev/null || true
+find_fpm_socket() {
+  local sock
+  sock="/run/php/php${PHP_VER}-fpm.sock"
+  [[ -S "$sock" ]] && { echo "$sock"; return 0; }
+  # Pull the listen path straight from the pool config(s).
+  sock="$(sed -nE 's#^[[:space:]]*listen[[:space:]]*=[[:space:]]*(/[^[:space:];]+\.sock).*#\1#p' \
+            /etc/php/"${PHP_VER}"/fpm/pool.d/*.conf 2>/dev/null | head -1)"
+  [[ -n "$sock" && -S "$sock" ]] && { echo "$sock"; return 0; }
+  # Last resort: whatever socket exists in /run/php.
+  ls /run/php/php*-fpm.sock 2>/dev/null | sort -V | tail -1 || true
+}
+FPM_SOCK="$(find_fpm_socket)"
+[[ -z "$FPM_SOCK" ]] && die "Could not find a PHP-FPM socket for PHP ${PHP_VER} in /run/php/."
 ok "PHP $PHP_VER  (socket: $FPM_SOCK)"
 
 systemctl enable --now nginx >/dev/null 2>&1 || true
