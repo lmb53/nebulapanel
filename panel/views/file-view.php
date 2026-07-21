@@ -7,6 +7,7 @@ if ($abs === null || !is_file($abs)) {
     return;
 }
 $rel = fm_rel($abs);
+fm_record_recent($rel);
 $is_text = fm_is_text($abs);
 $content = $is_text ? file_get_contents($abs) : null;
 $size = filesize($abs);

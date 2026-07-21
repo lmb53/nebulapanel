@@ -10,6 +10,12 @@ $root_ok = fm_root() !== '';
 $rel = $abs ? fm_rel($abs) : '';
 $listing = $abs ? fm_list($abs) : ['dirs' => [], 'files' => []];
 $breadcrumbs = fm_breadcrumbs($rel);
+$fmState = fm_state();
+$pinnedEntries = fm_state_entries('pinned');
+$recentEntries = fm_state_entries('recent');
+$ownerOptions = fm_account_names('user');
+$groupOptions = fm_account_names('group');
+$currentPinned = in_array($rel, $fmState['pinned'], true);
 ?>
 <?php
 // --- Presentation helpers (local closures; do not affect the data block above) ---
@@ -83,6 +89,7 @@ foreach ($listing['dirs'] as $d) {
         'mtime'    => $d['mtime'],
         'perms'    => $d['perms'],
         'owner'    => $d['owner'],
+        'group'    => $d['group'],
         'icon'     => 'folder',
         'color'    => 'var(--purple-400)',
         'href'     => url('files', ['path' => $d['rel']]),
@@ -101,6 +108,7 @@ foreach ($listing['files'] as $f) {
         'mtime'    => $f['mtime'],
         'perms'    => $f['perms'],
         'owner'    => $f['owner'],
+        'group'    => $f['group'],
         'icon'     => $ic,
         'color'    => $icColor,
         'href'     => url('file-view', ['path' => $f['rel']]),
@@ -161,6 +169,12 @@ if ($rel !== '') {
         <button class="icon-btn" id="fmNewDir" title="New Folder"><i data-lucide="folder-plus"></i></button>
         <button class="icon-btn" id="fmUploadBtn2" title="Upload"><i data-lucide="upload"></i></button>
         <span class="sep"></span>
+        <button class="icon-btn" id="fmCopySelected" title="Copy"><i data-lucide="copy"></i></button>
+        <button class="icon-btn" id="fmCutSelected" title="Cut"><i data-lucide="scissors"></i></button>
+        <button class="icon-btn" id="fmPaste" title="Paste"><i data-lucide="clipboard-paste"></i></button>
+        <button class="icon-btn" id="fmCompressSelected" title="Compress to .tar.gz"><i data-lucide="archive"></i></button>
+        <button class="icon-btn<?= $currentPinned ? ' active' : '' ?>" id="fmPinCurrent" title="<?= $currentPinned ? 'Unpin' : 'Pin' ?> this folder"><i data-lucide="pin"></i></button>
+        <span class="sep"></span>
         <button class="icon-btn" id="fmDeleteSelected" title="Delete selected" style="color:var(--red-400)"><i data-lucide="trash-2"></i></button>
         <span class="sep"></span>
         <div class="topbar-spacer"></div>
@@ -178,6 +192,13 @@ if ($rel !== '') {
 
       <!-- LEFT: tree -->
       <div class="split-pane fm-tree-pane">
+        <div class="fm-tree-section-title">Pinned</div>
+        <?php if (!$pinnedEntries): ?><div class="fm-empty-hint" style="padding:8px;text-align:left">No pinned folders</div><?php endif; ?>
+        <?php foreach ($pinnedEntries as $pin): ?>
+          <a class="tree-node" href="<?= e(url('files', ['path' => $pin['rel']])) ?>">
+            <i data-lucide="pin" class="chev"></i><i data-lucide="folder" class="folder-ic" style="color:var(--purple-400)"></i><span><?= e($pin['name']) ?></span>
+          </a>
+        <?php endforeach; ?>
         <div class="fm-tree-section-title">Location</div>
         <?php foreach ($breadcrumbs as $i => $c): ?>
           <?php $isCur = $i === count($breadcrumbs) - 1; ?>
@@ -212,6 +233,13 @@ if ($rel !== '') {
       <!-- CENTER: file listing (drag-and-drop target) -->
       <div class="split-pane fm-center-pane" id="fmCenter">
 
+        <div class="tabs fm-tabs" id="fmTabs">
+          <button class="tab active" type="button" data-fm-tab="browse"><i data-lucide="folder-open"></i>Browse <span class="badge badge-slate"><?= (int) $itemCount ?></span></button>
+          <button class="tab" type="button" data-fm-tab="pinned"><i data-lucide="pin"></i>Pinned <span class="badge badge-slate"><?= count($pinnedEntries) ?></span></button>
+          <button class="tab" type="button" data-fm-tab="recent"><i data-lucide="history"></i>Recent <span class="badge badge-slate"><?= count($recentEntries) ?></span></button>
+        </div>
+        <div class="fm-tab-panel" data-fm-panel="browse">
+
         <!-- List view -->
         <div class="table-wrap" id="fmListView">
           <table class="data-table">
@@ -240,6 +268,7 @@ if ($rel !== '') {
                     data-size="<?= e($en['size_h']) ?>"
                     data-type="<?= e($en['type']) ?>"
                     data-owner="<?= e($en['owner']) ?>"
+                    data-group="<?= e($en['group']) ?>"
                     data-perms="<?= e($en['perms']) ?>"
                     data-modified="<?= e(date('M j, Y H:i', $en['mtime'])) ?>"
                     data-icon="<?= e($en['icon']) ?>"
@@ -287,6 +316,7 @@ if ($rel !== '') {
                  data-size="<?= e($en['size_h']) ?>"
                  data-type="<?= e($en['type']) ?>"
                  data-owner="<?= e($en['owner']) ?>"
+                 data-group="<?= e($en['group']) ?>"
                  data-perms="<?= e($en['perms']) ?>"
                  data-modified="<?= e(date('M j, Y H:i', $en['mtime'])) ?>"
                  data-icon="<?= e($en['icon']) ?>"
@@ -300,11 +330,33 @@ if ($rel !== '') {
             </div>
           <?php endforeach; ?>
         </div>
+        </div>
+
+        <div class="fm-tab-panel hidden" data-fm-panel="pinned">
+          <div class="fm-collection-head"><div><strong>Pinned folders</strong><span>Quick access locations</span></div></div>
+          <div class="fm-collection-grid">
+            <?php if (!$pinnedEntries): ?><div class="fm-empty-hint">Pin folders from Browse to keep them here.</div><?php endif; ?>
+            <?php foreach ($pinnedEntries as $pin): ?>
+              <a class="fm-collection-card" href="<?= e(url('files', ['path' => $pin['rel']])) ?>"><i data-lucide="folder-heart"></i><div><strong><?= e($pin['name']) ?></strong><span class="mono"><?= e($pin['rel'] ?: '/') ?></span></div><i data-lucide="chevron-right"></i></a>
+            <?php endforeach; ?>
+          </div>
+        </div>
+
+        <div class="fm-tab-panel hidden" data-fm-panel="recent">
+          <div class="fm-collection-head"><div><strong>Recent files</strong><span>Files opened, edited, or downloaded most recently</span></div><button class="btn btn-secondary btn-sm" id="fmClearRecent"><i data-lucide="trash-2"></i>Clear</button></div>
+          <div class="fm-collection-list">
+            <?php if (!$recentEntries): ?><div class="fm-empty-hint">No recently accessed files yet.</div><?php endif; ?>
+            <?php foreach ($recentEntries as $recent): ?>
+              <a class="fm-recent-row" href="<?= e(url('file-view', ['path' => $recent['rel']])) ?>"><i data-lucide="file-clock"></i><div><strong><?= e($recent['name']) ?></strong><span class="mono"><?= e($recent['rel']) ?></span></div><span><?= e(date('M j, H:i', $recent['mtime'])) ?></span><i data-lucide="chevron-right"></i></a>
+            <?php endforeach; ?>
+          </div>
+        </div>
       </div>
       <div class="split-divider"></div>
 
       <!-- RIGHT: properties -->
       <div class="split-pane fm-right-pane" id="fmProps">
+        <button class="icon-btn fm-props-close" id="fmPropsClose" title="Close details"><i data-lucide="x"></i></button>
         <div id="fmPropsEmpty" class="fm-empty-hint">Select an item to see its details.</div>
         <div id="fmPropsBody" class="hidden">
           <div class="fm-thumb" id="fmPropThumb"><i data-lucide="file"></i></div>
@@ -314,8 +366,23 @@ if ($rel !== '') {
           <div class="fm-prop-row"><span class="k">Size</span><span class="v" id="fmPropSize"></span></div>
           <div class="fm-prop-row"><span class="k">Type</span><span class="v" id="fmPropType"></span></div>
           <div class="fm-prop-row"><span class="k">Owner</span><span class="v" id="fmPropOwner"></span></div>
+          <div class="fm-prop-row"><span class="k">Group</span><span class="v" id="fmPropGroup"></span></div>
           <div class="fm-prop-row"><span class="k">Permissions</span><span class="v mono" id="fmPropPerms"></span></div>
           <div class="fm-prop-row"><span class="k">Modified</span><span class="v" id="fmPropModified"></span></div>
+
+          <div class="fm-section-title">Permissions <span class="mono" id="fmModeLabel"></span></div>
+          <div class="chmod-grid" id="fmChmodGrid">
+            <div></div><div class="hdr">Read</div><div class="hdr">Write</div><div class="hdr">Exec</div>
+            <?php foreach (['Owner', 'Group', 'Other'] as $who): ?><div class="lbl"><?= $who ?></div><?php for ($bit = 0; $bit < 3; $bit++): ?><div><input type="checkbox" data-perm-bit></div><?php endfor; ?><?php endforeach; ?>
+          </div>
+          <button class="btn btn-secondary btn-sm" id="fmSavePerms" style="width:100%;justify-content:center;margin-top:8px"><i data-lucide="shield-check"></i>Apply permissions</button>
+
+          <div class="fm-section-title">Ownership</div>
+          <label class="field-label" for="fmOwnerSelect">Owner</label>
+          <select class="fm-select-mini" id="fmOwnerSelect" style="margin-bottom:8px"><?php foreach ($ownerOptions as $account): ?><option value="<?= e($account) ?>"><?= e($account) ?></option><?php endforeach; ?></select>
+          <label class="field-label" for="fmGroupSelect">Group</label>
+          <select class="fm-select-mini" id="fmGroupSelect"><?php foreach ($groupOptions as $account): ?><option value="<?= e($account) ?>"><?= e($account) ?></option><?php endforeach; ?></select>
+          <button class="btn btn-secondary btn-sm" id="fmSaveOwner" style="width:100%;justify-content:center;margin-top:8px"><i data-lucide="user-cog"></i>Change ownership</button>
 
           <div style="display:flex;flex-direction:column;gap:8px;margin-top:16px">
             <a class="btn btn-secondary" id="fmPropOpen" style="width:100%;justify-content:center"><i data-lucide="external-link"></i>Open</a>
@@ -339,12 +406,20 @@ if ($rel !== '') {
 
     <!-- Right-click context menu (reuses each row's own action buttons) -->
     <div class="ctx-menu hidden" id="ctxMenu">
+      <div class="ctx-item" data-ctx-act="new-file"><i data-lucide="file-plus"></i>New File</div>
+      <div class="ctx-item" data-ctx-act="new-folder"><i data-lucide="folder-plus"></i>New Folder</div>
+      <div class="ctx-sep"></div>
       <div class="ctx-item" data-ctx-act="open"><i data-lucide="external-link"></i>Open</div>
       <div class="ctx-item" data-ctx-act="edit"><i data-lucide="pencil-line"></i>Edit</div>
+      <div class="ctx-item" data-ctx-act="copy"><i data-lucide="copy"></i>Copy</div>
+      <div class="ctx-item" data-ctx-act="cut"><i data-lucide="scissors"></i>Cut</div>
+      <div class="ctx-item" data-ctx-act="paste"><i data-lucide="clipboard-paste"></i>Paste</div>
       <div class="ctx-item" data-ctx-act="download"><i data-lucide="download"></i>Download</div>
+      <div class="ctx-item" data-ctx-act="compress"><i data-lucide="archive"></i>Compress</div>
       <div class="ctx-sep"></div>
       <div class="ctx-item" data-ctx-act="rename"><i data-lucide="pencil"></i>Rename</div>
       <div class="ctx-item" data-ctx-act="chmod"><i data-lucide="lock"></i>Permissions</div>
+      <div class="ctx-item" data-ctx-act="details"><i data-lucide="info"></i>Details</div>
       <div class="ctx-sep"></div>
       <div class="ctx-item danger" data-ctx-act="delete"><i data-lucide="trash-2"></i>Delete</div>
     </div>
@@ -360,6 +435,24 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // ---- Create / rename / chmod / delete (unchanged endpoints) --------------
   const bindClick = (id, fn) => document.getElementById(id)?.addEventListener('click', fn);
+
+  // ---- Browse / pinned / recent tabs -------------------------------------
+  document.querySelectorAll('[data-fm-tab]').forEach((tab) => {
+    tab.addEventListener('click', () => {
+      document.querySelectorAll('[data-fm-tab]').forEach((item) => item.classList.toggle('active', item === tab));
+      document.querySelectorAll('[data-fm-panel]').forEach((panel) => panel.classList.toggle('hidden', panel.dataset.fmPanel !== tab.dataset.fmTab));
+    });
+  });
+  bindClick('fmPinCurrent', async () => {
+    const res = await apiPost('file-state', { action: 'toggle-pin', path: CURDIR });
+    if (res.ok) { toast(res.pinned ? 'Folder pinned' : 'Folder unpinned', 'success'); reload(); }
+    else toast(res.error || 'Could not update pin', 'error');
+  });
+  bindClick('fmClearRecent', async () => {
+    const res = await apiPost('file-state', { action: 'clear-recent' });
+    if (res.ok) { toast('Recent files cleared', 'success'); reload(); }
+    else toast(res.error || 'Could not clear recent files', 'error');
+  });
 
   bindClick('fmNewDir', async () => {
     const name = prompt('New folder name:');
@@ -494,8 +587,28 @@ document.addEventListener('DOMContentLoaded', () => {
   // ---- Properties pane -----------------------------------------------------
   const propsEmpty = document.getElementById('fmPropsEmpty');
   const propsBody = document.getElementById('fmPropsBody');
+  const propsPane = document.getElementById('fmProps');
+  let propsRow = null;
+  const permissionBits = [4, 2, 1, 4, 2, 1, 4, 2, 1];
+  function fillPermissionGrid(mode) {
+    const digits = String(mode || '000').slice(-3).padStart(3, '0').split('').map((d) => parseInt(d, 8) || 0);
+    document.querySelectorAll('[data-perm-bit]').forEach((cb, i) => { cb.checked = !!(digits[Math.floor(i / 3)] & permissionBits[i]); });
+    const label = document.getElementById('fmModeLabel');
+    if (label) label.textContent = '(' + String(mode || '').padStart(4, '0') + ')';
+  }
+  function permissionMode() {
+    const boxes = Array.from(document.querySelectorAll('[data-perm-bit]'));
+    let mode = '';
+    for (let row = 0; row < 3; row++) {
+      let digit = 0;
+      for (let col = 0; col < 3; col++) if (boxes[row * 3 + col]?.checked) digit += permissionBits[row * 3 + col];
+      mode += String(digit);
+    }
+    return '0' + mode;
+  }
   function showProps(row) {
     if (!propsBody) return;
+    propsRow = row;
     const d = row.dataset;
     const isDir = d.isdir === '1';
     document.getElementById('fmPropName').textContent = d.name;
@@ -503,8 +616,14 @@ document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('fmPropSize').textContent = isDir ? '—' : d.size;
     document.getElementById('fmPropType').textContent = d.type;
     document.getElementById('fmPropOwner').textContent = d.owner;
+    document.getElementById('fmPropGroup').textContent = d.group || 'â€”';
     document.getElementById('fmPropPerms').textContent = d.perms;
     document.getElementById('fmPropModified').textContent = d.modified;
+    fillPermissionGrid(d.perms);
+    const ownerSelect = document.getElementById('fmOwnerSelect');
+    const groupSelect = document.getElementById('fmGroupSelect');
+    if (ownerSelect && Array.from(ownerSelect.options).some((o) => o.value === d.owner)) ownerSelect.value = d.owner;
+    if (groupSelect && Array.from(groupSelect.options).some((o) => o.value === d.group)) groupSelect.value = d.group;
     const thumb = document.getElementById('fmPropThumb');
     if (thumb) {
       const ico = document.createElement('i');
@@ -539,8 +658,26 @@ document.addEventListener('DOMContentLoaded', () => {
 
     propsEmpty?.classList.add('hidden');
     propsBody.classList.remove('hidden');
+    propsPane?.classList.add('open');
     if (window.lucide) window.lucide.createIcons();
   }
+
+  bindClick('fmPropsClose', () => propsPane?.classList.remove('open'));
+  bindClick('fmSavePerms', async () => {
+    if (!propsRow) return;
+    const mode = permissionMode();
+    const res = await apiPost('file-chmod', { path: propsRow.dataset.path, mode });
+    if (res.ok) { toast('Permissions changed', 'success'); reload(); }
+    else toast(res.error || 'Permissions change failed', 'error');
+  });
+  bindClick('fmSaveOwner', async () => {
+    if (!propsRow) return;
+    const owner = document.getElementById('fmOwnerSelect').value;
+    const group = document.getElementById('fmGroupSelect').value;
+    const res = await apiPost('file-owner', { path: propsRow.dataset.path, owner, group });
+    if (res.ok) { toast('Ownership changed', 'success'); reload(); }
+    else toast(res.error || 'Ownership change failed', 'error');
+  });
 
   function markSelected(row) {
     document.querySelectorAll('.fm-row').forEach((r) => r.classList.remove('fm-row-selected'));
@@ -560,6 +697,45 @@ document.addEventListener('DOMContentLoaded', () => {
   function activeContainer() {
     return (gridView && !gridView.classList.contains('hidden')) ? gridView : listView;
   }
+  function selectedPaths(fallbackRow = null) {
+    const checked = Array.from(activeContainer()?.querySelectorAll('.row-check:checked') || []);
+    const paths = checked.map((cb) => cb.closest('.fm-row')?.dataset.path).filter(Boolean);
+    if (!paths.length && fallbackRow?.dataset.path) paths.push(fallbackRow.dataset.path);
+    return Array.from(new Set(paths));
+  }
+  function setClipboard(op, fallbackRow = null) {
+    const paths = selectedPaths(fallbackRow);
+    if (!paths.length) { toast('Select at least one item', 'error'); return; }
+    localStorage.setItem('nebula.fm.clipboard', JSON.stringify({ op, paths }));
+    toast(`${paths.length} item(s) ${op === 'move' ? 'cut' : 'copied'}`, 'success');
+  }
+  async function pasteClipboard() {
+    let clip = null;
+    try { clip = JSON.parse(localStorage.getItem('nebula.fm.clipboard') || 'null'); } catch (e) {}
+    if (!clip?.paths?.length || !['copy', 'move'].includes(clip.op)) { toast('Clipboard is empty', 'error'); return; }
+    let ok = 0;
+    for (const path of clip.paths) {
+      const res = await apiPost('file-op', { path, dest: CURDIR, op: clip.op });
+      if (res.ok) ok++; else toast(`${path}: ${res.error || 'Paste failed'}`, 'error');
+    }
+    if (ok) {
+      if (clip.op === 'move' && ok === clip.paths.length) localStorage.removeItem('nebula.fm.clipboard');
+      toast(`Pasted ${ok} item(s)`, 'success'); reload();
+    }
+  }
+  async function compressPaths(paths) {
+    if (!paths.length) { toast('Select at least one item', 'error'); return; }
+    const suggested = paths.length === 1 ? (paths[0].split('/').pop() || 'archive') : 'archive';
+    const name = prompt('Archive name:', suggested.replace(/\.(tar\.gz|[^.]+)$/i, '') + '.tar.gz');
+    if (!name) return;
+    const res = await apiPost('file-compress', { paths, dest: CURDIR, name });
+    if (res.ok) { toast(`Created ${name}`, 'success'); reload(); }
+    else toast(res.error || 'Compression failed', 'error');
+  }
+  bindClick('fmCopySelected', () => setClipboard('copy'));
+  bindClick('fmCutSelected', () => setClipboard('move'));
+  bindClick('fmPaste', pasteClipboard);
+  bindClick('fmCompressSelected', () => compressPaths(selectedPaths()));
   function updateSelCount() {
     const n = activeContainer()?.querySelectorAll('.row-check:checked').length || 0;
     const el = document.getElementById('fmSelCount');
@@ -594,19 +770,24 @@ document.addEventListener('DOMContentLoaded', () => {
     if (ok) { toast(`Deleted ${ok} item(s)`, 'success'); reload(); }
   });
 
-  // ---- Right-click context menu (reuses each row's action buttons) ---------
+  // ---- Right-click anywhere: context actions + slide-out details ----------
   const ctx = document.getElementById('ctxMenu');
   if (ctx) {
     let ctxRow = null;
     const hideCtx = () => ctx.classList.add('hidden');
 
-    document.querySelectorAll('tr[data-ctx]').forEach((tr) => {
-      tr.addEventListener('contextmenu', (e) => {
+    const openContext = (e, row = null) => {
         e.preventDefault();
-        ctxRow = tr;
-        const has = (sel) => !!tr.querySelector(sel);
-        ctx.querySelector('[data-ctx-act="edit"]').style.display = has('a[href*="file-edit"]') ? '' : 'none';
-        ctx.querySelector('[data-ctx-act="download"]').style.display = has('a[href*="file-download"]') ? '' : 'none';
+        e.stopPropagation();
+        ctxRow = row;
+        if (row) { markSelected(row); showProps(row); }
+        const isFile = row && row.dataset.isdir !== '1';
+        ['open', 'rename', 'chmod', 'delete', 'details', 'copy', 'cut', 'compress'].forEach((act) => {
+          const el = ctx.querySelector(`[data-ctx-act="${act}"]`);
+          if (el) el.style.display = row ? '' : 'none';
+        });
+        ctx.querySelector('[data-ctx-act="edit"]').style.display = isFile ? '' : 'none';
+        ctx.querySelector('[data-ctx-act="download"]').style.display = isFile ? '' : 'none';
         ctx.classList.remove('hidden');
         const mw = ctx.offsetWidth || 200, mh = ctx.offsetHeight || 260;
         let x = e.clientX, y = e.clientY;
@@ -614,24 +795,35 @@ document.addEventListener('DOMContentLoaded', () => {
         if (y + mh > window.innerHeight) y = window.innerHeight - mh - 8;
         ctx.style.left = x + 'px';
         ctx.style.top = y + 'px';
-      });
+    };
+    document.querySelectorAll('.fm-row').forEach((row) => {
+      row.addEventListener('contextmenu', (e) => openContext(e, row));
     });
+    center?.addEventListener('contextmenu', (e) => { if (!e.target.closest('.fm-row')) openContext(e, null); });
 
     ctx.querySelectorAll('[data-ctx-act]').forEach((item) => {
       item.addEventListener('click', () => {
-        if (!ctxRow) return hideCtx();
         const act = item.dataset.ctxAct;
-        const map = {
-          open: 'a[href*="file-view"], a[href*="files"]',
-          edit: 'a[href*="file-edit"]',
-          download: 'a[href*="file-download"]',
-          rename: '[data-fm-rename]',
-          chmod: '[data-fm-chmod]',
-          delete: '[data-fm-delete]',
-        };
-        const target = ctxRow.querySelector(map[act]);
         hideCtx();
-        if (target) target.click();
+        if (act === 'new-file') return document.getElementById('fmNewFile')?.click();
+        if (act === 'new-folder') return document.getElementById('fmNewDir')?.click();
+        if (act === 'paste') return pasteClipboard();
+        if (!ctxRow) return;
+        if (act === 'copy') return setClipboard('copy', ctxRow);
+        if (act === 'cut') return setClipboard('move', ctxRow);
+        if (act === 'compress') return compressPaths(selectedPaths(ctxRow));
+        if (act === 'details' || act === 'chmod') return showProps(ctxRow);
+        if (act === 'open') return ctxRow.querySelector('a.fname')?.click();
+        if (act === 'edit' && ctxRow.dataset.edit) { location.href = ctxRow.dataset.edit; return; }
+        if (act === 'download' && ctxRow.dataset.download) { location.href = ctxRow.dataset.download; return; }
+        if (act === 'rename') {
+          const name = prompt('Rename to:', ctxRow.dataset.name || '');
+          if (name && name !== ctxRow.dataset.name) apiPost('file-rename', { path: ctxRow.dataset.path, name }).then((res) => res.ok ? reload() : toast(res.error || 'Rename failed', 'error'));
+          return;
+        }
+        if (act === 'delete' && confirm(`Delete "${ctxRow.dataset.path}"? This cannot be undone.`)) {
+          apiPost('file-delete', { path: ctxRow.dataset.path }).then((res) => res.ok ? reload() : toast(res.error || 'Delete failed', 'error'));
+        }
       });
     });
 

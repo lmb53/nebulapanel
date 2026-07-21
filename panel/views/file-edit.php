@@ -8,6 +8,7 @@ if ($abs === null || !is_file($abs)) {
     return;
 }
 $rel = fm_rel($abs);
+fm_record_recent($rel);
 $dir = trim(dirname($rel), '.'); $dir = $dir === '/' ? '' : $dir;
 if (!fm_is_text($abs)) {
     ?>

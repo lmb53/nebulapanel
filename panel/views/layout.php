@@ -48,7 +48,7 @@ function nav_link(string $route, string $icon, string $label, string $active): s
       <?php endforeach; ?>
 
       <?php if ($installedServices): ?>
-        <div class="nav-section-title">Installed</div>
+        <div class="nav-section-title">Service instances</div>
         <?php foreach ($installedServices as $s): ?>
           <?php $on = ($active === 'service' && $activeName === $s['unit']); ?>
           <a class="nav-item<?= $on ? ' active' : '' ?>" href="<?= e(url('service', ['name' => $s['unit']])) ?>">
@@ -79,7 +79,14 @@ function nav_link(string $route, string $icon, string $label, string $active): s
         <div class="mh-item"><i data-lucide="hard-drive" style="width:12px;height:12px"></i><span data-mh="disk">–</span><div class="mh-bar"><div class="mh-fill" data-mh-bar="disk" style="width:0;background:var(--blue-500)"></div></div></div>
       </div>
       <button class="icon-btn" id="themeToggle" title="Toggle theme"><i data-lucide="moon"></i></button>
-      <a class="icon-btn" href="<?= e(url('notifications')) ?>" title="Notifications"><i data-lucide="bell"></i></a>
+      <div class="topbar-menu">
+        <button class="icon-btn" id="notificationTrigger" type="button" title="Notifications" aria-expanded="false"><i data-lucide="bell"></i><span class="dot-badge hidden" id="notificationDot"></span></button>
+        <div class="dropdown-menu notification-menu hidden" id="notificationMenu">
+          <div class="dropdown-head"><div><strong>Notifications</strong><span id="notificationCount">Loading…</span></div><button class="btn btn-ghost btn-sm" id="notificationReadAll">Mark all read</button></div>
+          <div class="notification-menu-list" id="notificationMenuList"><div class="fm-empty-hint">Loading notifications…</div></div>
+          <a class="dropdown-foot" href="<?= e(url('notifications')) ?>">View all notifications <i data-lucide="arrow-right"></i></a>
+        </div>
+      </div>
       <div class="avatar" title="<?= e(current_user() ?? '') ?>"><?= e(strtoupper(substr(current_user() ?? 'U', 0, 2))) ?></div>
     </header>
 
