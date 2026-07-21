@@ -1,4 +1,4 @@
-# Nebula Panel — PHP MVP
+# Nebula Panel — PHP Web Control Panel
 
 A working, self-hosted server control panel. The repository's application source
 lives in the clearly named `panel/` directory. Installation copies those files
