@@ -18,10 +18,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
     } elseif ($action === 'create_container') {
         $res = dk_container_create($body);
+    } elseif ($action === 'container_logs') {
+        $res = dk_container_logs((string) ($body['id'] ?? ''), (int) ($body['lines'] ?? 200));
     } elseif ($action === 'image_pull') {
         $res = dk_image_pull((string) ($body['image'] ?? ''));
     } elseif ($action === 'image_remove') {
         $res = dk_image_remove((string) ($body['id'] ?? ''));
+    } elseif ($action === 'image_prune') {
+        $res = dk_image_prune();
     } elseif (in_array($action, ['volume_create','volume_remove','network_create','network_remove'], true)) {
         [$kind,$op] = explode('_',$action,2); $res = dk_named_resource($kind,$op === 'remove' ? 'rm' : 'create',(string)($body['name']??''));
     } else {

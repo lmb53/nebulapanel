@@ -58,7 +58,7 @@ the URL (runtime state is migrated), or use a fixed name. Options (env vars):
 | **PHP** — per-version ini settings (memory_limit, upload size…) + modules | ✅ helper |
 | **Databases** — website-owned MariaDB/MySQL DB/user CRUD, metadata and per-database quick access | ✅ sudo |
 | **phpMyAdmin** — one-click install + password-free, short-lived signed per-database signon | ✅ helper |
-| **Docker** — create/control containers, pull/remove images, manage volumes and networks, **Compose stacks (editable docker-compose.yml, deploy/pull/restart/logs)** and a one-click **App Store** of popular self-hosted apps | ✅ sudo |
+| **Docker** — create/control containers, view container logs, pull/remove/prune images, manage volumes and networks, **Compose stacks (editable docker-compose.yml, deploy/pull/restart/logs)** and a one-click **App Store** of popular self-hosted apps | ✅ sudo |
 | **File Manager** — expandable tree previews, browse/pinned/recent, archives, popup multi-tab editor, ownership, permissions and drag-drop upload | ✅ helper |
 | **Diagnostics** — environment + per-privilege sudo checks with fix hints | ✅ |
 | **Backups** — create / verify / list / download / delete `.tar.gz` | ✅ |

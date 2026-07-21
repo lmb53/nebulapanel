@@ -81,13 +81,21 @@ apt-get install -y -qq nginx php-fpm php-cli php-mysql php-curl php-mbstring php
 ok "Packages installed"
 
 # Detect PHP-FPM version, socket and service name.
-FPM_SOCK="$(ls /run/php/php*-fpm.sock 2>/dev/null | head -1 || true)"
+#
+# Pick the HIGHEST installed PHP-FPM socket and derive the version, socket and
+# service name from that single choice so they always agree. (Deriving the
+# version from the CLI `php` while picking the socket with `head -1` could
+# disagree on a box with several PHP versions — e.g. reporting 8.4 next to the
+# 8.3 socket — and wire the default vhost to the wrong runtime.)
+select_fpm_socket() { ls /run/php/php*-fpm.sock 2>/dev/null | sort -V | tail -1 || true; }
+FPM_SOCK="$(select_fpm_socket)"
 if [[ -z "$FPM_SOCK" ]]; then
   systemctl start "php*-fpm" 2>/dev/null || true
-  FPM_SOCK="$(ls /run/php/php*-fpm.sock 2>/dev/null | head -1 || true)"
+  FPM_SOCK="$(select_fpm_socket)"
 fi
 [[ -z "$FPM_SOCK" ]] && die "Could not find a PHP-FPM socket in /run/php/."
-PHP_VER="$(php -r 'echo PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION;')"
+PHP_VER="$(basename "$FPM_SOCK" | sed -E 's/^php([0-9]+\.[0-9]+)-fpm\.sock$/\1/')"
+[[ "$PHP_VER" =~ ^[0-9]+\.[0-9]+$ ]] || die "Could not parse a PHP version from socket $FPM_SOCK."
 FPM_SVC="php${PHP_VER}-fpm"
 ok "PHP $PHP_VER  (socket: $FPM_SOCK)"
 

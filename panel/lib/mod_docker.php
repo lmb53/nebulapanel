@@ -147,3 +147,33 @@ function dk_image_remove(string $id): array
     }
     return ['ok' => true];
 }
+
+/** Reclaim disk by pruning dangling (untagged) images. Never touches tagged images. */
+function dk_image_prune(): array
+{
+    [$code, $out] = sudo_cmd('docker image prune -f', 120);
+    audit('docker.prune', 'dangling images (exit ' . $code . ')');
+    if ($code !== 0) {
+        return ['ok' => false, 'error' => sudo_error($out, $code)];
+    }
+    // `docker image prune` prints a "Total reclaimed space: …" summary line.
+    $reclaimed = '';
+    if (preg_match('/Total reclaimed space:\s*(.+)$/mi', $out, $m)) {
+        $reclaimed = trim($m[1]);
+    }
+    return ['ok' => true, 'reclaimed' => $reclaimed];
+}
+
+/** Tail a single container's combined stdout/stderr logs. */
+function dk_container_logs(string $id, int $lines = 200): array
+{
+    if (!dk_id_ok($id)) {
+        return ['ok' => false, 'error' => 'Invalid container id.'];
+    }
+    $lines = max(1, min(2000, $lines));
+    [$code, $out] = sudo_cmd('docker logs --tail ' . $lines . ' ' . escapeshellarg($id) . ' 2>&1', 60);
+    if ($code !== 0) {
+        return ['ok' => false, 'error' => sudo_error($out, $code)];
+    }
+    return ['ok' => true, 'logs' => $out];
+}
