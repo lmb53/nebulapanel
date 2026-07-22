@@ -209,8 +209,8 @@ $apacheStatus = service_status('apache2');
     document.querySelectorAll('[data-ws-del]').forEach((btn) => {
       btn.addEventListener('click', async () => {
         const domain = btn.getAttribute('data-ws-del');
-        if (!confirm('Delete ' + domain + '? (config removed; files kept)')) return;
-        const res = await apiPost('sites', { action: 'delete', domain, purge: false });
+        if (!confirm('Delete ' + domain + '?\n\nThis removes the Nginx config, the DNS zone, SSL certificates, AND the website folder with all its files. This cannot be undone.')) return;
+        const res = await apiPost('sites', { action: 'delete', domain, purge: true });
         if (res.ok) { toast('Deleted', 'success'); btn.closest('[data-ws-card]').remove(); }
         else toast(res.error || 'Failed', 'error');
       });
