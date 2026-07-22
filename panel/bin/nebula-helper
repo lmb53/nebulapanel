@@ -364,6 +364,23 @@ EOF
     if ! grep -rqs 'ondrej/php' /etc/apt/sources.list.d 2>/dev/null; then
       add-apt-repository -y ppa:ondrej/php
     fi
+    # Stop the ondrej/php PPA from hijacking the system-default (unversioned)
+    # php meta-packages. The base install ships `php-fpm`, `php-cli`, … which
+    # track "the default PHP version"; once this PPA is added that default
+    # becomes ondrej's newest *stable* (e.g. 8.4). Without this pin, asking for
+    # 8.5 also drags in 8.4 through those metas, and the updater then perpetually
+    # tries to pull/keep-back a second PHP. Pinning the ondrej candidate for the
+    # unversioned metas to -1 leaves them on the distro's version, while the
+    # explicitly versioned "php8.5-*" packages below still come from the PPA.
+    PIN=/etc/apt/preferences.d/nebula-ondrej-php
+    cat > "$PIN" <<'PINEOF'
+# Managed by Nebula Panel. Keeps unversioned php meta-packages on the distro
+# default so adding extra PHP versions never pulls in another one.
+Package: php php-fpm php-cli php-mysql php-curl php-mbstring php-xml php-zip php-gd php-bcmath php-intl php-soap php-imap php-json php-opcache php-dev php-pear php-readline php-redis php-imagick php-xdebug php-memcached php-apcu
+Pin: release o=LP-PPA-ondrej-php
+Pin-Priority: -1
+PINEOF
+    chmod 0644 "$PIN"
       apt-get -o Dpkg::Use-Pty=0 -o APT::Color=0 update
       apt-get -o Dpkg::Use-Pty=0 -o APT::Color=0 install -y "php${VER}-fpm" "php${VER}-cli" "php${VER}-mysql" "php${VER}-curl" \
       "php${VER}-mbstring" "php${VER}-xml" "php${VER}-gd" "php${VER}-zip" \
