@@ -58,6 +58,7 @@ the URL (runtime state is migrated), or use a fixed name. Options (env vars):
 | **PHP** — per-version ini settings (memory_limit, upload size…) + modules | ✅ helper |
 | **Databases** — website-owned MariaDB/MySQL DB/user CRUD, metadata and per-database quick access | ✅ sudo |
 | **phpMyAdmin** — one-click install + password-free, short-lived signed per-database signon | ✅ helper |
+| **Email** — one-click Postfix + Dovecot + OpenDKIM mail server, virtual mailboxes & aliases, per-domain **DKIM** keys, copy-ready **MX / SPF / DKIM / DMARC** records (auto-publish to panel DNS zones), and one-click **Roundcube** webmail | ✅ helper |
 | **Docker** — create/control containers, view container logs, pull/remove/prune images, manage volumes and networks, **Compose stacks (editable docker-compose.yml, deploy/pull/restart/logs)** and a one-click **App Store** of popular self-hosted apps | ✅ sudo |
 | **File Manager** — expandable tree previews, browse/pinned/recent, archives, popup multi-tab editor, ownership, permissions and drag-drop upload | ✅ helper |
 | **Diagnostics** — environment + per-privilege sudo checks with fix hints | ✅ |
@@ -209,6 +210,34 @@ does **not** touch it — re-run `install.sh` to update the helper.
 To reset a locked-out installation, stop the web service, back up and remove both
 `data/panel-users.json` and the legacy `data/admin.json`, then reload Setup. Do
 not remove either file while the panel is publicly reachable.
+
+## Email
+
+The **Email** page (Hosting section) runs a complete self-hosted mail server
+with as little configuration as possible:
+
+1. **Install & configure mail server** — one click installs and wires up
+   **Postfix** (SMTP + submission on 587), **Dovecot** (IMAP 143 / POP3 110 with
+   SASL for authenticated sending), and **OpenDKIM** (signing milter). Mailboxes
+   are *virtual* and file-backed — there is no SQL to configure. When UFW is
+   active the standard mail ports are opened automatically.
+2. **Add a mail domain**, then create **mailboxes** (full-address + password) and
+   **aliases / forwarders** on it. Every change regenerates the Postfix and
+   Dovecot maps atomically through the privileged helper, so the panel and the
+   running server never drift. Passwords are stored only as SHA-512 crypt hashes.
+3. **DKIM** keys are generated per domain automatically. The page shows the
+   ready-to-paste **MX, SPF, DKIM, and DMARC** DNS records; for domains that are
+   panel-managed authoritative zones you can **publish them to DNS in one click**
+   (long DKIM keys are split into valid 255-byte TXT chunks). For externally
+   hosted DNS, copy each record with the copy button.
+4. **Roundcube webmail** installs to its own random URL with one click,
+   pre-configured against this server's IMAP/SMTP (SQLite storage). Users sign in
+   with their full email address and mailbox password.
+
+> Deliverable mail also needs correct **reverse DNS (PTR)** for the server IP and
+> an unblocked outbound port 25 — both are set at your hosting provider, not in
+> the panel. The mail stack runs entirely through `nebula-helper`, so re-run
+> `install.sh` first if the helper is missing.
 
 ## Hardening (do this before exposing it)
 

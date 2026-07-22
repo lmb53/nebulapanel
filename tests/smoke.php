@@ -78,6 +78,19 @@ $check(is_file(APP_ROOT . '/api/ssl.php'), 'SSL API endpoint is missing');
 $check(is_file(APP_ROOT . '/api/php.php'), 'PHP API endpoint is missing');
 $check(is_file(APP_ROOT . '/api/file-state.php') && is_file(APP_ROOT . '/api/file-owner.php') && is_file(APP_ROOT . '/api/file-compress.php'), 'extended File Manager endpoints are missing');
 $check(is_file(APP_ROOT . '/api/file-tree.php') && is_file(APP_ROOT . '/api/dns.php') && is_file(APP_ROOT . '/api/users.php'), 'tree, DNS, or panel-user API endpoint is missing');
+
+// Email module: registration, RBAC and the mail helpers.
+$check(is_page_route('mail') && ($modules['mail'][2] ?? '') === 'Hosting', 'Email module is not registered under Hosting');
+$check(is_file(APP_ROOT . '/api/mail.php') && is_file(APP_ROOT . '/lib/mod_mail.php') && is_file(APP_ROOT . '/views/mail.php'), 'Email module files are missing');
+$check(role_can('mail.manage', 'operator') && role_route_allowed('mail', 'operator') && !role_route_allowed('mail', 'auditor') && !role_route_allowed('mail', 'developer'), 'Email RBAC policy failed');
+require APP_ROOT . '/lib/mod_mail.php';
+$check(mail_valid_email('user@example.com') && !mail_valid_email('nope') && !mail_valid_email('user@localhost'), 'mail address validation failed');
+$mailHash = mail_hash_password('a decent mailbox password');
+$check(strpos($mailHash, '{SHA512-CRYPT}$6$') === 0 && crypt('a decent mailbox password', substr($mailHash, 14)) === substr($mailHash, 14), 'mail password hashing failed');
+require APP_ROOT . '/lib/mod_dns.php';
+$longTxt = 'v=DKIM1; k=rsa; p=' . str_repeat('A', 400);
+$quoted = dns_txt_quote($longTxt);
+$check(substr_count($quoted, '"') === 4 && dns_txt_quote('short') === '"short"', 'long TXT records are not split into 255-byte chunks');
 $check(human_bytes(1048576) === '1 MB', 'byte formatting failed');
 $check(fm_link_path($config['fm_root'] . '/site') === 'site', 'absolute file-manager link conversion failed');
 $pinResult = fm_toggle_pin('site');
