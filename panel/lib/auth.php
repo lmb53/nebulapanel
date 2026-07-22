@@ -113,7 +113,7 @@ function role_can(string $capability, ?string $role = null): bool
     $common = ['dashboard.read','services.read','logs.read','sysinfo.read','diagnostics.read','notifications.read'];
     $hosting = ['websites.manage','files.manage','domains.manage','dns.manage','ssl.manage','php.manage','databases.manage','phpmyadmin.use'];
     $caps = $role === 'operator'
-        ? array_merge($common, $hosting, ['services.control','cron.manage','firewall.manage','backups.manage'])
+        ? array_merge($common, $hosting, ['mail.manage','services.control','cron.manage','firewall.manage','backups.manage'])
         : ($role === 'developer' ? array_merge($common, $hosting) : $common);
     return in_array($capability, $caps, true);
 }
@@ -133,7 +133,7 @@ function role_route_allowed(string $route, ?string $role = null): bool
     $role = $role ?? current_role();
     if ($role === 'admin') return true;
     $common = ['dashboard','services','logs','sysinfo','diagnostics','notifications'];
-    $operator = array_merge($common, ['websites','files','file-edit','domains','dns','ssl','php','databases','phpmyadmin','cron','firewall','backups']);
+    $operator = array_merge($common, ['websites','files','file-edit','domains','dns','ssl','php','databases','phpmyadmin','mail','cron','firewall','backups']);
     $developer = array_merge($common, ['websites','files','file-edit','domains','dns','ssl','php','databases','phpmyadmin']);
     $allowed = $role === 'operator' ? $operator : ($role === 'developer' ? $developer : $common);
     return in_array($route, $allowed, true);

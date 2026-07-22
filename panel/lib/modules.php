@@ -18,6 +18,7 @@ function nebula_modules(): array
         'php'        => ['code-2',           'PHP',          'Hosting'],
         'databases'  => ['database',         'Databases',    'Hosting'],
         'phpmyadmin' => ['table-properties', 'phpMyAdmin',   'Hosting'],
+        'mail'       => ['mail',             'Email',        'Hosting'],
 
         'services'   => ['server-cog',       'Services',     'System'],
         'apps'       => ['package-plus',     'Install Apps', 'System'],

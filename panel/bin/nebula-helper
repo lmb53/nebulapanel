@@ -16,6 +16,11 @@ FM_ROOT_FILE=/etc/nebula-panel/fm-root
 PANEL_ROOT_FILE=/etc/nebula-panel/panel-root
 BIND_ZONE_DIR=/etc/bind/nebula-zones
 BIND_ZONE_CONF=/etc/bind/nebula-zones.conf
+MAIL_DIR=/etc/nebula-mail
+MAIL_STORE=/var/mail/nebula
+MAIL_VUID=5000
+MAIL_VGID=5000
+DKIM_DIR="$MAIL_DIR/dkim"
 
 die() { echo "$*" >&2; exit 2; }
 valid_domain() { [[ "$1" =~ ^[a-zA-Z0-9]([a-zA-Z0-9.-]{0,251}[a-zA-Z0-9])?$ ]] || die "invalid domain"; }
@@ -640,6 +645,321 @@ EOF
     # response has had time to reach the browser.
     schedule_php_service reload "$VER"
     echo "set ${KEY}=${VAL} for php ${VER}; reload scheduled"
+    ;;
+
+  # ==========================================================================
+  # Mail stack — Postfix (MTA) + Dovecot (IMAP/POP3/LMTP + SASL) + OpenDKIM.
+  #
+  # Virtual, file-backed mailboxes (no SQL): all state lives under
+  # /etc/nebula-mail and is regenerated wholesale by `mail-apply` from data the
+  # panel owns, so there is never drift between the panel and the running MTA.
+  # ==========================================================================
+  mail-setup)
+    export DEBIAN_FRONTEND=noninteractive
+    HOSTFQDN="$(hostname -f 2>/dev/null || hostname)"
+    echo "Installing mail packages (Postfix, Dovecot, OpenDKIM)…"
+    echo "postfix postfix/main_mailer_type select Internet Site" | debconf-set-selections
+    echo "postfix postfix/mailname string ${HOSTFQDN}" | debconf-set-selections
+    apt-get -o Dpkg::Use-Pty=0 -o APT::Color=0 update
+    apt-get -o Dpkg::Use-Pty=0 -o APT::Color=0 install -y \
+      postfix dovecot-core dovecot-imapd dovecot-pop3d dovecot-lmtpd \
+      opendkim opendkim-tools ssl-cert || die "mail package installation failed"
+
+    echo "Creating virtual mail user and directories…"
+    getent group vmail >/dev/null 2>&1 || groupadd -g "$MAIL_VGID" vmail
+    getent passwd vmail >/dev/null 2>&1 || \
+      useradd -r -g vmail -u "$MAIL_VUID" -d "$MAIL_STORE" -s /usr/sbin/nologin vmail
+    install -d -m 0700 -o vmail -g vmail "$MAIL_STORE"
+    install -d -m 0750 -o root -g root "$MAIL_DIR"
+    install -d -m 0750 -o opendkim -g opendkim "$DKIM_DIR" 2>/dev/null || install -d -m 0750 "$DKIM_DIR"
+    : > "$MAIL_DIR/vdomains"; : > "$MAIL_DIR/vmailbox"; : > "$MAIL_DIR/valias"
+    : > "$MAIL_DIR/dovecot-users"; chmod 0640 "$MAIL_DIR/dovecot-users"
+    chgrp dovecot "$MAIL_DIR/dovecot-users" 2>/dev/null || true
+    postmap "$MAIL_DIR/vdomains" "$MAIL_DIR/vmailbox" "$MAIL_DIR/valias"
+
+    echo "Configuring Postfix…"
+    postconf -e "myhostname = ${HOSTFQDN}"
+    postconf -e "inet_interfaces = all"
+    postconf -e "inet_protocols = all"
+    postconf -e "smtpd_banner = \$myhostname ESMTP"
+    postconf -e "virtual_mailbox_domains = hash:$MAIL_DIR/vdomains"
+    postconf -e "virtual_mailbox_base = $MAIL_STORE"
+    postconf -e "virtual_mailbox_maps = hash:$MAIL_DIR/vmailbox"
+    postconf -e "virtual_alias_maps = hash:$MAIL_DIR/valias"
+    postconf -e "virtual_minimum_uid = $MAIL_VUID"
+    postconf -e "virtual_uid_maps = static:$MAIL_VUID"
+    postconf -e "virtual_gid_maps = static:$MAIL_VGID"
+    postconf -e "virtual_transport = lmtp:unix:private/dovecot-lmtp"
+    postconf -e "smtpd_sasl_type = dovecot"
+    postconf -e "smtpd_sasl_path = private/auth"
+    postconf -e "smtpd_tls_security_level = may"
+    postconf -e "smtpd_tls_cert_file = /etc/ssl/certs/ssl-cert-snakeoil.pem"
+    postconf -e "smtpd_tls_key_file = /etc/ssl/private/ssl-cert-snakeoil.key"
+    postconf -e "smtp_tls_security_level = may"
+    postconf -e "milter_default_action = accept"
+    postconf -e "milter_protocol = 6"
+    postconf -e "smtpd_milters = inet:localhost:8891"
+    postconf -e "non_smtpd_milters = inet:localhost:8891"
+    # Submission (587) with SASL for authenticated mail clients.
+    postconf -M submission/inet="submission inet n - y - - smtpd"
+    postconf -P "submission/inet/syslog_name=postfix/submission"
+    postconf -P "submission/inet/smtpd_tls_security_level=may"
+    postconf -P "submission/inet/smtpd_sasl_auth_enable=yes"
+    postconf -P "submission/inet/smtpd_sasl_type=dovecot"
+    postconf -P "submission/inet/smtpd_sasl_path=private/auth"
+    postconf -P "submission/inet/smtpd_reject_unlisted_recipient=no"
+    postconf -P "submission/inet/smtpd_relay_restrictions=permit_sasl_authenticated,reject"
+    postconf -P "submission/inet/milter_macro_daemon_name=ORIGINATING"
+
+    echo "Configuring Dovecot…"
+    cat > /etc/dovecot/conf.d/99-nebula.conf <<EOF
+# Managed by Nebula Panel — do not edit by hand.
+protocols = imap pop3 lmtp
+mail_location = maildir:$MAIL_STORE/%d/%n
+mail_uid = vmail
+mail_gid = vmail
+first_valid_uid = $MAIL_VUID
+last_valid_uid = $MAIL_VUID
+disable_plaintext_auth = no
+auth_mechanisms = plain login
+passdb {
+  driver = passwd-file
+  args = scheme=SHA512-CRYPT username_format=%u $MAIL_DIR/dovecot-users
+}
+userdb {
+  driver = static
+  args = uid=vmail gid=vmail home=$MAIL_STORE/%d/%n
+}
+service lmtp {
+  unix_listener /var/spool/postfix/private/dovecot-lmtp {
+    mode = 0600
+    user = postfix
+    group = postfix
+  }
+}
+service auth {
+  unix_listener /var/spool/postfix/private/auth {
+    mode = 0660
+    user = postfix
+    group = postfix
+  }
+  unix_listener auth-userdb {
+    mode = 0600
+    user = vmail
+  }
+}
+ssl = yes
+ssl_cert = </etc/ssl/certs/ssl-cert-snakeoil.pem
+ssl_key = </etc/ssl/private/ssl-cert-snakeoil.key
+EOF
+
+    echo "Configuring OpenDKIM…"
+    install -d -m 0755 /run/opendkim -o opendkim -g opendkim 2>/dev/null || true
+    printf '127.0.0.1\nlocalhost\n::1\n' > "$DKIM_DIR/TrustedHosts"
+    touch "$DKIM_DIR/KeyTable" "$DKIM_DIR/SigningTable"
+    cat > /etc/opendkim.conf <<EOF
+# Managed by Nebula Panel — do not edit by hand.
+Syslog                  yes
+UMask                   002
+Mode                    sv
+SubDomains              no
+AutoRestart             yes
+AutoRestartRate         10/1h
+Canonicalization        relaxed/simple
+OversignHeaders         From
+Socket                  inet:8891@localhost
+PidFile                 /run/opendkim/opendkim.pid
+UserID                  opendkim
+KeyTable                $DKIM_DIR/KeyTable
+SigningTable            refile:$DKIM_DIR/SigningTable
+ExternalIgnoreList      $DKIM_DIR/TrustedHosts
+InternalHosts           $DKIM_DIR/TrustedHosts
+EOF
+    if [[ -f /etc/default/opendkim ]]; then
+      sed -i 's|^SOCKET=.*|SOCKET="inet:8891@localhost"|' /etc/default/opendkim
+      grep -q '^SOCKET=' /etc/default/opendkim || echo 'SOCKET="inet:8891@localhost"' >> /etc/default/opendkim
+    fi
+    chown -R opendkim:opendkim "$DKIM_DIR" 2>/dev/null || true
+
+    systemctl enable --now opendkim >/dev/null 2>&1 || systemctl restart opendkim || true
+    systemctl restart dovecot || die "dovecot failed to start"
+    systemctl restart postfix || die "postfix failed to start"
+    systemctl enable dovecot postfix >/dev/null 2>&1 || true
+
+    # Open the standard mail ports when UFW is active so delivery works.
+    if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then
+      for P in 25 587 465 143 993 110 995; do ufw allow "${P}/tcp" >/dev/null 2>&1 || true; done
+      echo "opened mail ports in UFW"
+    fi
+    echo "mail stack ready"
+    ;;
+
+  # mail-status  ->  key=value status lines parsed by the panel.
+  mail-status)
+    svc() { systemctl is-active "$1" 2>/dev/null || echo inactive; }
+    INSTALLED=no
+    [[ -d "$MAIL_DIR" ]] && command -v postfix >/dev/null 2>&1 && command -v dovecot >/dev/null 2>&1 && INSTALLED=yes
+    IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
+    echo "installed=$INSTALLED"
+    echo "postfix=$(svc postfix)"
+    echo "dovecot=$(svc dovecot)"
+    echo "opendkim=$(svc opendkim)"
+    echo "hostname=$(hostname -f 2>/dev/null || hostname)"
+    echo "ip=${IP:-}"
+    ;;
+
+  # mail-apply <domains_b64> <accounts_b64> <aliases_b64>
+  #   domains_b64  : newline list of mail domains
+  #   accounts_b64 : newline of  email<TAB>{SHA512-CRYPT}$6$hash
+  #   aliases_b64  : newline of  alias@domain<TAB>destination@domain
+  # Rebuilds every map from scratch, ensures DKIM keys + maildirs, reloads.
+  mail-apply)
+    [[ -d "$MAIL_DIR" ]] || die "mail stack is not installed; run mail-setup first"
+    DOMAINS_B64="${1:-}"; ACCOUNTS_B64="${2:-}"; ALIASES_B64="${3:-}"
+    for v in "$DOMAINS_B64" "$ACCOUNTS_B64" "$ALIASES_B64"; do
+      [[ -z "$v" || "$v" =~ ^[A-Za-z0-9+/=]+$ ]] || die "invalid input encoding"
+    done
+    TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
+    printf '%s' "$DOMAINS_B64"  | base64 -d > "$TMP/domains"  2>/dev/null || : > "$TMP/domains"
+    printf '%s' "$ACCOUNTS_B64" | base64 -d > "$TMP/accounts" 2>/dev/null || : > "$TMP/accounts"
+    printf '%s' "$ALIASES_B64"  | base64 -d > "$TMP/aliases"  2>/dev/null || : > "$TMP/aliases"
+
+    : > "$TMP/vdomains"; : > "$TMP/vmailbox"; : > "$TMP/valias"; : > "$TMP/dovecot-users"
+    declare -A KNOWN_DOMAIN=()
+    while IFS= read -r d; do
+      [[ -z "$d" ]] && continue
+      [[ "$d" =~ ^[a-zA-Z0-9]([a-zA-Z0-9.-]{0,251}[a-zA-Z0-9])?$ ]] || die "invalid mail domain: $d"
+      KNOWN_DOMAIN["$d"]=1
+      printf '%s OK\n' "$d" >> "$TMP/vdomains"
+    done < "$TMP/domains"
+
+    while IFS=$'\t' read -r email hash; do
+      [[ -z "$email" ]] && continue
+      [[ "$email" =~ ^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+$ ]] || die "invalid account address: $email"
+      [[ "$hash" =~ ^\{SHA512-CRYPT\}\$6\$[./A-Za-z0-9]{1,32}\$[./A-Za-z0-9]{1,200}$ ]] || die "invalid password hash for $email"
+      local_part="${email%@*}"; domain_part="${email#*@}"
+      [[ -n "${KNOWN_DOMAIN[$domain_part]:-}" ]] || die "account domain not in domain list: $domain_part"
+      [[ "$local_part" =~ ^[a-zA-Z0-9._%+-]+$ ]] || die "invalid local part: $local_part"
+      printf '%s %s/%s/\n' "$email" "$domain_part" "$local_part" >> "$TMP/vmailbox"
+      printf '%s:%s:%s:%s::%s/%s/%s::\n' "$email" "$hash" "$MAIL_VUID" "$MAIL_VGID" "$MAIL_STORE" "$domain_part" "$local_part" >> "$TMP/dovecot-users"
+    done < "$TMP/accounts"
+
+    while IFS=$'\t' read -r from to; do
+      [[ -z "$from" ]] && continue
+      [[ "$from" =~ ^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+$ ]] || die "invalid alias address: $from"
+      [[ "$to"   =~ ^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+$ ]] || die "invalid alias destination: $to"
+      printf '%s %s\n' "$from" "$to" >> "$TMP/valias"
+    done < "$TMP/aliases"
+
+    # Install the regenerated maps atomically, then rebuild the hash databases.
+    install -m 0644 -o root -g root "$TMP/vdomains" "$MAIL_DIR/vdomains"
+    install -m 0644 -o root -g root "$TMP/vmailbox" "$MAIL_DIR/vmailbox"
+    install -m 0644 -o root -g root "$TMP/valias"   "$MAIL_DIR/valias"
+    install -m 0640 -o root -g root "$TMP/dovecot-users" "$MAIL_DIR/dovecot-users"
+    chgrp dovecot "$MAIL_DIR/dovecot-users" 2>/dev/null || true
+    postmap "$MAIL_DIR/vdomains" "$MAIL_DIR/vmailbox" "$MAIL_DIR/valias"
+
+    # Ensure a Maildir exists for every mailbox (Dovecot also autocreates).
+    while IFS= read -r line; do
+      [[ -z "$line" ]] && continue
+      sub="${line#* }"
+      install -d -m 0700 -o vmail -g vmail "$MAIL_STORE/${sub%/}" \
+        "$MAIL_STORE/${sub%/}/cur" "$MAIL_STORE/${sub%/}/new" "$MAIL_STORE/${sub%/}/tmp"
+    done < "$MAIL_DIR/vmailbox"
+
+    # Rebuild DKIM key tables from the domain list, generating any missing keys.
+    : > "$TMP/KeyTable"; : > "$TMP/SigningTable"
+    for d in "${!KNOWN_DOMAIN[@]}"; do
+      KDIR="$DKIM_DIR/$d"
+      if [[ ! -f "$KDIR/mail.private" ]]; then
+        install -d -m 0750 "$KDIR"
+        opendkim-genkey -b 2048 -d "$d" -D "$KDIR" -s mail >/dev/null 2>&1 || die "DKIM key generation failed for $d"
+        chown -R opendkim:opendkim "$KDIR" 2>/dev/null || true
+        chmod 0600 "$KDIR/mail.private" 2>/dev/null || true
+      fi
+      printf 'mail._domainkey.%s %s:mail:%s/mail.private\n' "$d" "$d" "$KDIR" >> "$TMP/KeyTable"
+      printf '*@%s mail._domainkey.%s\n' "$d" "$d" >> "$TMP/SigningTable"
+    done
+    install -m 0644 "$TMP/KeyTable"    "$DKIM_DIR/KeyTable"
+    install -m 0644 "$TMP/SigningTable" "$DKIM_DIR/SigningTable"
+    chown -R opendkim:opendkim "$DKIM_DIR" 2>/dev/null || true
+
+    systemctl reload opendkim 2>/dev/null || systemctl restart opendkim 2>/dev/null || true
+    systemctl reload postfix 2>/dev/null || systemctl restart postfix 2>/dev/null || true
+    systemctl reload dovecot 2>/dev/null || true
+    echo "mail configuration applied"
+    ;;
+
+  # mail-dkim <domain>  ->  selector=..  value=..  (the public TXT record body)
+  mail-dkim)
+    DOMAIN="${1:-}"; valid_domain "$DOMAIN"
+    TXT="$DKIM_DIR/$DOMAIN/mail.txt"
+    [[ -f "$TXT" ]] || die "no DKIM key for $DOMAIN; add the domain first"
+    # opendkim-genkey writes the record split across quoted strings; join them
+    # back into one continuous value the panel can present and publish.
+    VALUE="$(grep -o '"[^"]*"' "$TXT" | sed 's/^"//; s/"$//' | tr -d '\n' | tr -d ' \t')"
+    [[ -n "$VALUE" ]] || die "could not read DKIM public key"
+    echo "selector=mail"
+    echo "value=$VALUE"
+    ;;
+
+  # roundcube-install <targetdir>
+  roundcube-install)
+    TARGET="${1:-}"; valid_path "$TARGET"
+    command -v curl >/dev/null || die "curl not installed"
+    RC_VER=1.6.9
+    export DEBIAN_FRONTEND=noninteractive
+    # Roundcube's runtime dependencies (SQLite backend keeps setup zero-config).
+    PHP_VER="$(ls -d /etc/php/*/fpm 2>/dev/null | sort -V | tail -1 | awk -F/ '{print $4}')"
+    if [[ -n "$PHP_VER" ]]; then
+      apt-get -o Dpkg::Use-Pty=0 -o APT::Color=0 install -y \
+        "php${PHP_VER}-sqlite3" "php${PHP_VER}-intl" "php${PHP_VER}-xml" \
+        "php${PHP_VER}-mbstring" "php${PHP_VER}-zip" "php${PHP_VER}-gd" \
+        "php${PHP_VER}-curl" "php${PHP_VER}-imagick" >/dev/null 2>&1 || true
+    fi
+    TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
+    curl -fL --show-error --progress-bar -o "$TMP/rc.tar.gz" \
+      "https://github.com/roundcube/roundcubemail/releases/download/${RC_VER}/roundcubemail-${RC_VER}-complete.tar.gz" \
+      || die "roundcube download failed"
+    tar -xzf "$TMP/rc.tar.gz" -C "$TMP" || die "extract failed"
+    SRC="$(find "$TMP" -maxdepth 1 -type d -name 'roundcubemail-*' | head -1)"
+    [[ -n "$SRC" ]] || die "archive layout unexpected"
+    mkdir -p "$TARGET"; cp -a "$SRC"/. "$TARGET"/
+    rm -rf "$TARGET/installer"
+    install -d -m 0750 -o www-data -g www-data /var/lib/nebula-mail
+    DESKEY="$(od -An -N24 -tx1 /dev/urandom | tr -d ' \n')"
+    cat > "$TARGET/config/config.inc.php" <<EOF
+<?php
+/* Managed by Nebula Panel. */
+\$config = [];
+\$config['db_dsnw'] = 'sqlite:////var/lib/nebula-mail/roundcube.db?mode=0640';
+\$config['imap_host'] = 'localhost:143';
+\$config['smtp_host'] = 'localhost:587';
+\$config['smtp_user'] = '%u';
+\$config['smtp_pass'] = '%p';
+\$config['imap_conn_options'] = ['ssl' => ['verify_peer' => false, 'verify_peer_name' => false]];
+\$config['smtp_conn_options'] = ['ssl' => ['verify_peer' => false, 'verify_peer_name' => false]];
+\$config['support_url'] = '';
+\$config['product_name'] = 'Nebula Webmail';
+\$config['des_key'] = '${DESKEY:0:24}';
+\$config['plugins'] = ['archive', 'zipdownload', 'managesieve'];
+\$config['skin'] = 'elastic';
+\$config['enable_installer'] = false;
+\$config['log_dir'] = '/var/lib/nebula-mail/rc-logs/';
+\$config['temp_dir'] = '/var/lib/nebula-mail/rc-temp/';
+EOF
+    install -d -m 0750 -o www-data -g www-data /var/lib/nebula-mail/rc-logs /var/lib/nebula-mail/rc-temp
+    chown -R www-data:www-data "$TARGET"
+    echo "roundcube installed at $TARGET"
+    ;;
+
+  # roundcube-remove <targetdir>
+  roundcube-remove)
+    TARGET="${1:-}"; valid_path "$TARGET"
+    [[ "$TARGET" == "/" || "$TARGET" == "/var/www" ]] && die "refusing"
+    [[ -f "$TARGET/config/config.inc.php" ]] || die "not a roundcube dir"
+    rm -rf "$TARGET"
+    echo "removed $TARGET"
     ;;
 
   *)

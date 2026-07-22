@@ -33,6 +33,24 @@ function dns_validate_record(array $input): array
     return ['ok'=>true,'record'=>['id'=>bin2hex(random_bytes(6)),'type'=>$type,'name'=>$name,'value'=>$value,'ttl'=>$ttl,'priority'=>$type==='MX'?$priority:null]];
 }
 
+/**
+ * Format a TXT value as one or more quoted character-strings. A single BIND
+ * character-string may not exceed 255 bytes, so long values (e.g. 2048-bit
+ * DKIM public keys) are split into several adjacent quoted strings, which
+ * resolvers concatenate back together.
+ */
+function dns_txt_quote(string $value): string
+{
+    if (strlen($value) <= 255) {
+        return '"' . addcslashes($value, "\\\"") . '"';
+    }
+    $parts = [];
+    foreach (str_split($value, 255) as $chunk) {
+        $parts[] = '"' . addcslashes($chunk, "\\\"") . '"';
+    }
+    return implode(' ', $parts);
+}
+
 function dns_fqdn(string $name, string $domain): string
 {
     return $name === '@' ? '@' : (str_ends_with($name, '.') ? $name : $name);
@@ -46,7 +64,7 @@ function dns_zone_text(string $domain, array $records): string
     foreach ($records as $record) {
         $name = dns_fqdn((string) $record['name'], $domain); $ttl=(int)$record['ttl']; $type=(string)$record['type']; $value=(string)$record['value'];
         if (in_array($type, ['CNAME','MX','NS'], true)) $value = rtrim($value, '.') . '.';
-        if ($type === 'TXT') $value = '"' . addcslashes($value, "\\\"") . '"';
+        if ($type === 'TXT') $value = dns_txt_quote($value);
         if ($type === 'MX') $value = (int) ($record['priority'] ?? 10) . ' ' . $value;
         $lines[] = $name . ' ' . $ttl . ' IN ' . $type . ' ' . $value;
     }
