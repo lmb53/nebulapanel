@@ -127,6 +127,23 @@ FPM_SOCK="$(find_fpm_socket)"
 [[ -z "$FPM_SOCK" ]] && die "Could not find a PHP-FPM socket for PHP ${PHP_VER} in /run/php/."
 ok "PHP $PHP_VER  (socket: $FPM_SOCK)"
 
+# Keep the ondrej/php PPA (added later when installing extra PHP versions) from
+# hijacking the system-default, unversioned php meta-packages. Without this pin
+# they track ondrej's newest stable, so installing e.g. PHP 8.5 also drags in
+# 8.4 and the updater keeps trying to pull a second PHP. Writing it here repairs
+# a box that already hit the bug on the next installer run; it is a no-op until
+# the PPA is present.
+PHP_PIN=/etc/apt/preferences.d/nebula-ondrej-php
+cat > "$PHP_PIN" <<'PINEOF'
+# Managed by Nebula Panel. Keeps unversioned php meta-packages on the distro
+# default so adding extra PHP versions never pulls in another one.
+Package: php php-fpm php-cli php-mysql php-curl php-mbstring php-xml php-zip php-gd php-bcmath php-intl php-soap php-imap php-json php-opcache php-dev php-pear php-readline php-redis php-imagick php-xdebug php-memcached php-apcu
+Pin: release o=LP-PPA-ondrej-php
+Pin-Priority: -1
+PINEOF
+chmod 0644 "$PHP_PIN"
+ok "Pinned unversioned php meta-packages to the distro default"
+
 systemctl enable --now nginx >/dev/null 2>&1 || true
 systemctl enable --now "$FPM_SVC" >/dev/null 2>&1 || true
 
