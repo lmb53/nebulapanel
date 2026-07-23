@@ -718,7 +718,13 @@ EOF
     getent passwd vmail >/dev/null 2>&1 || \
       useradd -r -g vmail -u "$MAIL_VUID" -d "$MAIL_STORE" -s /usr/sbin/nologin vmail
     install -d -m 0700 -o vmail -g vmail "$MAIL_STORE"
-    install -d -m 0750 -o root -g root "$MAIL_DIR"
+    # 0755 so the dovecot user (auth-worker) and opendkim can TRAVERSE into the
+    # directory to reach their files. The sensitive files inside keep their own
+    # restrictive modes (dovecot-users 0640 root:dovecot, DKIM keys 0600), so a
+    # searchable parent does not expose anything. A 0750 root:root parent was
+    # the real cause of the passdb "temp_fail" — dovecot couldn't traverse it.
+    install -d -m 0755 -o root -g root "$MAIL_DIR"
+    chmod 0755 "$MAIL_DIR"
     install -d -m 0750 -o opendkim -g opendkim "$DKIM_DIR" 2>/dev/null || install -d -m 0750 "$DKIM_DIR"
     : > "$MAIL_DIR/vdomains"; : > "$MAIL_DIR/vmailbox"; : > "$MAIL_DIR/valias"
     : > "$MAIL_DIR/dovecot-users"
