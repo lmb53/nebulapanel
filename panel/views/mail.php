@@ -122,6 +122,7 @@ $totalMb = count($state['accounts']);
         </div>
         <div style="margin-top:18px;padding-top:16px;border-top:1px solid var(--border-subtle);display:flex;gap:10px;flex-wrap:wrap">
           <button class="btn btn-secondary" id="mailReconfigure"><i data-lucide="refresh-cw"></i>Reconfigure / repair server</button>
+          <button class="btn btn-secondary" id="mailReapply"><i data-lucide="upload"></i>Re-sync mailboxes to server</button>
           <button class="btn btn-secondary" id="mailDiag"><i data-lucide="stethoscope"></i>Diagnose login failures</button>
         </div>
         <div class="field-help" style="margin-top:8px"><strong>Reconfigure</strong> re-applies the Postfix/Dovecot/OpenDKIM config (use it if clients can't log in after an upgrade). <strong>Diagnose</strong> shows the real Dovecot reason behind “Login failed” / “Temporary authentication failure”.</div>
@@ -283,6 +284,14 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('mailReconfigure')?.addEventListener('click', (e) => {
     if (!confirm('Re-apply the mail server configuration now?')) return;
     runStream(e.currentTarget, 'setup', 'mailSetupLog', 'mailSetupLogCard', 'Mail server reconfigured', '<i data-lucide="refresh-cw"></i>Reconfigure / repair server');
+  });
+
+  document.getElementById('mailReapply')?.addEventListener('click', async (e) => {
+    const btn = e.currentTarget, orig = btn.innerHTML;
+    btn.disabled = true; btn.textContent = 'Syncing…';
+    const res = await apiPost('mail', { action: 'reapply' });
+    toast(res.ok ? 'Mailboxes re-synced to the mail server' : (res.error || 'Re-sync failed'), res.ok ? 'success' : 'error');
+    btn.disabled = false; btn.innerHTML = orig; if (window.lucide) lucide.createIcons();
   });
 
   document.getElementById('mailDiag')?.addEventListener('click', async (e) => {

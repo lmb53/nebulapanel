@@ -29,6 +29,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         case 'diag':
             $res = mail_diag();
             break;
+        case 'reapply':
+            $res = mail_apply();
+            break;
         case 'roundcube-install':
             $res = mail_webmail_install('roundcube', $emit);
             break;

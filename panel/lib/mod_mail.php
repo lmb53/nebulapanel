@@ -87,15 +87,35 @@ function mail_server_ip(): string
 /** Human-readable login/auth diagnostics from the mail server. */
 function mail_diag(): array
 {
+    // Panel-side state first — reveals whether the passdb file being empty is
+    // because the panel has no account, or because mail-apply skipped/dropped
+    // it (e.g. an invalid stored hash) when pushing to Dovecot.
+    $state = mail_state();
+    $lines = ["== panel state (data/mail.json) =="];
+    $lines[] = 'domains: ' . (implode(', ', array_keys($state['domains'])) ?: '(none)');
+    $lines[] = 'mailboxes: ' . count($state['accounts']);
+    foreach ($state['accounts'] as $a) {
+        $email  = (string) ($a['email'] ?? '');
+        $hash   = (string) ($a['hash'] ?? '');
+        $domain = strpos($email, '@') !== false ? substr($email, strpos($email, '@') + 1) : '';
+        $hashOk = (bool) preg_match('/^\{SHA512-CRYPT\}\$6\$[.\/A-Za-z0-9]{1,32}\$[.\/A-Za-z0-9]{1,200}$/', $hash);
+        $domOk  = $domain !== '' && isset($state['domains'][$domain]);
+        $notes  = [];
+        if (!$hashOk) { $notes[] = 'BAD HASH (would be skipped)'; }
+        if (!$domOk)  { $notes[] = 'domain not in list (would be skipped)'; }
+        $lines[] = '  - ' . ($email ?: '(no email)') . '  ' . ($notes ? '<< ' . implode('; ', $notes) : 'ok');
+    }
+    $summary = implode("\n", $lines) . "\n\n";
+
     if (!helper_available()) {
-        return ['ok' => false, 'error' => 'Privileged helper not installed. Re-run install.sh.'];
+        return ['ok' => true, 'output' => $summary . 'Privileged helper not installed — re-run install.sh for the rest.'];
     }
     [$code, $out] = helper_cmd('mail-diag', 30);
     $out = trim($out);
-    if ($out === '' && $code !== 0) {
-        return ['ok' => false, 'error' => 'Could not run mail diagnostics. Re-run install.sh to update the helper.'];
+    if ($out === '') {
+        $out = 'Could not run server-side mail diagnostics. Re-run install.sh to update the helper.';
     }
-    return ['ok' => true, 'output' => $out];
+    return ['ok' => true, 'output' => $summary . $out];
 }
 
 /** Install the mail stack (streamed). */
