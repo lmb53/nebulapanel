@@ -758,8 +758,11 @@ EOF
     postconf -e "smtp_tls_security_level = may"
     postconf -e "milter_default_action = accept"
     postconf -e "milter_protocol = 6"
-    postconf -e "smtpd_milters = inet:localhost:8891"
-    postconf -e "non_smtpd_milters = inet:localhost:8891"
+    # Pin the milter to IPv4 on both sides. With "localhost", Postfix and
+    # OpenDKIM can resolve to different stacks (127.0.0.1 vs ::1) and miss each
+    # other — that is the "connect to Milter service ... Connection refused".
+    postconf -e "smtpd_milters = inet:127.0.0.1:8891"
+    postconf -e "non_smtpd_milters = inet:127.0.0.1:8891"
     # Submission (587) with SASL for authenticated mail clients.
     postconf -M submission/inet="submission inet n - y - - smtpd"
     postconf -P "submission/inet/syslog_name=postfix/submission"
@@ -839,7 +842,7 @@ AutoRestart             yes
 AutoRestartRate         10/1h
 Canonicalization        relaxed/simple
 OversignHeaders         From
-Socket                  inet:8891@localhost
+Socket                  inet:8891@127.0.0.1
 PidFile                 /run/opendkim/opendkim.pid
 UserID                  opendkim
 KeyTable                $DKIM_DIR/KeyTable
@@ -848,8 +851,8 @@ ExternalIgnoreList      $DKIM_DIR/TrustedHosts
 InternalHosts           $DKIM_DIR/TrustedHosts
 EOF
     if [[ -f /etc/default/opendkim ]]; then
-      sed -i 's|^SOCKET=.*|SOCKET="inet:8891@localhost"|' /etc/default/opendkim
-      grep -q '^SOCKET=' /etc/default/opendkim || echo 'SOCKET="inet:8891@localhost"' >> /etc/default/opendkim
+      sed -i 's|^SOCKET=.*|SOCKET="inet:8891@127.0.0.1"|' /etc/default/opendkim
+      grep -q '^SOCKET=' /etc/default/opendkim || echo 'SOCKET="inet:8891@127.0.0.1"' >> /etc/default/opendkim
     fi
     chown -R opendkim:opendkim "$DKIM_DIR" 2>/dev/null || true
 
@@ -919,9 +922,38 @@ EOF
       done < <(head -n 10 "$MAIL_DIR/dovecot-users" 2>/dev/null)
     fi
     echo
-    echo "== recent auth log =="
-    { journalctl -u dovecot -n 80 --no-pager 2>/dev/null; tail -n 200 /var/log/mail.log 2>/dev/null; } \
-      | grep -iE 'auth|login|error|warning|passwd|userdb|dovecot|imap' | tail -n 30
+    echo "== mail flow (send/receive) =="
+    echo "-- postfix routing"
+    postconf myhostname mydestination virtual_mailbox_domains virtual_mailbox_maps virtual_transport relayhost inet_interfaces smtpd_milters 2>/dev/null
+    echo
+    echo "-- milter socket (expect 127.0.0.1:8891 LISTEN)"
+    ss -ltn 2>/dev/null | grep -E ':8891' || echo "NOT LISTENING on 8891  <-- OpenDKIM milter down; mail is unsigned"
+    echo
+    echo "-- outbound port 25 (cloud providers often block this, breaking SENDING)"
+    if timeout 6 bash -c 'exec 3<>/dev/tcp/gmail-smtp-in.l.google.com/25' 2>/dev/null; then
+      echo "outbound 25: OPEN (can reach remote mail servers)"
+    else
+      echo "outbound 25: BLOCKED or unreachable  <-- outbound mail will queue and fail; ask your host to unblock port 25 or use a smarthost/relay"
+    fi
+    echo
+    echo "-- DNS for mail domains (needed to RECEIVE)"
+    IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
+    echo "this server public IP: ${IP:-unknown}"
+    if [[ -f "$MAIL_DIR/vdomains" ]] && command -v dig >/dev/null 2>&1; then
+      while read -r d _ || [[ -n "$d" ]]; do
+        [[ -z "$d" ]] && continue
+        mx="$(dig +short MX "$d" 2>/dev/null | tr '\n' ' ')"
+        a="$(dig +short A "mail.$d" 2>/dev/null | tr '\n' ' ')"
+        echo "  $d  MX: ${mx:-<none set>}   mail.$d A: ${a:-<none>}"
+      done < "$MAIL_DIR/vdomains"
+    fi
+    echo
+    echo "-- mail queue (stuck outbound mail + reason)"
+    mailq 2>/dev/null | tail -n 12
+    echo
+    echo "== recent mail log =="
+    { journalctl -u postfix -u dovecot -u opendkim -n 140 --no-pager 2>/dev/null; tail -n 250 /var/log/mail.log 2>/dev/null; } \
+      | grep -iE 'auth|login|error|warning|passwd|userdb|reject|status=|relay=|milter|bounce|deferred|connect to|lmtp' | tail -n 35
     ;;
 
   # mail-apply <domains_b64> <accounts_b64> <aliases_b64>
