@@ -721,8 +721,14 @@ EOF
     install -d -m 0750 -o root -g root "$MAIL_DIR"
     install -d -m 0750 -o opendkim -g opendkim "$DKIM_DIR" 2>/dev/null || install -d -m 0750 "$DKIM_DIR"
     : > "$MAIL_DIR/vdomains"; : > "$MAIL_DIR/vmailbox"; : > "$MAIL_DIR/valias"
-    : > "$MAIL_DIR/dovecot-users"; chmod 0640 "$MAIL_DIR/dovecot-users"
-    chgrp dovecot "$MAIL_DIR/dovecot-users" 2>/dev/null || true
+    : > "$MAIL_DIR/dovecot-users"
+    # Must be readable by the 'dovecot' user (the auth-worker runs as it), or
+    # every login fails with "Temporary authentication failure".
+    if getent group dovecot >/dev/null 2>&1; then
+      chown root:dovecot "$MAIL_DIR/dovecot-users"; chmod 0640 "$MAIL_DIR/dovecot-users"
+    else
+      chmod 0644 "$MAIL_DIR/dovecot-users"
+    fi
     postmap "$MAIL_DIR/vdomains" "$MAIL_DIR/vmailbox" "$MAIL_DIR/valias"
 
     echo "Configuring Postfix…"
@@ -868,6 +874,50 @@ EOF
     echo "ip=${IP:-}"
     ;;
 
+  # mail-diag  ->  human-readable diagnostics for login/auth failures. Surfaces
+  # the real reason behind Dovecot's opaque "Temporary authentication failure".
+  mail-diag)
+    echo "== services =="
+    for s in postfix dovecot opendkim; do
+      printf '%-9s %s\n' "$s:" "$(systemctl is-active "$s" 2>/dev/null || echo inactive)"
+    done
+    echo
+    echo "== passdb (dovecot-users) =="
+    if [[ -f "$MAIL_DIR/dovecot-users" ]]; then
+      ls -l "$MAIL_DIR/dovecot-users"
+      echo "mailboxes: $(grep -c ':' "$MAIL_DIR/dovecot-users" 2>/dev/null || echo 0)"
+      # The passdb lookup runs in Dovecot's auth-worker as the 'dovecot' user;
+      # if it can't read this file every login fails with a temporary error.
+      if id dovecot >/dev/null 2>&1; then
+        if sudo -u dovecot test -r "$MAIL_DIR/dovecot-users" 2>/dev/null; then
+          echo "readable by dovecot user: yes"
+        else
+          echo "readable by dovecot user: NO  <-- causes 'Temporary authentication failure'"
+        fi
+      fi
+    else
+      echo "MISSING: $MAIL_DIR/dovecot-users  (install the mail stack and add a mailbox)"
+    fi
+    echo
+    echo "== dovecot config =="
+    if command -v doveconf >/dev/null 2>&1; then
+      if doveconf -n >/dev/null 2>&1; then echo "doveconf: OK"; else echo "doveconf: ERRORS"; doveconf -n 2>&1 | grep -i error | head -n 5; fi
+    fi
+    echo
+    echo "== userdb/passdb resolution =="
+    if command -v doveadm >/dev/null 2>&1 && [[ -f "$MAIL_DIR/dovecot-users" ]]; then
+      while IFS=: read -r email _; do
+        [[ -z "$email" ]] && continue
+        echo "-- $email"
+        doveadm user "$email" 2>&1 | sed -n '1,6p'
+      done < <(head -n 10 "$MAIL_DIR/dovecot-users" 2>/dev/null)
+    fi
+    echo
+    echo "== recent auth log =="
+    { journalctl -u dovecot -n 80 --no-pager 2>/dev/null; tail -n 200 /var/log/mail.log 2>/dev/null; } \
+      | grep -iE 'auth|login|error|warning|passwd|userdb|dovecot|imap' | tail -n 30
+    ;;
+
   # mail-apply <domains_b64> <accounts_b64> <aliases_b64>
   #   domains_b64  : newline list of mail domains
   #   accounts_b64 : newline of  email<TAB>{SHA512-CRYPT}$6$hash
@@ -932,8 +982,12 @@ EOF
     install -m 0644 -o root -g root "$TMP/vdomains" "$MAIL_DIR/vdomains"
     install -m 0644 -o root -g root "$TMP/vmailbox" "$MAIL_DIR/vmailbox"
     install -m 0644 -o root -g root "$TMP/valias"   "$MAIL_DIR/valias"
-    install -m 0640 -o root -g root "$TMP/dovecot-users" "$MAIL_DIR/dovecot-users"
-    chgrp dovecot "$MAIL_DIR/dovecot-users" 2>/dev/null || true
+    # Readable by the 'dovecot' user (auth-worker) — see mail-setup note.
+    if getent group dovecot >/dev/null 2>&1; then
+      install -m 0640 -o root -g dovecot "$TMP/dovecot-users" "$MAIL_DIR/dovecot-users"
+    else
+      install -m 0644 -o root -g root "$TMP/dovecot-users" "$MAIL_DIR/dovecot-users"
+    fi
     postmap "$MAIL_DIR/vdomains" "$MAIL_DIR/vmailbox" "$MAIL_DIR/valias"
 
     # Ensure a Maildir exists for every mailbox (Dovecot also autocreates).

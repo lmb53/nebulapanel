@@ -122,11 +122,16 @@ $totalMb = count($state['accounts']);
         </div>
         <div style="margin-top:18px;padding-top:16px;border-top:1px solid var(--border-subtle);display:flex;gap:10px;flex-wrap:wrap">
           <button class="btn btn-secondary" id="mailReconfigure"><i data-lucide="refresh-cw"></i>Reconfigure / repair server</button>
+          <button class="btn btn-secondary" id="mailDiag"><i data-lucide="stethoscope"></i>Diagnose login failures</button>
         </div>
-        <div class="field-help" style="margin-top:8px">Re-applies the Postfix/Dovecot/OpenDKIM configuration. Use this if mail clients can't log in after an upgrade.</div>
+        <div class="field-help" style="margin-top:8px"><strong>Reconfigure</strong> re-applies the Postfix/Dovecot/OpenDKIM config (use it if clients can't log in after an upgrade). <strong>Diagnose</strong> shows the real Dovecot reason behind “Login failed” / “Temporary authentication failure”.</div>
         <div class="card hidden" id="mailSetupLogCard" style="margin-top:16px">
           <div class="card-header"><h3>Output</h3></div>
           <pre class="mono" id="mailSetupLog" style="margin:0;padding:16px;font-size:12px;line-height:1.55;white-space:pre-wrap;max-height:40vh;overflow:auto"></pre>
+        </div>
+        <div class="card hidden" id="mailDiagCard" style="margin-top:16px">
+          <div class="card-header"><h3>Mail diagnostics</h3></div>
+          <pre class="mono" id="mailDiagOut" style="margin:0;padding:16px;font-size:12px;line-height:1.55;white-space:pre-wrap;max-height:50vh;overflow:auto"></pre>
         </div>
       </div>
 
@@ -278,6 +283,15 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('mailReconfigure')?.addEventListener('click', (e) => {
     if (!confirm('Re-apply the mail server configuration now?')) return;
     runStream(e.currentTarget, 'setup', 'mailSetupLog', 'mailSetupLogCard', 'Mail server reconfigured', '<i data-lucide="refresh-cw"></i>Reconfigure / repair server');
+  });
+
+  document.getElementById('mailDiag')?.addEventListener('click', async (e) => {
+    const btn = e.currentTarget, orig = btn.innerHTML;
+    const card = document.getElementById('mailDiagCard'), out = document.getElementById('mailDiagOut');
+    btn.disabled = true; btn.textContent = 'Running…'; card.classList.remove('hidden'); out.textContent = 'Collecting diagnostics…';
+    const res = await apiPost('mail', { action: 'diag' });
+    out.textContent = res.ok ? (res.output || '(no output)') : (res.error || 'Diagnostics failed');
+    btn.disabled = false; btn.innerHTML = orig; if (window.lucide) lucide.createIcons();
   });
 
   document.getElementById('smInstall')?.addEventListener('click', (e) =>

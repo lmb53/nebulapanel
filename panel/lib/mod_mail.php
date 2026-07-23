@@ -84,6 +84,20 @@ function mail_server_ip(): string
     return '';
 }
 
+/** Human-readable login/auth diagnostics from the mail server. */
+function mail_diag(): array
+{
+    if (!helper_available()) {
+        return ['ok' => false, 'error' => 'Privileged helper not installed. Re-run install.sh.'];
+    }
+    [$code, $out] = helper_cmd('mail-diag', 30);
+    $out = trim($out);
+    if ($out === '' && $code !== 0) {
+        return ['ok' => false, 'error' => 'Could not run mail diagnostics. Re-run install.sh to update the helper.'];
+    }
+    return ['ok' => true, 'output' => $out];
+}
+
 /** Install the mail stack (streamed). */
 function mail_setup(?callable $onOutput = null): array
 {
