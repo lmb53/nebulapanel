@@ -7,8 +7,9 @@ $installed = (bool) ($status['installed'] ?? false);
 $helper    = (bool) ($status['helper'] ?? false);
 $state     = mail_state();
 $domains   = array_keys($state['domains']);
-$rcInstalled = mail_roundcube_installed();
-$rcUrl       = mail_roundcube()['url'] ?? null;
+$wmInstalled = mail_webmail_installed();
+$wmUrl       = mail_webmail()['url'] ?? null;
+$wmLabel     = mail_webmail_label();
 
 $selected = (string) ($_GET['domain'] ?? ($domains[0] ?? ''));
 if (!in_array($selected, $domains, true)) {
@@ -48,10 +49,10 @@ $totalMb = count($state['accounts']);
 <div class="page-header">
   <div>
     <h1 class="page-title">Email</h1>
-    <p class="page-subtitle">Self-hosted mail — Postfix · Dovecot · OpenDKIM · Roundcube</p>
+    <p class="page-subtitle">Self-hosted mail — Postfix · Dovecot · OpenDKIM · Webmail</p>
   </div>
-  <?php if ($installed && $rcInstalled && $rcUrl): ?>
-    <a class="btn btn-primary" href="<?= e($rcUrl) ?>" target="_blank" rel="noopener"><i data-lucide="mail"></i>Open Webmail</a>
+  <?php if ($installed && $wmInstalled && $wmUrl): ?>
+    <a class="btn btn-primary" href="<?= e($wmUrl) ?>" target="_blank" rel="noopener"><i data-lucide="mail"></i>Open Webmail</a>
   <?php endif; ?>
 </div>
 
@@ -141,8 +142,10 @@ $totalMb = count($state['accounts']);
                 <td class="mono"><?= e((string) $m['email']) ?></td>
                 <td class="mono text-tertiary"><?= e(substr((string) ($m['created'] ?? ''), 0, 10)) ?></td>
                 <td style="text-align:right;white-space:nowrap">
-                  <button class="btn btn-ghost btn-sm" data-account-passwd="<?= e((string) $m['email']) ?>" title="Change password"><i data-lucide="key-round"></i></button>
-                  <button class="icon-btn" style="color:var(--red-400)" data-account-delete="<?= e((string) $m['email']) ?>" title="Delete mailbox"><i data-lucide="trash-2"></i></button>
+                  <div class="flex items-center" style="justify-content:flex-end;gap:2px">
+                    <button class="icon-btn" data-account-passwd="<?= e((string) $m['email']) ?>" title="Change password"><i data-lucide="key-round"></i></button>
+                    <button class="icon-btn" style="color:var(--red-400)" data-account-delete="<?= e((string) $m['email']) ?>" title="Delete mailbox"><i data-lucide="trash-2"></i></button>
+                  </div>
                 </td>
               </tr>
             <?php endforeach; ?>
@@ -205,25 +208,36 @@ $totalMb = count($state['accounts']);
 
       <!-- Webmail -->
       <div id="mail-webmail" data-tab-panel class="hidden card-pad">
-        <?php if ($rcInstalled): ?>
+        <?php if ($wmInstalled): ?>
           <div class="stat-row" style="grid-template-columns:1fr"><div class="stat">
-            <span class="lbl"><i data-lucide="mail"></i>Roundcube webmail</span>
+            <span class="lbl"><i data-lucide="mail"></i><?= e($wmLabel) ?> webmail</span>
             <span class="val"><span class="dot ok"></span>Installed</span>
           </div></div>
           <div style="margin-top:16px;display:flex;gap:12px;align-items:center;flex-wrap:wrap">
-            <a class="btn btn-primary" href="<?= e((string) $rcUrl) ?>" target="_blank" rel="noopener"><i data-lucide="external-link"></i>Open Webmail</a>
-            <span class="mono" style="color:var(--blue-400)"><?= e((string) $rcUrl) ?></span>
+            <a class="btn btn-primary" href="<?= e((string) $wmUrl) ?>" target="_blank" rel="noopener"><i data-lucide="external-link"></i>Open Webmail</a>
+            <span class="mono" style="color:var(--blue-400)"><?= e((string) $wmUrl) ?></span>
           </div>
           <div class="muted" style="font-size:13px;margin-top:12px">Users log in with their full email address and mailbox password.</div>
           <div style="margin-top:18px;padding-top:16px;border-top:1px solid var(--border-subtle)">
-            <button class="btn btn-danger btn-sm" id="rcRemove"><i data-lucide="trash-2"></i>Remove Roundcube</button>
+            <button class="btn btn-danger btn-sm" id="wmRemove"><i data-lucide="trash-2"></i>Remove <?= e($wmLabel) ?></button>
           </div>
         <?php else: ?>
-          <p style="color:var(--text-secondary);margin:0 0 14px;max-width:70ch">Give your users a browser-based inbox. Roundcube installs to its own random URL, pre-configured against this server's IMAP/SMTP with zero-config SQLite storage.</p>
-          <button class="btn btn-primary" id="rcInstall"><i data-lucide="download"></i>Install Roundcube webmail</button>
-          <div class="card hidden" id="rcLogCard" style="margin-top:16px">
+          <p style="color:var(--text-secondary);margin:0 0 16px;max-width:70ch">Give your users a browser-based inbox. Each client installs to its own random URL, pre-configured against this server's local IMAP/SMTP — users just log in with their full email address. Only one can be installed at a time.</p>
+          <div class="grid grid-2" style="gap:14px;max-width:760px">
+            <div class="card"><div class="card-pad">
+              <div class="flex items-center gap-2" style="margin-bottom:6px"><i data-lucide="mail"></i><strong>SnappyMail</strong><span class="badge badge-emerald">Recommended</span></div>
+              <p class="muted" style="font-size:13px;margin:0 0 12px">The maintained Rainloop successor. Fast, modern, and known to work on this server's PHP version.</p>
+              <button class="btn btn-primary" id="smInstall"><i data-lucide="download"></i>Install SnappyMail</button>
+            </div></div>
+            <div class="card"><div class="card-pad">
+              <div class="flex items-center gap-2" style="margin-bottom:6px"><i data-lucide="mail"></i><strong>Roundcube</strong></div>
+              <p class="muted" style="font-size:13px;margin:0 0 12px">The long-standing classic webmail, with zero-config SQLite storage.</p>
+              <button class="btn btn-secondary" id="rcInstall"><i data-lucide="download"></i>Install Roundcube</button>
+            </div></div>
+          </div>
+          <div class="card hidden" id="wmLogCard" style="margin-top:16px">
             <div class="card-header"><h3>Install output</h3></div>
-            <pre class="mono" id="rcLog" style="margin:0;padding:16px;font-size:12px;line-height:1.55;white-space:pre-wrap;max-height:40vh;overflow:auto"></pre>
+            <pre class="mono" id="wmLog" style="margin:0;padding:16px;font-size:12px;line-height:1.55;white-space:pre-wrap;max-height:40vh;overflow:auto"></pre>
           </div>
         <?php endif; ?>
       </div>
@@ -235,7 +249,7 @@ $totalMb = count($state['accounts']);
 
 <script nonce="<?= e(csp_nonce()) ?>">
 document.addEventListener('DOMContentLoaded', () => {
-  const { apiPost, streamPost, toast } = window.Nebula;
+  const { apiPost, streamPost, toast, copyText } = window.Nebula;
   const domain = <?= json_encode($selected) ?>;
   const reload = (ms = 500) => setTimeout(() => location.reload(), ms);
 
@@ -266,12 +280,14 @@ document.addEventListener('DOMContentLoaded', () => {
     runStream(e.currentTarget, 'setup', 'mailSetupLog', 'mailSetupLogCard', 'Mail server reconfigured', '<i data-lucide="refresh-cw"></i>Reconfigure / repair server');
   });
 
+  document.getElementById('smInstall')?.addEventListener('click', (e) =>
+    runStream(e.currentTarget, 'snappymail-install', 'wmLog', 'wmLogCard', 'SnappyMail installed', '<i data-lucide="download"></i>Install SnappyMail'));
   document.getElementById('rcInstall')?.addEventListener('click', (e) =>
-    runStream(e.currentTarget, 'roundcube-install', 'rcLog', 'rcLogCard', 'Roundcube installed', '<i data-lucide="download"></i>Install Roundcube webmail'));
-  document.getElementById('rcRemove')?.addEventListener('click', async () => {
-    if (!confirm('Remove Roundcube? The installed files will be deleted.')) return;
-    const res = await apiPost('mail', { action: 'roundcube-remove' });
-    if (res.ok) { toast('Roundcube removed', 'success'); reload(); } else toast(res.error || 'Failed', 'error');
+    runStream(e.currentTarget, 'roundcube-install', 'wmLog', 'wmLogCard', 'Roundcube installed', '<i data-lucide="download"></i>Install Roundcube'));
+  document.getElementById('wmRemove')?.addEventListener('click', async () => {
+    if (!confirm('Remove the installed webmail client? Its files will be deleted.')) return;
+    const res = await apiPost('mail', { action: 'webmail-remove' });
+    if (res.ok) { toast('Webmail removed', 'success'); reload(); } else toast(res.error || 'Failed', 'error');
   });
 
   // Domains
@@ -331,8 +347,9 @@ document.addEventListener('DOMContentLoaded', () => {
     if (res.ok) { toast(res.published === false ? (res.warning || 'Saved') : 'DNS records published', res.published === false ? 'warning' : 'success'); reload(); }
     else { toast(res.error || 'Failed', 'error'); btn.disabled = false; }
   });
-  document.querySelectorAll('[data-copy]').forEach(b => b.addEventListener('click', () => {
-    navigator.clipboard?.writeText(b.dataset.copy).then(() => toast('Copied', 'success'), () => toast('Copy failed', 'error'));
+  document.querySelectorAll('[data-copy]').forEach(b => b.addEventListener('click', async () => {
+    const ok = await copyText(b.dataset.copy);
+    toast(ok ? 'Copied' : 'Copy failed', ok ? 'success' : 'error');
   }));
 });
 </script>

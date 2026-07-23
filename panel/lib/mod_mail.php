@@ -28,6 +28,7 @@ function mail_state(): array
     $s['accounts']  = is_array($s['accounts'] ?? null) ? array_values($s['accounts']) : [];
     $s['aliases']   = is_array($s['aliases'] ?? null) ? array_values($s['aliases']) : [];
     $s['roundcube'] = is_array($s['roundcube'] ?? null) ? $s['roundcube'] : null;
+    $s['webmail']   = is_array($s['webmail'] ?? null) ? $s['webmail'] : null;
     return $s;
 }
 
@@ -435,60 +436,99 @@ function mail_dns_publish(string $domain): array
     return $res;
 }
 
-// --- Roundcube webmail ------------------------------------------------------
+// --- Webmail (Roundcube or SnappyMail) --------------------------------------
+// One webmail client is active at a time. State lives under the 'webmail' key;
+// older installs that predate SnappyMail keep their record under 'roundcube',
+// which is read transparently here.
 
-function mail_roundcube(): ?array
+/** The active webmail record, or null. Always carries a 'kind'. */
+function mail_webmail(): ?array
 {
-    return mail_state()['roundcube'];
+    $s = mail_state();
+    if (is_array($s['webmail'] ?? null) && !empty($s['webmail'])) {
+        $w = $s['webmail'];
+        $w['kind'] = (string) ($w['kind'] ?? 'roundcube');
+        return $w;
+    }
+    if (is_array($s['roundcube'] ?? null) && !empty($s['roundcube'])) {
+        $w = $s['roundcube'];
+        $w['kind'] = 'roundcube';
+        return $w;
+    }
+    return null;
 }
 
-function mail_roundcube_installed(): bool
+/** Human label for the active webmail client. */
+function mail_webmail_label(?string $kind = null): string
 {
-    $rc = mail_roundcube();
-    return is_array($rc) && !empty($rc['dir']) && is_dir($rc['dir']) && is_file($rc['dir'] . '/config/config.inc.php');
+    $kind = $kind ?? (mail_webmail()['kind'] ?? '');
+    return $kind === 'snappymail' ? 'SnappyMail' : ($kind === 'roundcube' ? 'Roundcube' : 'Webmail');
 }
 
-function mail_roundcube_install(?callable $onOutput = null): array
+function mail_webmail_installed(): bool
+{
+    $w = mail_webmail();
+    return is_array($w) && !empty($w['dir']) && is_dir($w['dir']) && is_file($w['dir'] . '/index.php');
+}
+
+/** Shared installer for either client. $kind selects the helper action. */
+function mail_webmail_install(string $kind, ?callable $onOutput = null): array
 {
     if (!helper_available()) {
         return ['ok' => false, 'error' => 'Privileged helper not installed.'];
     }
-    if (mail_roundcube_installed()) {
-        return ['ok' => true, 'url' => mail_roundcube()['url']];
+    if (!in_array($kind, ['roundcube', 'snappymail'], true)) {
+        return ['ok' => false, 'error' => 'Unknown webmail client.'];
     }
-    $name = 'webmail-' . bin2hex(random_bytes(4));
+    if (mail_webmail_installed()) {
+        return ['ok' => false, 'error' => 'A webmail client is already installed. Remove it first.'];
+    }
+    $prefix = $kind === 'snappymail' ? 'snappymail-' : 'webmail-';
+    $name = $prefix . bin2hex(random_bytes(4));
     $target = dirname(APP_ROOT) . '/' . $name;
-    $args = 'roundcube-install ' . escapeshellarg($target);
-    [$code, $out] = $onOutput ? helper_cmd_stream($args, $onOutput, 600) : helper_cmd($args, 600);
+    $args = $kind . '-install ' . escapeshellarg($target);
+    [$code, $out] = $onOutput ? helper_cmd_stream($args, $onOutput, 900) : helper_cmd($args, 900);
     if ($code !== 0) {
-        return ['ok' => false, 'error' => trim($out) ?: 'Roundcube install failed.'];
+        return ['ok' => false, 'error' => trim($out) ?: (mail_webmail_label($kind) . ' install failed.')];
     }
     $url = '/' . $name . '/';
     $state = mail_state();
-    $state['roundcube'] = ['dir' => $target, 'url' => $url, 'installed_at' => date('c')];
+    $state['webmail'] = ['kind' => $kind, 'dir' => $target, 'url' => $url, 'installed_at' => date('c')];
+    unset($state['roundcube']); // migrate off the legacy key
     if (!mail_save($state)) {
-        helper_cmd('roundcube-remove ' . escapeshellarg($target));
-        return ['ok' => false, 'error' => 'Could not save Roundcube state.'];
+        helper_cmd('webmail-remove ' . escapeshellarg($target));
+        return ['ok' => false, 'error' => 'Could not save webmail state.'];
     }
-    audit('mail.roundcube.install', $target);
+    audit('mail.webmail.install', $kind . ' ' . $target);
     return ['ok' => true, 'url' => $url];
 }
 
-function mail_roundcube_remove(): array
+function mail_webmail_remove(): array
 {
-    $rc = mail_roundcube();
-    if (!$rc) {
+    $w = mail_webmail();
+    if (!$w) {
         return ['ok' => true];
     }
-    if (helper_available() && !empty($rc['dir'])) {
-        [$code, $out] = helper_cmd('roundcube-remove ' . escapeshellarg((string) $rc['dir']));
+    if (helper_available() && !empty($w['dir'])) {
+        [$code, $out] = helper_cmd('webmail-remove ' . escapeshellarg((string) $w['dir']));
         if ($code !== 0) {
-            return ['ok' => false, 'error' => trim($out) ?: 'Could not remove Roundcube.'];
+            // Fall back to the legacy remover for older Roundcube installs.
+            [$code, $out] = helper_cmd('roundcube-remove ' . escapeshellarg((string) $w['dir']));
+        }
+        if ($code !== 0) {
+            return ['ok' => false, 'error' => trim($out) ?: 'Could not remove webmail.'];
         }
     }
     $state = mail_state();
+    $state['webmail'] = null;
     $state['roundcube'] = null;
     mail_save($state);
-    audit('mail.roundcube.remove');
+    audit('mail.webmail.remove', (string) ($w['kind'] ?? ''));
     return ['ok' => true];
 }
+
+// Backward-compatible thin wrappers (kept for any external callers).
+function mail_roundcube(): ?array { $w = mail_webmail(); return ($w && $w['kind'] === 'roundcube') ? $w : null; }
+function mail_roundcube_installed(): bool { $w = mail_webmail(); return $w !== null && $w['kind'] === 'roundcube' && mail_webmail_installed(); }
+function mail_roundcube_install(?callable $onOutput = null): array { return mail_webmail_install('roundcube', $onOutput); }
+function mail_roundcube_remove(): array { return mail_webmail_remove(); }

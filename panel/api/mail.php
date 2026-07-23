@@ -27,10 +27,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $res = mail_setup($emit);
             break;
         case 'roundcube-install':
-            $res = mail_roundcube_install($emit);
+            $res = mail_webmail_install('roundcube', $emit);
+            break;
+        case 'snappymail-install':
+            $res = mail_webmail_install('snappymail', $emit);
             break;
         case 'roundcube-remove':
-            $res = mail_roundcube_remove();
+        case 'webmail-remove':
+            $res = mail_webmail_remove();
             break;
         case 'domain-add':
             $res = mail_domain_add((string) ($body['domain'] ?? ''));
@@ -75,6 +79,13 @@ json_out([
     'domains'   => $state['domains'],
     'accounts'  => array_map(fn($a) => ['email' => $a['email'] ?? '', 'created' => $a['created'] ?? ''], $state['accounts']),
     'aliases'   => array_map(fn($a) => ['from' => $a['from'] ?? '', 'to' => $a['to'] ?? ''], $state['aliases']),
+    'webmail'   => [
+        'installed' => mail_webmail_installed(),
+        'kind'      => mail_webmail()['kind'] ?? null,
+        'label'     => mail_webmail_label(),
+        'url'       => mail_webmail()['url'] ?? null,
+    ],
+    // Legacy shape kept for any older client code.
     'roundcube' => [
         'installed' => mail_roundcube_installed(),
         'url'       => mail_roundcube()['url'] ?? null,

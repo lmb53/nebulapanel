@@ -108,8 +108,29 @@
     codeMirrors.forEach((cm) => cm.setOption('theme', theme));
   }
 
+  // Copy text to the clipboard with a fallback for insecure contexts. The
+  // async Clipboard API is unavailable over plain HTTP (the panel's default
+  // when accessed by IP), where navigator.clipboard is undefined — fall back to
+  // a hidden textarea + execCommand so "Copy" works there too. Returns a promise.
+  async function copyText(text) {
+    text = String(text ?? '');
+    if (navigator.clipboard && window.isSecureContext) {
+      try { await navigator.clipboard.writeText(text); return true; } catch (e) { /* fall through */ }
+    }
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.cssText = 'position:fixed;top:0;left:0;opacity:0;pointer-events:none';
+    document.body.appendChild(ta);
+    ta.focus(); ta.select();
+    let ok = false;
+    try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+    ta.remove();
+    return ok;
+  }
+
   // Public API for per-module view scripts (available by DOMContentLoaded).
-  window.Nebula = { api, apiGet, apiPost, streamPost, toast, fmtBytes, cmTheme, registerCM };
+  window.Nebula = { api, apiGet, apiPost, streamPost, toast, copyText, fmtBytes, cmTheme, registerCM };
 
   // ---- Toasts -------------------------------------------------------------
   function toast(msg, type = 'success') {

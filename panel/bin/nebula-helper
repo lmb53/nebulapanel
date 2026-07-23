@@ -1045,6 +1045,70 @@ EOF
     echo "removed $TARGET"
     ;;
 
+  # snappymail-install <targetdir>  — SnappyMail, the maintained Rainloop fork.
+  # Ships as a pre-built tarball (no Composer). Data is stored OUTSIDE the
+  # webroot and a catch-all domain is pre-seeded so mailboxes authenticate
+  # against this server's local Dovecot/Postfix with zero manual setup.
+  snappymail-install)
+    TARGET="${1:-}"; valid_path "$TARGET"
+    command -v curl >/dev/null || die "curl not installed"
+    export DEBIAN_FRONTEND=noninteractive
+    PHP_VER="$(ls -d /etc/php/*/fpm 2>/dev/null | sort -V | tail -1 | awk -F/ '{print $4}')"
+    if [[ -n "$PHP_VER" ]]; then
+      apt-get -o Dpkg::Use-Pty=0 -o APT::Color=0 install -y \
+        "php${PHP_VER}-curl" "php${PHP_VER}-xml" "php${PHP_VER}-mbstring" \
+        "php${PHP_VER}-zip" "php${PHP_VER}-intl" "php${PHP_VER}-gd" \
+        "php${PHP_VER}-sqlite3" >/dev/null 2>&1 || true
+    fi
+    # Resolve the latest release tarball from GitHub (robust to version bumps).
+    URL="$(curl -fsSL -H 'User-Agent: NebulaPanel' \
+      https://api.github.com/repos/the-djmaze/snappymail/releases/latest 2>/dev/null \
+      | grep -oE 'https://[^"]+/snappymail-[0-9.]+\.tar\.gz' | head -1)"
+    [[ -n "$URL" ]] || die "could not resolve the latest SnappyMail release (GitHub rate limit?)"
+    TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
+    curl -fL --show-error --progress-bar -o "$TMP/sm.tar.gz" "$URL" || die "snappymail download failed"
+    mkdir -p "$TARGET"
+    # The release tarball extracts directly to the app root (index.php, snappymail/, data/).
+    tar -xzf "$TMP/sm.tar.gz" -C "$TARGET" || die "extract failed"
+    [[ -f "$TARGET/index.php" ]] || die "unexpected SnappyMail archive layout"
+    # Keep runtime data OUTSIDE the webroot (nginx has no .htaccess to hide it).
+    DATA_PATH="/var/lib/nebula-mail/snappymail"
+    install -d -m 0750 -o www-data -g www-data /var/lib/nebula-mail "$DATA_PATH"
+    cat > "$TARGET/include.php" <<PHPEOF
+<?php
+/* Managed by Nebula Panel — store SnappyMail data outside the webroot. */
+define('APP_DATA_FOLDER_PATH', '$DATA_PATH/');
+PHPEOF
+    # Catch-all domain: every mailbox logs in against local IMAP/SMTP.
+    install -d -m 0750 -o www-data -g www-data "$DATA_PATH/_data_/_default_/domains"
+    cat > "$DATA_PATH/_data_/_default_/domains/default.ini" <<'INIEOF'
+imap_host = "127.0.0.1"
+imap_port = 143
+imap_secure = "None"
+imap_short_login = Off
+smtp_host = "127.0.0.1"
+smtp_port = 587
+smtp_secure = "None"
+smtp_short_login = Off
+smtp_use_auth = On
+sieve_use = Off
+white_list = ""
+INIEOF
+    chown -R www-data:www-data "$TARGET" "$DATA_PATH"
+    echo "snappymail installed at $TARGET"
+    ;;
+
+  # webmail-remove <targetdir>  — generic removal for any panel-managed webmail
+  # directory (Roundcube or SnappyMail). Confined by the managed naming scheme.
+  webmail-remove)
+    TARGET="${1:-}"; valid_path "$TARGET"
+    base="$(basename "$TARGET")"
+    [[ "$base" =~ ^(webmail|snappymail)-[0-9a-fA-F]+$ ]] || die "not a managed webmail dir"
+    [[ -f "$TARGET/index.php" ]] || die "not a webmail dir"
+    rm -rf "$TARGET"
+    echo "removed $TARGET"
+    ;;
+
   *)
     die "unknown command: $CMD"
     ;;
