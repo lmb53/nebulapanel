@@ -52,7 +52,7 @@ the URL (runtime state is migrated), or use a fixed name. Options (env vars):
 | **Cron** — full CRUD on the web user's crontab | ✅ |
 | **Firewall** — UFW status, enable/disable, add/delete rules | ✅ sudo |
 | **Logs** — journalctl per-unit + `/var/log` file tails | ✅ |
-| **Websites** — create/delete Nginx vhosts, PHP version, service health, docroot disk/file usage, Let's Encrypt, **Git deploy (connect a repo & pull into the docroot)** | ✅ helper |
+| **Websites** — create Nginx vhosts, PHP version, service health, docroot disk/file usage, Let's Encrypt, **Git deploy (connect a repo & pull into the docroot)**; deleting a site also removes its document root, DNS zone and certificates | ✅ helper |
 | **Domains + DNS** — authoritative BIND zones and record CRUD for panel-managed domains | ✅ helper |
 | **SSL** — list / issue / renew / delete certbot certificates + validated custom PEM upload | ✅ helper |
 | **PHP** — per-version ini settings (memory_limit, upload size…) + modules | ✅ helper |
@@ -233,6 +233,11 @@ with as little configuration as possible:
 4. **Roundcube webmail** installs to its own random URL with one click,
    pre-configured against this server's IMAP/SMTP (SQLite storage). Users sign in
    with their full email address and mailbox password.
+
+The page is tabbed (Overview · Mailboxes · Aliases · DNS & DKIM · Webmail). The
+**Reconfigure / repair** button on the Overview tab re-applies the
+Postfix/Dovecot/OpenDKIM configuration — use it if mail clients or webmail can't
+log in after an upgrade.
 
 > Deliverable mail also needs correct **reverse DNS (PTR)** for the server IP and
 > an unblocked outbound port 25 — both are set at your hosting provider, not in

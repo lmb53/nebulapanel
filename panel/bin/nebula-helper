@@ -168,6 +168,18 @@ case "$CMD" in
     echo "ownership updated"
     ;;
 
+  # file-delete <path>  — recursively remove a file or directory, confined to
+  # the File Manager root. Runs as root so it can clear docroots whose files
+  # are owned by other users (e.g. root-owned git-deployed content) and
+  # non-empty directories the web user cannot remove itself.
+  file-delete)
+    TARGET="$(fm_confined_path "${1:-}")"
+    ROOT="$(realpath "$(head -n 1 "$FM_ROOT_FILE")")"
+    [[ -n "$ROOT" && "$TARGET" != "$ROOT" ]] || die "refusing to delete the file manager root"
+    rm -rf -- "$TARGET"
+    echo "deleted $TARGET"
+    ;;
+
   # file-compress <zip|tar.gz> <absolute-target> <absolute-source> [...]
   # Both destination and sources are independently confined below FM_ROOT.
   file-compress)
@@ -331,10 +343,16 @@ EOF
     valid_domain "$DOMAIN"
     rm -f "$NGINX_EN/$DOMAIN" "$NGINX_AV/$DOMAIN"
     nginx -t && systemctl reload nginx || true
-    if [[ "$PURGE" == "purge" && -n "$DOCROOT" ]]; then
-      valid_path "$DOCROOT"
-      [[ "$DOCROOT" == "/" || "$DOCROOT" == "/var/www" || "$DOCROOT" == "/etc" ]] && die "refusing to delete $DOCROOT"
-      rm -rf "$DOCROOT"
+    if [[ "$PURGE" == "purge" ]]; then
+      if [[ -n "$DOCROOT" ]]; then
+        valid_path "$DOCROOT"
+        [[ "$DOCROOT" == "/" || "$DOCROOT" == "/var/www" || "$DOCROOT" == "/etc" ]] && die "refusing to delete $DOCROOT"
+        rm -rf "$DOCROOT"
+      fi
+      # Remove other server-side traces of the site so nothing is left behind.
+      rm -rf "/etc/nebula-panel/certs/$DOMAIN"
+      rm -f "/var/log/nginx/${DOMAIN}.access.log" "/var/log/nginx/${DOMAIN}.error.log" \
+            /var/log/nginx/${DOMAIN}.access.log.* /var/log/nginx/${DOMAIN}.error.log.* 2>/dev/null || true
     fi
     echo "deleted $DOMAIN"
     ;;
@@ -729,6 +747,18 @@ EOF
     postconf -P "submission/inet/milter_macro_daemon_name=ORIGINATING"
 
     echo "Configuring Dovecot…"
+    # Make sure the self-signed cert Dovecot references actually exists, or
+    # `ssl = yes` prevents the daemon from starting (and every login then fails).
+    if [[ ! -f /etc/ssl/certs/ssl-cert-snakeoil.pem ]] && command -v make-ssl-cert >/dev/null 2>&1; then
+      make-ssl-cert generate-default-snakeoil --force-overwrite || true
+    fi
+    # Disable the distro's *system* auth (PAM/passwd) so our virtual passwd-file
+    # is the sole, authoritative source. Leaving system auth enabled adds a
+    # competing passdb/userdb that can shadow virtual mailboxes and break login.
+    if [[ -f /etc/dovecot/conf.d/10-auth.conf ]]; then
+      sed -i -E 's|^[[:space:]]*!include auth-system\.conf\.ext|#!include auth-system.conf.ext|' \
+        /etc/dovecot/conf.d/10-auth.conf
+    fi
     cat > /etc/dovecot/conf.d/99-nebula.conf <<EOF
 # Managed by Nebula Panel — do not edit by hand.
 protocols = imap pop3 lmtp
