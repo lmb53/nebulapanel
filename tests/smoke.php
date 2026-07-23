@@ -136,6 +136,7 @@ $check(strpos($helperSource, 'site-list)') !== false && strpos($helperSource, 's
 $check(strpos($helperSource, 'php-extension)') !== false && strpos($helperSource, 'php-ini-replace)') !== false, 'expanded PHP management helper actions are missing');
 $check(strpos($helperSource, 'pma-signon)') !== false && strpos($helperSource, "SignonSession") !== false, 'phpMyAdmin signed signon support is missing');
 $check(strpos($helperSource, 'snappymail-install)') !== false && strpos($helperSource, 'webmail-remove)') !== false, 'SnappyMail installer or generic webmail remover is missing');
+$check(strpos($helperSource, 'read -r email hash || [[ -n "$email" ]]') !== false && strpos($helperSource, 'read -r d || [[ -n "$d" ]]') !== false, 'mail-apply drops the final line without a trailing newline (single-mailbox login bug)');
 $check(function_exists('mail_webmail_install') && function_exists('mail_webmail_remove') && function_exists('mail_webmail_installed'), 'generic webmail (Roundcube/SnappyMail) functions are missing');
 $pmaSource = (string) file_get_contents(APP_ROOT . '/lib/mod_pma.php');
 $check(preg_match("/session_write_close\(\);\s*session_id\(''\);\s*session_name\('NebulaPmaSignon'\)/", $pmaSource) === 1, 'phpMyAdmin signon session is not isolated from the panel session ID');

@@ -944,8 +944,12 @@ EOF
     # Skip malformed rows rather than aborting: a single bad entry must never
     # take down the whole mail configuration (which would break login for every
     # otherwise-valid mailbox). Rejected rows are reported on stderr.
+    # NOTE the `|| [[ -n "$x" ]]` on every loop: the decoded input has no
+    # trailing newline, so a plain `while read` silently drops the FINAL line.
+    # With a single domain/mailbox that is the only line — which is why one
+    # mailbox never reached Dovecot and every login failed as "unknown user".
     declare -A KNOWN_DOMAIN=()
-    while IFS= read -r d; do
+    while IFS= read -r d || [[ -n "$d" ]]; do
       [[ -z "$d" ]] && continue
       if [[ ! "$d" =~ ^[a-zA-Z0-9]([a-zA-Z0-9.-]{0,251}[a-zA-Z0-9])?$ ]]; then
         echo "skipping invalid mail domain: $d" >&2; continue
@@ -954,7 +958,7 @@ EOF
       printf '%s OK\n' "$d" >> "$TMP/vdomains"
     done < "$TMP/domains"
 
-    while IFS=$'\t' read -r email hash; do
+    while IFS=$'\t' read -r email hash || [[ -n "$email" ]]; do
       [[ -z "$email" ]] && continue
       if [[ ! "$email" =~ ^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+$ ]]; then
         echo "skipping invalid account address: $email" >&2; continue
@@ -973,7 +977,7 @@ EOF
       printf '%s:%s:%s:%s::%s/%s/%s::\n' "$email" "$hash" "$MAIL_VUID" "$MAIL_VGID" "$MAIL_STORE" "$domain_part" "$local_part" >> "$TMP/dovecot-users"
     done < "$TMP/accounts"
 
-    while IFS=$'\t' read -r from to; do
+    while IFS=$'\t' read -r from to || [[ -n "$from" ]]; do
       [[ -z "$from" ]] && continue
       if [[ ! "$from" =~ ^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+$ ]]; then
         echo "skipping invalid alias address: $from" >&2; continue
