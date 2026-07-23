@@ -109,6 +109,19 @@ case "$CMD" in
     find "$PANEL_ROOT" -type f -exec chmod 0644 {} +
     chown -R www-data:www-data "$PANEL_ROOT/data"
     chmod 0700 "$PANEL_ROOT/data"
+    # Refresh the privileged helper itself from the staged, hash-verified
+    # release so panel self-updates deliver helper changes too. Without this,
+    # new helper actions (e.g. a new webmail installer) fail with
+    # "unknown command" until install.sh is re-run by hand. Validate the staged
+    # helper first so a corrupt file can never brick the privileged surface.
+    if [[ -f "$SOURCE/bin/nebula-helper" ]]; then
+      if head -n1 "$SOURCE/bin/nebula-helper" | grep -q '^#!.*bash' && bash -n "$SOURCE/bin/nebula-helper" 2>/dev/null; then
+        install -m 0755 -o root -g root "$SOURCE/bin/nebula-helper" /usr/local/bin/nebula-helper
+        echo "helper=updated"
+      else
+        echo "helper=skipped-invalid" >&2
+      fi
+    fi
     echo "snapshot=$(basename "$SNAP")"
     ;;
 

@@ -129,6 +129,7 @@ $check(strpos($helperSource, '-d "www.$DOMAIN"') === false, 'SSL issuance still 
 $check(strpos($helperSource, "tr -dc 'a-zA-Z0-9' </dev/urandom | head") === false, 'phpMyAdmin secret generation still has the pipefail/SIGPIPE bug');
 $check(strpos($helperSource, 'FM_ROOT_FILE=/etc/nebula-panel/fm-root') !== false, 'privileged File Manager confinement is missing');
 $check(strpos($helperSource, 'PANEL_ROOT_FILE=/etc/nebula-panel/panel-root') !== false && strpos($helperSource, 'panel-update)') !== false, 'confined privileged panel updater is missing');
+$check(strpos($helperSource, 'install -m 0755 -o root -g root "$SOURCE/bin/nebula-helper" /usr/local/bin/nebula-helper') !== false, 'panel-update does not refresh the privileged helper from the staged release');
 $check(strpos($helperSource, 'file-compress)') !== false && strpos($helperSource, 'zip -rq') !== false, 'privileged zip compression is missing');
 $check(strpos($helperSource, 'systemd-run --quiet') !== false, 'PHP-FPM reload is not deferred');
 $check(strpos($helperSource, 'site-list)') !== false && strpos($helperSource, 'site-php)') !== false, 'website recovery or PHP reassignment helper is missing');

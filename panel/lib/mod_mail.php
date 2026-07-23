@@ -489,7 +489,12 @@ function mail_webmail_install(string $kind, ?callable $onOutput = null): array
     $args = $kind . '-install ' . escapeshellarg($target);
     [$code, $out] = $onOutput ? helper_cmd_stream($args, $onOutput, 900) : helper_cmd($args, 900);
     if ($code !== 0) {
-        return ['ok' => false, 'error' => trim($out) ?: (mail_webmail_label($kind) . ' install failed.')];
+        $err = trim($out);
+        if (stripos($err, 'unknown command') !== false) {
+            $err = 'The privileged helper on the server is out of date and does not support this webmail installer yet. '
+                 . 'Re-run install.sh on the server to update the helper, then try again.';
+        }
+        return ['ok' => false, 'error' => $err ?: (mail_webmail_label($kind) . ' install failed.')];
     }
     $url = '/' . $name . '/';
     $state = mail_state();
