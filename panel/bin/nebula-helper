@@ -872,29 +872,46 @@ EOF
     printf '%s' "$ALIASES_B64"  | base64 -d > "$TMP/aliases"  2>/dev/null || : > "$TMP/aliases"
 
     : > "$TMP/vdomains"; : > "$TMP/vmailbox"; : > "$TMP/valias"; : > "$TMP/dovecot-users"
+    # Skip malformed rows rather than aborting: a single bad entry must never
+    # take down the whole mail configuration (which would break login for every
+    # otherwise-valid mailbox). Rejected rows are reported on stderr.
     declare -A KNOWN_DOMAIN=()
     while IFS= read -r d; do
       [[ -z "$d" ]] && continue
-      [[ "$d" =~ ^[a-zA-Z0-9]([a-zA-Z0-9.-]{0,251}[a-zA-Z0-9])?$ ]] || die "invalid mail domain: $d"
+      if [[ ! "$d" =~ ^[a-zA-Z0-9]([a-zA-Z0-9.-]{0,251}[a-zA-Z0-9])?$ ]]; then
+        echo "skipping invalid mail domain: $d" >&2; continue
+      fi
       KNOWN_DOMAIN["$d"]=1
       printf '%s OK\n' "$d" >> "$TMP/vdomains"
     done < "$TMP/domains"
 
     while IFS=$'\t' read -r email hash; do
       [[ -z "$email" ]] && continue
-      [[ "$email" =~ ^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+$ ]] || die "invalid account address: $email"
-      [[ "$hash" =~ ^\{SHA512-CRYPT\}\$6\$[./A-Za-z0-9]{1,32}\$[./A-Za-z0-9]{1,200}$ ]] || die "invalid password hash for $email"
+      if [[ ! "$email" =~ ^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+$ ]]; then
+        echo "skipping invalid account address: $email" >&2; continue
+      fi
+      if [[ ! "$hash" =~ ^\{SHA512-CRYPT\}\$6\$[./A-Za-z0-9]{1,32}\$[./A-Za-z0-9]{1,200}$ ]]; then
+        echo "skipping account with invalid password hash: $email" >&2; continue
+      fi
       local_part="${email%@*}"; domain_part="${email#*@}"
-      [[ -n "${KNOWN_DOMAIN[$domain_part]:-}" ]] || die "account domain not in domain list: $domain_part"
-      [[ "$local_part" =~ ^[a-zA-Z0-9._%+-]+$ ]] || die "invalid local part: $local_part"
+      if [[ -z "${KNOWN_DOMAIN[$domain_part]:-}" ]]; then
+        echo "skipping account whose domain is not in the domain list: $email" >&2; continue
+      fi
+      if [[ ! "$local_part" =~ ^[a-zA-Z0-9._%+-]+$ ]]; then
+        echo "skipping account with invalid local part: $email" >&2; continue
+      fi
       printf '%s %s/%s/\n' "$email" "$domain_part" "$local_part" >> "$TMP/vmailbox"
       printf '%s:%s:%s:%s::%s/%s/%s::\n' "$email" "$hash" "$MAIL_VUID" "$MAIL_VGID" "$MAIL_STORE" "$domain_part" "$local_part" >> "$TMP/dovecot-users"
     done < "$TMP/accounts"
 
     while IFS=$'\t' read -r from to; do
       [[ -z "$from" ]] && continue
-      [[ "$from" =~ ^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+$ ]] || die "invalid alias address: $from"
-      [[ "$to"   =~ ^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+$ ]] || die "invalid alias destination: $to"
+      if [[ ! "$from" =~ ^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+$ ]]; then
+        echo "skipping invalid alias address: $from" >&2; continue
+      fi
+      if [[ ! "$to" =~ ^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+$ ]]; then
+        echo "skipping invalid alias destination: $to" >&2; continue
+      fi
       printf '%s %s\n' "$from" "$to" >> "$TMP/valias"
     done < "$TMP/aliases"
 
@@ -920,10 +937,17 @@ EOF
       KDIR="$DKIM_DIR/$d"
       if [[ ! -f "$KDIR/mail.private" ]]; then
         install -d -m 0750 "$KDIR"
-        opendkim-genkey -b 2048 -d "$d" -D "$KDIR" -s mail >/dev/null 2>&1 || die "DKIM key generation failed for $d"
+        # Best-effort: a DKIM hiccup must not abort applying mailboxes/aliases
+        # (which would otherwise break login). Domains without a key simply have
+        # no DKIM signing until the key can be generated.
+        if ! opendkim-genkey -b 2048 -d "$d" -D "$KDIR" -s mail >/dev/null 2>&1; then
+          echo "warning: DKIM key generation failed for $d — signing disabled for it" >&2
+          continue
+        fi
         chown -R opendkim:opendkim "$KDIR" 2>/dev/null || true
         chmod 0600 "$KDIR/mail.private" 2>/dev/null || true
       fi
+      [[ -f "$KDIR/mail.private" ]] || continue
       printf 'mail._domainkey.%s %s:mail:%s/mail.private\n' "$d" "$d" "$KDIR" >> "$TMP/KeyTable"
       printf '*@%s mail._domainkey.%s\n' "$d" "$d" >> "$TMP/SigningTable"
     done
@@ -940,8 +964,20 @@ EOF
   # mail-dkim <domain>  ->  selector=..  value=..  (the public TXT record body)
   mail-dkim)
     DOMAIN="${1:-}"; valid_domain "$DOMAIN"
-    TXT="$DKIM_DIR/$DOMAIN/mail.txt"
-    [[ -f "$TXT" ]] || die "no DKIM key for $DOMAIN; add the domain first"
+    KDIR="$DKIM_DIR/$DOMAIN"
+    TXT="$KDIR/mail.txt"
+    # Generate the key on demand if it is missing, so the panel's DNS tab can
+    # always show a DKIM record once the mail stack is installed. (mail-apply
+    # normally creates it, but a domain added before the stack — or a failed
+    # earlier generation — can leave it absent.)
+    if [[ ! -f "$TXT" ]] && command -v opendkim-genkey >/dev/null 2>&1; then
+      install -d -m 0750 "$KDIR" 2>/dev/null || true
+      if opendkim-genkey -b 2048 -d "$DOMAIN" -D "$KDIR" -s mail >/dev/null 2>&1; then
+        chown -R opendkim:opendkim "$KDIR" 2>/dev/null || true
+        chmod 0600 "$KDIR/mail.private" 2>/dev/null || true
+      fi
+    fi
+    [[ -f "$TXT" ]] || die "no DKIM key for $DOMAIN; install the mail stack, then add the domain"
     # opendkim-genkey writes the record split across quoted strings; join them
     # back into one continuous value the panel can present and publish.
     VALUE="$(grep -o '"[^"]*"' "$TXT" | sed 's/^"//; s/"$//' | tr -d '\n' | tr -d ' \t')"

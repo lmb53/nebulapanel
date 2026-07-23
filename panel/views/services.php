@@ -4,7 +4,10 @@ require_once APP_ROOT . '/lib/mod_apps.php';
 require_once APP_ROOT . '/lib/mod_sites.php';
 
 $allowed = array_values(array_unique(array_merge($config['services'], manageable_units())));
-$services = services_overview($allowed);
+// Overview lists only services that are actually present on the box — hide the
+// long tail of not-installed placeholders (Docker, Redis, extra PHP, …). The
+// full $allowed set still governs which units may be controlled via the API.
+$services = array_values(array_filter(services_overview($allowed), fn($s) => $s['status'] !== 'not-installed'));
 $instances = manageable_services();
 $sites = sites_list();
 

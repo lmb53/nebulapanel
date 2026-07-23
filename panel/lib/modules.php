@@ -28,8 +28,7 @@ function nebula_modules(): array
         'cron'       => ['clock',            'Cron Jobs',    'System'],
         'firewall'   => ['shield',           'Firewall',     'System'],
         'logs'       => ['scroll-text',      'Logs',         'System'],
-
-        'docker'     => ['container',        'Docker',       'Services'],
+        'docker'     => ['container',        'Docker',       'System'],
 
         'terminal'   => ['square-terminal',  'Terminal',     'Tools'],
         'backups'    => ['archive-restore',  'Backups',      'Tools'],

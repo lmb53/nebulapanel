@@ -365,13 +365,17 @@ function mail_dns_records(string $domain): array
 {
     $ip = mail_server_ip();
     $mailHost = 'mail.' . $domain;
+    // Pin the sending server's IP into SPF so mail is authorised even when the
+    // MX host resolves elsewhere (or DNS hasn't propagated yet). Fall back to a
+    // plain `mx` mechanism only when we can't determine the public IP.
+    $spf = $ip !== '' ? ('v=spf1 mx ip4:' . $ip . ' ~all') : 'v=spf1 mx ~all';
     $records = [
         ['type' => 'A',   'name' => 'mail', 'value' => $ip ?: 'YOUR.SERVER.IP', 'ttl' => 3600, 'priority' => null,
          'note' => 'Points the mail host at this server.'],
         ['type' => 'MX',  'name' => '@', 'value' => $mailHost, 'ttl' => 3600, 'priority' => 10,
          'note' => 'Routes inbound mail for the domain to this server.'],
-        ['type' => 'TXT', 'name' => '@', 'value' => 'v=spf1 mx ~all', 'ttl' => 3600, 'priority' => null,
-         'note' => 'SPF — authorises this server to send for the domain.'],
+        ['type' => 'TXT', 'name' => '@', 'value' => $spf, 'ttl' => 3600, 'priority' => null,
+         'note' => 'SPF — authorises this server' . ($ip !== '' ? ' (' . $ip . ')' : '') . ' to send for the domain.'],
         ['type' => 'TXT', 'name' => '_dmarc', 'value' => 'v=DMARC1; p=quarantine; rua=mailto:postmaster@' . $domain . '; adkim=s; aspf=s', 'ttl' => 3600, 'priority' => null,
          'note' => 'DMARC — policy for mail that fails SPF/DKIM.'],
     ];

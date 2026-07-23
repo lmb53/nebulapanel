@@ -41,13 +41,16 @@ $rows[] = ['systemctl sudo (Services)', $systemctlDenied ? 'bad' : 'ok',
     'Controls start/stop/restart and enable/disable at boot'];
 
 // Wildcard-rule binaries — only meaningful if the tool is installed.
+// NB: `tar` (Backups) is intentionally NOT here — the panel does not hold a
+// `sudo tar` rule (it would be arbitrary root code execution), so backups run
+// as the web user over web-readable files. Reporting a missing tar sudo rule
+// was a false positive; it's covered by the "Backups (tar)" check below.
 $sudoBins = [
     'apt-get'    => 'Updates / Install Apps',
     'ufw'        => 'Firewall',
     'docker'     => 'Docker',
     'mysql'      => 'Databases',
     'journalctl' => 'Logs',
-    'tar'        => 'Backups',
 ];
 foreach ($sudoBins as $bin => $use) {
     if (!has_cmd($bin)) {
@@ -57,6 +60,16 @@ foreach ($sudoBins as $bin => $use) {
     $ok = !diag_sudo_denied($bin . ' --version');
     $rows[] = [$bin . ' sudo (' . $use . ')', $ok ? 'ok' : 'bad',
         $ok ? 'sudo rule present' : 'sudo rejected — re-run install.sh to add the rule'];
+}
+
+// Backups archive web-readable files as the web user (no sudo) — check tar is
+// present and actually runnable, not that a (deliberately absent) sudo rule.
+if (!has_cmd('tar')) {
+    $rows[] = ['Backups (tar)', 'bad', 'tar is not installed — apt-get install tar'];
+} else {
+    [$tarCode] = run_cmd('tar --version', 10);
+    $rows[] = ['Backups (tar)', $tarCode === 0 ? 'ok' : 'bad',
+        $tarCode === 0 ? 'runs as ' . $whoami . ' over web-readable files (no sudo needed)' : 'tar failed to run'];
 }
 
 // Tool presence.

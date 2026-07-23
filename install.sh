@@ -409,6 +409,9 @@ sudo_line ufw        /usr/sbin/ufw
 sudo_line docker     /usr/bin/docker
 sudo_line mysql      /usr/bin/mysql
 sudo_line journalctl /usr/bin/journalctl
+# NB: deliberately NO `tar` rule. `sudo tar` is arbitrary root code execution
+# (via --to-command / --checkpoint-action), so backups run as www-data over
+# web-readable files instead. The Diagnostics page reflects this.
 sudo_line apt-get    /usr/bin/apt-get SETENV   # SETENV permits DEBIAN_FRONTEND
 
 # The privileged helper: a single tight entry that covers vhost/SSL/phpMyAdmin

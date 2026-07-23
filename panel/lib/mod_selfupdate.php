@@ -66,8 +66,9 @@ function su_apply(): array
     $src=su_find_panel_dir($work);
     if($src===null){run_cmd('rm -rf '.escapeshellarg($work));return ['ok'=>false,'error'=>'Downloaded archive has no panel directory.','log'=>$log];}
     foreach(['index.php','lib/bootstrap.php','lib/auth.php','lib/helpers.php','bin/nebula-helper'] as $required){if(!is_file($src.'/'.$required)){run_cmd('rm -rf '.escapeshellarg($work));return ['ok'=>false,'error'=>'Staged release is incomplete (missing '.$required.').','log'=>$log];}}
+    $phpCli=su_php_cli();
     $iterator=new RecursiveIteratorIterator(new RecursiveDirectoryIterator($src,FilesystemIterator::SKIP_DOTS));
-    foreach($iterator as $file){if($file->getExtension()!=='php')continue;[$code,,$error]=run_cmd(escapeshellarg(PHP_BINARY).' -l '.escapeshellarg($file->getPathname()),15);if($code!==0){run_cmd('rm -rf '.escapeshellarg($work));return ['ok'=>false,'error'=>'Staged PHP validation failed: '.trim($error),'log'=>$log];}}
+    foreach($iterator as $file){if($file->getExtension()!=='php')continue;[$code,$stdout,$error]=run_cmd(escapeshellarg($phpCli).' -l '.escapeshellarg($file->getPathname()),15);if($code!==0){run_cmd('rm -rf '.escapeshellarg($work));return ['ok'=>false,'error'=>'Staged PHP validation failed: '.(trim($error)?:trim($stdout)?:'lint of '.$file->getFilename().' exited '.$code),'log'=>$log];}}
 
     $add('Creating a required snapshot and applying the validated release…');
     [$applyCode,$applyOutput]=helper_cmd('panel-update '.escapeshellarg($src),300);
@@ -77,6 +78,25 @@ function su_apply(): array
     $snapshot=preg_match('/snapshot=([^\s]+)/',$applyOutput,$match)?$match[1]:null;
     $add('Updated to '.substr($sha,0,12).'.');
     return ['ok'=>true,'log'=>$log,'new_sha'=>$sha,'snapshot'=>$snapshot,'archive_sha256'=>$archiveHash];
+}
+
+/**
+ * A PHP *CLI* binary usable for `-l` lint checks. Under PHP-FPM, PHP_BINARY is
+ * the php-fpm daemon, which does not support `-l` — using it makes every staged
+ * validation fail (often with an empty error). Prefer a real `php` CLI, falling
+ * back to a versioned CLI, then to PHP_BINARY only when it isn't the FPM SAPI.
+ */
+function su_php_cli(): string
+{
+    foreach (['php', 'php' . PHP_MAJOR_VERSION . '.' . PHP_MINOR_VERSION, 'php8.5', 'php8.4', 'php8.3', 'php8.2', 'php8.1'] as $candidate) {
+        if (has_cmd($candidate)) {
+            return $candidate;
+        }
+    }
+    if (PHP_BINARY !== '' && stripos(PHP_BINARY, 'fpm') === false && stripos(PHP_SAPI, 'fpm') === false) {
+        return PHP_BINARY;
+    }
+    return 'php';
 }
 
 function su_find_panel_dir(string $root): ?string
