@@ -50,7 +50,7 @@ the URL (runtime state is migrated), or use a fixed name. Options (env vars):
 | **Users & RBAC** — panel accounts with administrator/operator/developer/auditor roles, plus system-account inventory | ✅ |
 | **SSH Keys** — list/add/revoke authorized keys for interactive users | ✅ helper |
 | **Cron** — full CRUD on the web user's crontab | ✅ |
-| **Firewall** — UFW status, enable/disable, add/delete rules | ✅ sudo |
+| **Security** — UFW status, enable/disable, add/delete rules, plus a **Fail2Ban** tab showing every jail's counters, the live banned-IP list with one-click unban, manual ban, and recent ban activity | ✅ sudo/helper |
 | **Logs** — journalctl per-unit + `/var/log` file tails | ✅ |
 | **Websites** — create Nginx vhosts, PHP version, service health, docroot disk/file usage, Let's Encrypt, **Git deploy (connect a repo & pull into the docroot)**; deleting a site also removes its document root, DNS zone and certificates | ✅ helper |
 | **Domains + DNS** — authoritative BIND zones and record CRUD for panel-managed domains | ✅ helper |
@@ -58,8 +58,8 @@ the URL (runtime state is migrated), or use a fixed name. Options (env vars):
 | **PHP** — per-version ini settings (memory_limit, upload size…) + modules | ✅ helper |
 | **Databases** — website-owned MariaDB/MySQL DB/user CRUD, metadata and per-database quick access | ✅ sudo |
 | **phpMyAdmin** — one-click install + password-free, short-lived signed per-database signon | ✅ helper |
-| **Email** — one-click Postfix + Dovecot + OpenDKIM mail server, virtual mailboxes & aliases, per-domain **DKIM** keys, copy-ready **MX / SPF / DKIM / DMARC** records (auto-publish to panel DNS zones), and one-click **SnappyMail / Roundcube** webmail | ✅ helper |
-| **Docker** — create/control containers, view container logs, pull/remove/prune images, manage volumes and networks, **Compose stacks (editable docker-compose.yml, deploy/pull/restart/logs)** and a one-click **App Store** of popular self-hosted apps | ✅ sudo |
+| **Email** — one-click Postfix + Dovecot + OpenDKIM mail server, virtual mailboxes & aliases, per-domain **DKIM** keys, copy-ready **MX / SPF / DKIM / DMARC** records (auto-publish to panel DNS zones), a **statistics dashboard** (sent/received/bounced/rejected, per-day chart, top senders & recipients, mailbox storage) and one-click **Roundcube** webmail | ✅ helper |
+| **Docker** — create/control containers, view container logs, pull/remove/prune images, manage volumes and networks, **Compose stacks (editable docker-compose.yml, deploy/pull/restart/logs, one-click Compose install when the CLI plugin is missing)** and a one-click **App Store** of popular self-hosted apps with official brand logos | ✅ sudo |
 | **File Manager** — expandable tree previews, browse/pinned/recent, archives, popup multi-tab editor, ownership, permissions and drag-drop upload | ✅ helper |
 | **Diagnostics** — environment + per-privilege sudo checks with fix hints | ✅ |
 | **Backups** — create / verify / list / download / delete `.tar.gz` | ✅ |
@@ -230,12 +230,17 @@ with as little configuration as possible:
    panel-managed authoritative zones you can **publish them to DNS in one click**
    (long DKIM keys are split into valid 255-byte TXT chunks). For externally
    hosted DNS, copy each record with the copy button.
-4. **Webmail** installs to its own random URL with one click, pre-configured
-   against this server's local IMAP/SMTP. Choose **SnappyMail** (the maintained
-   Rainloop successor, recommended) or **Roundcube**; one client is active at a
-   time. Users sign in with their full email address and mailbox password.
+4. **Roundcube webmail** installs to its own random URL with one click,
+   pre-configured against this server's local IMAP/SMTP with zero-config SQLite
+   storage. Users sign in with their full email address and mailbox password.
+5. **Stats** aggregates the Postfix/Dovecot logs and the maildirs on disk:
+   messages sent, received, bounced, deferred and rejected, mailbox logins and
+   failed logins, current queue depth, a per-day delivery chart, top senders and
+   recipients, per-mailbox storage, and the most recent delivery problems with
+   the SMTP reason behind each one.
 
-The page is tabbed (Overview · Mailboxes · Aliases · DNS & DKIM · Webmail). The
+The page is tabbed (Overview · Stats · Mailboxes · Aliases · DNS & DKIM ·
+Webmail). The
 **Reconfigure / repair** button on the Overview tab re-applies the
 Postfix/Dovecot/OpenDKIM configuration — use it if mail clients or webmail can't
 log in after an upgrade.

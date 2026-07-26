@@ -407,6 +407,8 @@ sudo_line() {
 }
 sudo_line ufw        /usr/sbin/ufw
 sudo_line docker     /usr/bin/docker
+# Standalone Compose binary — used when the `docker compose` CLI plugin is absent.
+sudo_line docker-compose /usr/bin/docker-compose
 sudo_line mysql      /usr/bin/mysql
 sudo_line journalctl /usr/bin/journalctl
 # NB: deliberately NO `tar` rule. `sudo tar` is arbitrary root code execution

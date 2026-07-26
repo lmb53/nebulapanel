@@ -5,23 +5,113 @@
  *
  * Each stack is a directory under data/stacks/<name>/ holding a
  * docker-compose.yml the panel writes directly (the data dir is owned by the
- * web user). Privileged work is delegated to `sudo docker compose`, reusing the
- * same docker sudoers grant the rest of the Docker module relies on. The
- * compose project name is always pinned to the stack name with `-p`.
+ * web user). Privileged work is delegated to the compose CLI under sudo —
+ * `docker compose` (v2 plugin) when present, otherwise the standalone
+ * `docker-compose` binary — reusing the same docker sudoers grant the rest of
+ * the Docker module relies on. The compose project name is always pinned to the
+ * stack name with `-p`.
  */
 
 require_once APP_ROOT . '/lib/mod_docker.php';
 
-/** Compose v2 is bundled with modern Docker; treat availability as docker + the plugin. */
+/**
+ * Resolve the compose command line this server can actually run.
+ *
+ * Compose v2 ships as a CLI plugin (`docker compose`) which Ubuntu's `docker.io`
+ * package does NOT pull in, so a perfectly working Docker install can still have
+ * no compose. Fall back to the standalone `docker-compose` binary when it is
+ * present. Returns null when neither is usable.
+ */
+function compose_bin(): ?string
+{
+    static $bin = false;
+    if ($bin !== false) { return $bin; }
+    $bin = null;
+    if (dk_available()) {
+        [$code] = sudo_cmd('docker compose version', 20);
+        if ($code === 0) {
+            $bin = 'docker compose';
+        } elseif (has_cmd('docker-compose')) {
+            [$code2] = sudo_cmd('docker-compose version', 20);
+            if ($code2 === 0) { $bin = 'docker-compose'; }
+        }
+    }
+    return $bin;
+}
+
+/** True when a compose implementation is available. */
 function compose_available(): bool
 {
-    if (!dk_available()) { return false; }
-    static $ok = null;
-    if ($ok === null) {
-        [$code] = sudo_cmd('docker compose version', 20);
-        $ok = $code === 0;
+    return compose_bin() !== null;
+}
+
+/**
+ * Why compose is unavailable, and whether the panel can fix it — surfaced in the
+ * UI instead of the old bare "Docker Compose is not available on this server."
+ */
+function compose_availability(): array
+{
+    if (compose_available()) {
+        return ['available' => true, 'installable' => false, 'reason' => '', 'bin' => compose_bin()];
     }
-    return $ok;
+    if (!dk_available()) {
+        return [
+            'available'   => false,
+            'installable' => false,
+            'reason'      => 'Docker is not installed on this server. Install Docker from Install Apps first, then install Compose here.',
+            'bin'         => null,
+        ];
+    }
+    // Docker is there — distinguish "plugin missing" from "sudo/daemon problem",
+    // because only the first one is fixable by installing a package.
+    [$code, $out] = sudo_cmd('docker version --format ' . escapeshellarg('{{.Server.Version}}'), 20);
+    if ($code !== 0) {
+        $err = trim($out);
+        if (stripos($err, 'a password is required') !== false || stripos($err, 'may not run sudo') !== false) {
+            $reason = 'The web user cannot run Docker (missing sudoers rule). Re-run install.sh on the server.';
+        } elseif (stripos($err, 'daemon') !== false || stripos($err, 'connect') !== false) {
+            $reason = 'The Docker daemon is not running. Start the docker service from Services, then reload this page.';
+        } else {
+            $reason = 'Docker is installed but not responding: ' . ($err ?: 'unknown error');
+        }
+        return ['available' => false, 'installable' => false, 'reason' => $reason, 'bin' => null];
+    }
+    return [
+        'available'   => false,
+        'installable' => true,
+        'reason'      => 'Docker is running, but the Compose plugin is not installed — Ubuntu\'s docker.io package ships without it. '
+                       . 'Install it now to deploy stacks and App Store apps.',
+        'bin'         => null,
+    ];
+}
+
+/**
+ * Install the Docker Compose plugin (apt) via the privileged helper, which knows
+ * the different package names across Debian/Ubuntu releases.
+ */
+function compose_install(?callable $onOutput = null): array
+{
+    if (compose_available()) {
+        return ['ok' => true, 'output' => 'Docker Compose is already available.'];
+    }
+    if (!dk_available()) {
+        return ['ok' => false, 'error' => 'Install Docker first (Install Apps → Docker).'];
+    }
+    if (!helper_available()) {
+        return ['ok' => false, 'error' => 'Privileged helper not installed. Re-run install.sh.'];
+    }
+    [$code, $out] = $onOutput
+        ? helper_cmd_stream('compose-install', $onOutput, 900)
+        : helper_cmd('compose-install', 900);
+    audit('compose.install-plugin', 'exit ' . $code);
+    if ($code !== 0) {
+        $err = trim($out);
+        if (stripos($err, 'unknown command') !== false) {
+            $err = 'The privileged helper on this server is out of date. Update the panel (Panel Updates) or re-run install.sh, then try again.';
+        }
+        return ['ok' => false, 'error' => $err ?: 'Could not install Docker Compose.'];
+    }
+    return ['ok' => true, 'output' => $out];
 }
 
 /** Root directory holding every stack folder. */
@@ -52,7 +142,9 @@ function compose_file(string $name): string
 function compose_project_states(): array
 {
     $states = [];
-    [$code, $out] = sudo_cmd('docker compose ls --all --format ' . escapeshellarg('json'), 30);
+    $bin = compose_bin();
+    if ($bin === null) { return $states; }
+    [$code, $out] = sudo_cmd($bin . ' ls --all --format ' . escapeshellarg('json'), 30);
     if ($code !== 0) { return $states; }
     $out = trim($out);
     if ($out === '') { return $states; }
@@ -159,7 +251,9 @@ function compose_action(string $name, string $action, ?callable $onOutput = null
     ];
     if (!isset($verbs[$action])) { return ['ok' => false, 'error' => 'Invalid compose action.']; }
 
-    $base = 'docker compose -p ' . escapeshellarg($name) . ' -f ' . escapeshellarg($file) . ' ' . $verbs[$action];
+    $bin = compose_bin();
+    if ($bin === null) { return ['ok' => false, 'error' => compose_availability()['reason']]; }
+    $base = $bin . ' -p ' . escapeshellarg($name) . ' -f ' . escapeshellarg($file) . ' ' . $verbs[$action];
     $timeout = in_array($action, ['up', 'pull', 'restart'], true) ? 600 : 180;
     if ($onOutput) {
         [$code, $out] = sudo_cmd_stream($base, $onOutput, $timeout);
@@ -207,7 +301,9 @@ function compose_logs(string $name, int $lines = 200): array
     $file = compose_file($name);
     if (!is_file($file)) { return ['ok' => false, 'error' => 'Stack not found.']; }
     $lines = max(1, min(2000, $lines));
-    $cmd = 'docker compose -p ' . escapeshellarg($name) . ' -f ' . escapeshellarg($file)
+    $bin = compose_bin();
+    if ($bin === null) { return ['ok' => false, 'error' => compose_availability()['reason']]; }
+    $cmd = $bin . ' -p ' . escapeshellarg($name) . ' -f ' . escapeshellarg($file)
         . ' logs --no-color --tail ' . $lines;
     [$code, $out] = sudo_cmd($cmd, 60);
     if ($code !== 0) { return ['ok' => false, 'error' => sudo_error($out, $code)]; }
@@ -241,85 +337,85 @@ function compose_catalog(): array
 {
     return [
         'portainer' => [
-            'name' => 'Portainer', 'category' => 'Management', 'icon' => 'container',
+            'name' => 'Portainer', 'category' => 'Management', 'icon' => 'container', 'logo' => 'logos/portainer.svg',
             'description' => 'Web UI to manage Docker containers, images and volumes.',
             'port' => 9443,
             'compose' => "services:\n  portainer:\n    image: portainer/portainer-ce:latest\n    container_name: portainer\n    restart: unless-stopped\n    ports:\n      - \"9443:9443\"\n    volumes:\n      - /var/run/docker.sock:/var/run/docker.sock\n      - portainer_data:/data\nvolumes:\n  portainer_data:\n",
         ],
         'uptime-kuma' => [
-            'name' => 'Uptime Kuma', 'category' => 'Monitoring', 'icon' => 'activity',
+            'name' => 'Uptime Kuma', 'category' => 'Monitoring', 'icon' => 'activity', 'logo' => 'logos/uptime-kuma.svg',
             'description' => 'Self-hosted uptime monitoring with status pages and alerts.',
             'port' => 3001,
             'compose' => "services:\n  uptime-kuma:\n    image: louislam/uptime-kuma:1\n    container_name: uptime-kuma\n    restart: unless-stopped\n    ports:\n      - \"3001:3001\"\n    volumes:\n      - uptime_kuma_data:/app/data\nvolumes:\n  uptime_kuma_data:\n",
         ],
         'nextcloud' => [
-            'name' => 'Nextcloud', 'category' => 'Productivity', 'icon' => 'cloud',
+            'name' => 'Nextcloud', 'category' => 'Productivity', 'icon' => 'cloud', 'logo' => 'logos/nextcloud.svg',
             'description' => 'Private file sync, sharing and collaboration suite.',
             'port' => 8080,
             'compose' => "services:\n  nextcloud:\n    image: nextcloud:apache\n    container_name: nextcloud\n    restart: unless-stopped\n    ports:\n      - \"8080:80\"\n    environment:\n      MYSQL_HOST: db\n      MYSQL_DATABASE: nextcloud\n      MYSQL_USER: nextcloud\n      MYSQL_PASSWORD: change-me-please\n    volumes:\n      - nextcloud_data:/var/www/html\n    depends_on:\n      - db\n  db:\n    image: mariadb:11\n    container_name: nextcloud-db\n    restart: unless-stopped\n    command: --transaction-isolation=READ-COMMITTED --binlog-format=ROW\n    environment:\n      MYSQL_ROOT_PASSWORD: change-me-root\n      MYSQL_DATABASE: nextcloud\n      MYSQL_USER: nextcloud\n      MYSQL_PASSWORD: change-me-please\n    volumes:\n      - nextcloud_db:/var/lib/mysql\nvolumes:\n  nextcloud_data:\n  nextcloud_db:\n",
         ],
         'gitea' => [
-            'name' => 'Gitea', 'category' => 'Development', 'icon' => 'git-branch',
+            'name' => 'Gitea', 'category' => 'Development', 'icon' => 'git-branch', 'logo' => 'logos/gitea.svg',
             'description' => 'Lightweight self-hosted Git service with a web UI.',
             'port' => 3000,
             'compose' => "services:\n  gitea:\n    image: gitea/gitea:latest\n    container_name: gitea\n    restart: unless-stopped\n    environment:\n      USER_UID: 1000\n      USER_GID: 1000\n    ports:\n      - \"3000:3000\"\n      - \"2222:22\"\n    volumes:\n      - gitea_data:/data\n      - /etc/timezone:/etc/timezone:ro\n      - /etc/localtime:/etc/localtime:ro\nvolumes:\n  gitea_data:\n",
         ],
         'vaultwarden' => [
-            'name' => 'Vaultwarden', 'category' => 'Security', 'icon' => 'key-round',
+            'name' => 'Vaultwarden', 'category' => 'Security', 'icon' => 'key-round', 'logo' => 'logos/vaultwarden.svg',
             'description' => 'Bitwarden-compatible password manager server.',
             'port' => 8081,
             'compose' => "services:\n  vaultwarden:\n    image: vaultwarden/server:latest\n    container_name: vaultwarden\n    restart: unless-stopped\n    environment:\n      WEBSOCKET_ENABLED: \"true\"\n    ports:\n      - \"8081:80\"\n    volumes:\n      - vaultwarden_data:/data\nvolumes:\n  vaultwarden_data:\n",
         ],
         'n8n' => [
-            'name' => 'n8n', 'category' => 'Automation', 'icon' => 'workflow',
+            'name' => 'n8n', 'category' => 'Automation', 'icon' => 'workflow', 'logo' => 'logos/n8n.svg',
             'description' => 'Workflow automation with a fair-code visual editor.',
             'port' => 5678,
             'compose' => "services:\n  n8n:\n    image: docker.n8n.io/n8nio/n8n:latest\n    container_name: n8n\n    restart: unless-stopped\n    ports:\n      - \"5678:5678\"\n    environment:\n      N8N_SECURE_COOKIE: \"false\"\n    volumes:\n      - n8n_data:/home/node/.n8n\nvolumes:\n  n8n_data:\n",
         ],
         'pihole' => [
-            'name' => 'Pi-hole', 'category' => 'Networking', 'icon' => 'shield-ban',
+            'name' => 'Pi-hole', 'category' => 'Networking', 'icon' => 'shield-ban', 'logo' => 'logos/pihole.svg',
             'description' => 'Network-wide DNS ad blocking with a web dashboard.',
             'port' => 8089,
             'compose' => "services:\n  pihole:\n    image: pihole/pihole:latest\n    container_name: pihole\n    restart: unless-stopped\n    ports:\n      - \"53:53/tcp\"\n      - \"53:53/udp\"\n      - \"8089:80/tcp\"\n    environment:\n      TZ: Europe/London\n      WEBPASSWORD: change-me-please\n    volumes:\n      - pihole_etc:/etc/pihole\n      - pihole_dnsmasq:/etc/dnsmasq.d\nvolumes:\n  pihole_etc:\n  pihole_dnsmasq:\n",
         ],
         'grafana' => [
-            'name' => 'Grafana', 'category' => 'Monitoring', 'icon' => 'chart-line',
+            'name' => 'Grafana', 'category' => 'Monitoring', 'icon' => 'chart-line', 'logo' => 'logos/grafana.svg',
             'description' => 'Analytics and dashboards for metrics and logs.',
             'port' => 3002,
             'compose' => "services:\n  grafana:\n    image: grafana/grafana-oss:latest\n    container_name: grafana\n    restart: unless-stopped\n    ports:\n      - \"3002:3000\"\n    volumes:\n      - grafana_data:/var/lib/grafana\nvolumes:\n  grafana_data:\n",
         ],
         'jellyfin' => [
-            'name' => 'Jellyfin', 'category' => 'Media', 'icon' => 'clapperboard',
+            'name' => 'Jellyfin', 'category' => 'Media', 'icon' => 'clapperboard', 'logo' => 'logos/jellyfin.svg',
             'description' => 'Free software media system for movies, TV and music.',
             'port' => 8096,
             'compose' => "services:\n  jellyfin:\n    image: jellyfin/jellyfin:latest\n    container_name: jellyfin\n    restart: unless-stopped\n    ports:\n      - \"8096:8096\"\n    volumes:\n      - jellyfin_config:/config\n      - jellyfin_cache:/cache\n      - jellyfin_media:/media\nvolumes:\n  jellyfin_config:\n  jellyfin_cache:\n  jellyfin_media:\n",
         ],
         'code-server' => [
-            'name' => 'code-server', 'category' => 'Development', 'icon' => 'code',
+            'name' => 'code-server', 'category' => 'Development', 'icon' => 'code', 'logo' => 'logos/code-server.svg',
             'description' => 'VS Code running in the browser, backed by this server.',
             'port' => 8443,
             'compose' => "services:\n  code-server:\n    image: codercom/code-server:latest\n    container_name: code-server\n    restart: unless-stopped\n    environment:\n      PASSWORD: change-me-please\n    ports:\n      - \"8443:8080\"\n    volumes:\n      - code_server_data:/home/coder\nvolumes:\n  code_server_data:\n",
         ],
         'adminer' => [
-            'name' => 'Adminer', 'category' => 'Database', 'icon' => 'database',
+            'name' => 'Adminer', 'category' => 'Database', 'icon' => 'database', 'logo' => 'logos/adminer.svg',
             'description' => 'Full-featured database management in a single file.',
             'port' => 8082,
             'compose' => "services:\n  adminer:\n    image: adminer:latest\n    container_name: adminer\n    restart: unless-stopped\n    ports:\n      - \"8082:8080\"\n",
         ],
         'redis' => [
-            'name' => 'Redis', 'category' => 'Database', 'icon' => 'database-zap',
+            'name' => 'Redis', 'category' => 'Database', 'icon' => 'database-zap', 'logo' => 'logos/redis.svg',
             'description' => 'In-memory data store for caching and queues.',
             'port' => 6379,
             'compose' => "services:\n  redis:\n    image: redis:7-alpine\n    container_name: redis\n    restart: unless-stopped\n    command: redis-server --appendonly yes\n    ports:\n      - \"6379:6379\"\n    volumes:\n      - redis_data:/data\nvolumes:\n  redis_data:\n",
         ],
         'postgres' => [
-            'name' => 'PostgreSQL', 'category' => 'Database', 'icon' => 'database',
+            'name' => 'PostgreSQL', 'category' => 'Database', 'icon' => 'database', 'logo' => 'logos/postgres.svg',
             'description' => 'Powerful open-source relational database.',
             'port' => 5432,
             'compose' => "services:\n  postgres:\n    image: postgres:16-alpine\n    container_name: postgres\n    restart: unless-stopped\n    environment:\n      POSTGRES_PASSWORD: change-me-please\n      POSTGRES_DB: app\n    ports:\n      - \"5432:5432\"\n    volumes:\n      - postgres_data:/var/lib/postgresql/data\nvolumes:\n  postgres_data:\n",
         ],
         'wordpress' => [
-            'name' => 'WordPress', 'category' => 'CMS', 'icon' => 'newspaper',
+            'name' => 'WordPress', 'category' => 'CMS', 'icon' => 'newspaper', 'logo' => 'logos/wordpress.svg',
             'description' => 'The world’s most popular CMS with a bundled database.',
             'port' => 8083,
             'compose' => "services:\n  wordpress:\n    image: wordpress:latest\n    container_name: wordpress\n    restart: unless-stopped\n    ports:\n      - \"8083:80\"\n    environment:\n      WORDPRESS_DB_HOST: db\n      WORDPRESS_DB_USER: wordpress\n      WORDPRESS_DB_PASSWORD: change-me-please\n      WORDPRESS_DB_NAME: wordpress\n    volumes:\n      - wordpress_data:/var/www/html\n    depends_on:\n      - db\n  db:\n    image: mariadb:11\n    container_name: wordpress-db\n    restart: unless-stopped\n    environment:\n      MYSQL_ROOT_PASSWORD: change-me-root\n      MYSQL_DATABASE: wordpress\n      MYSQL_USER: wordpress\n      MYSQL_PASSWORD: change-me-please\n    volumes:\n      - wordpress_db:/var/lib/mysql\nvolumes:\n  wordpress_data:\n  wordpress_db:\n",
@@ -337,6 +433,8 @@ function compose_catalog_list(): array
             'name' => $app['name'],
             'category' => $app['category'],
             'icon' => $app['icon'],
+            // Official brand mark (vendored SVG); `icon` stays as the fallback.
+            'logo' => !empty($app['logo']) ? asset($app['logo']) : null,
             'description' => $app['description'],
             'port' => $app['port'] ?? null,
         ];

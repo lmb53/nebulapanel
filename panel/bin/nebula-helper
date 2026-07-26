@@ -504,6 +504,99 @@ PINEOF
     echo "Composer installed"
     ;;
 
+  # ---- Fail2Ban -----------------------------------------------------------
+  # Read-only status plus ban/unban. fail2ban-client needs root, so the panel
+  # goes through the helper rather than a broad sudo grant.
+
+  # f2b-status  ->  key=value header, then one TAB-separated row per jail:
+  #   jail<TAB>name<TAB>currently_failed<TAB>total_failed<TAB>currently_banned<TAB>total_banned<TAB>ip,ip,…<TAB>logfiles
+  f2b-status)
+    if ! command -v fail2ban-client >/dev/null 2>&1; then
+      echo "installed=no"; echo "active=inactive"; exit 0
+    fi
+    echo "installed=yes"
+    echo "active=$(systemctl is-active fail2ban 2>/dev/null || echo inactive)"
+    echo "enabled=$(systemctl is-enabled fail2ban 2>/dev/null || echo unknown)"
+    echo "version=$(fail2ban-client --version 2>/dev/null | head -n1 | awk '{print $2}' | sed 's/^v//')"
+    PING="$(fail2ban-client ping 2>&1 || true)"
+    case "$PING" in *pong*) echo "server=up" ;; *) echo "server=down"; echo "server_error=${PING//$'\n'/ }" ;; esac
+    JAILS="$(fail2ban-client status 2>/dev/null | sed -n 's/^.*Jail list:[[:space:]]*//p' | tr -d ' ')"
+    echo "jails=${JAILS:-}"
+    IFS=',' read -r -a JLIST <<<"${JAILS:-}"
+    for J in "${JLIST[@]}"; do
+      [[ -n "$J" ]] || continue
+      S="$(fail2ban-client status "$J" 2>/dev/null || true)"
+      [[ -n "$S" ]] || continue
+      f() { printf '%s\n' "$S" | sed -n "s/.*$1:[[:space:]]*//p" | head -n1 | sed 's/[[:space:]]*$//'; }
+      CF="$(f 'Currently failed')"; TF="$(f 'Total failed')"
+      CB="$(f 'Currently banned')"; TB="$(f 'Total banned')"
+      IPS="$(f 'Banned IP list')"; LOGS="$(f 'File list')"
+      printf 'jail\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+        "$J" "${CF:-0}" "${TF:-0}" "${CB:-0}" "${TB:-0}" "$(printf '%s' "$IPS" | tr -s ' ' ',')" "$LOGS"
+    done
+    ;;
+
+  # f2b-jail <jail>  ->  raw `fail2ban-client status <jail>` output.
+  f2b-jail)
+    JAIL="${1:-}"
+    [[ "$JAIL" =~ ^[A-Za-z0-9_.-]{1,64}$ ]] || die "invalid jail name"
+    command -v fail2ban-client >/dev/null 2>&1 || die "fail2ban is not installed"
+    fail2ban-client status "$JAIL" 2>&1 || die "no such jail"
+    ;;
+
+  # f2b-unban <jail> <ip> | f2b-ban <jail> <ip>
+  f2b-unban|f2b-ban)
+    JAIL="${1:-}"; IP="${2:-}"
+    [[ "$JAIL" =~ ^[A-Za-z0-9_.-]{1,64}$ ]] || die "invalid jail name"
+    [[ "$IP" =~ ^[0-9a-fA-F:.]{3,45}$ ]] || die "invalid IP address"
+    command -v fail2ban-client >/dev/null 2>&1 || die "fail2ban is not installed"
+    ACT="${CMD#f2b-}"
+    fail2ban-client set "$JAIL" "${ACT}ip" "$IP" 2>&1 || die "fail2ban-client ${ACT} failed"
+    echo "${ACT}ned $IP in $JAIL"
+    ;;
+
+  # f2b-log [lines]  ->  recent fail2ban activity (bans, unbans, findings).
+  f2b-log)
+    LINES="${1:-200}"
+    [[ "$LINES" =~ ^[0-9]{1,4}$ ]] || die "invalid line count"
+    { [[ -f /var/log/fail2ban.log ]] && tail -n "$LINES" /var/log/fail2ban.log; } 2>/dev/null \
+      || journalctl -u fail2ban -n "$LINES" --no-pager 2>/dev/null \
+      || echo "no fail2ban log available"
+    ;;
+
+  # compose-install  — install Docker Compose.
+  # Ubuntu's docker.io package ships WITHOUT the compose CLI plugin, which is why
+  # a working Docker install can still report "Docker Compose is not available".
+  # Package names differ across releases, so try each in turn and verify.
+  compose-install)
+    command -v docker >/dev/null 2>&1 || die "Docker is not installed"
+    if docker compose version >/dev/null 2>&1; then
+      echo "docker compose is already available"; exit 0
+    fi
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get -o Dpkg::Use-Pty=0 -o APT::Color=0 update || true
+    INSTALLED=""
+    for PKG in docker-compose-v2 docker-compose-plugin docker-compose; do
+      echo "-- trying $PKG"
+      if apt-get -o Dpkg::Use-Pty=0 -o APT::Color=0 install -y "$PKG"; then
+        INSTALLED="$PKG"
+        # Stop as soon as one of them actually provides a usable compose.
+        if docker compose version >/dev/null 2>&1 || command -v docker-compose >/dev/null 2>&1; then
+          break
+        fi
+      fi
+    done
+    [[ -n "$INSTALLED" ]] || die "no Docker Compose package could be installed from this system's apt sources"
+    if docker compose version >/dev/null 2>&1; then
+      echo "installed $INSTALLED -> $(docker compose version)"
+    elif command -v docker-compose >/dev/null 2>&1; then
+      echo "installed $INSTALLED -> $(docker-compose version | head -n 1)"
+      echo "note: standalone docker-compose binary (v1-style CLI)"
+    else
+      die "installed $INSTALLED but Compose still is not runnable"
+    fi
+    ;;
+
   # pma-install <targetdir>
   pma-install)
     TARGET="${1:-}"
@@ -956,6 +1049,57 @@ EOF
       | grep -iE 'auth|login|error|warning|passwd|userdb|reject|status=|relay=|milter|bounce|deferred|connect to|lmtp' | tail -n 35
     ;;
 
+  # mail-stats [days]  ->  raw material for the panel's email statistics tab:
+  #   header key=value lines, one `mailbox` row per maildir, then the filtered
+  #   Postfix/Dovecot log lines the panel aggregates. Reading mail logs and
+  #   maildirs needs root, so the parsing happens panel-side on this output.
+  mail-stats)
+    DAYS="${1:-30}"
+    [[ "$DAYS" =~ ^[0-9]{1,3}$ ]] || die "invalid day count"
+    [[ "$DAYS" -ge 1 ]] || DAYS=1
+    echo "days=$DAYS"
+    echo "now=$(date '+%Y-%m-%d %H:%M:%S')"
+
+    # Queue depth per state (what is stuck, and where).
+    if command -v postqueue >/dev/null 2>&1; then
+      Q="$(postqueue -p 2>/dev/null || true)"
+      echo "queue_total=$(printf '%s' "$Q" | grep -cE '^[0-9A-F]{8,}' || true)"
+      echo "queue_deferred=$(printf '%s' "$Q" | grep -cE '^[0-9A-F]{8,}\*?!' || true)"
+    else
+      echo "queue_total=0"; echo "queue_deferred=0"
+    fi
+
+    # Per-mailbox size and message counts straight off the maildirs.
+    if [[ -d "$MAIL_STORE" ]]; then
+      for DDIR in "$MAIL_STORE"/*/; do
+        [[ -d "$DDIR" ]] || continue
+        DOM="$(basename "$DDIR")"
+        for UDIR in "$DDIR"*/; do
+          [[ -d "$UDIR" ]] || continue
+          USR="$(basename "$UDIR")"
+          BYTES="$(du -sb "$UDIR" 2>/dev/null | awk '{print $1}')"
+          CUR="$(find "$UDIR/cur" -type f 2>/dev/null | wc -l)"
+          NEW="$(find "$UDIR/new" -type f 2>/dev/null | wc -l)"
+          printf 'mailbox\t%s@%s\t%s\t%s\t%s\n' "$USR" "$DOM" "${BYTES:-0}" "$((CUR + NEW))" "$NEW"
+        done
+      done
+    fi
+
+    # One log source only — mixing rsyslog and journald double-counts events.
+    FILTER='status=(sent|bounced|deferred|expired)|from=<|NOQUEUE: reject|reject: RCPT|imap-login: Login|pop3-login: Login|auth failed|authentication failure|Aborted login'
+    if [[ -r /var/log/mail.log ]]; then
+      echo "source=/var/log/mail.log"
+      echo "== log =="
+      { [[ -r /var/log/mail.log.1 ]] && cat /var/log/mail.log.1; cat /var/log/mail.log; } 2>/dev/null \
+        | grep -aE "$FILTER" | tail -n 20000 || true
+    else
+      echo "source=journal"
+      echo "== log =="
+      journalctl -u postfix -u dovecot --since "${DAYS} days ago" --no-pager -o short 2>/dev/null \
+        | grep -aE "$FILTER" | tail -n 20000 || true
+    fi
+    ;;
+
   # mail-apply <domains_b64> <accounts_b64> <aliases_b64>
   #   domains_b64  : newline list of mail domains
   #   accounts_b64 : newline of  email<TAB>{SHA512-CRYPT}$6$hash
@@ -1152,59 +1296,6 @@ EOF
     [[ -f "$TARGET/config/config.inc.php" ]] || die "not a roundcube dir"
     rm -rf "$TARGET"
     echo "removed $TARGET"
-    ;;
-
-  # snappymail-install <targetdir>  — SnappyMail, the maintained Rainloop fork.
-  # Ships as a pre-built tarball (no Composer). Data is stored OUTSIDE the
-  # webroot and a catch-all domain is pre-seeded so mailboxes authenticate
-  # against this server's local Dovecot/Postfix with zero manual setup.
-  snappymail-install)
-    TARGET="${1:-}"; valid_path "$TARGET"
-    command -v curl >/dev/null || die "curl not installed"
-    export DEBIAN_FRONTEND=noninteractive
-    PHP_VER="$(ls -d /etc/php/*/fpm 2>/dev/null | sort -V | tail -1 | awk -F/ '{print $4}')"
-    if [[ -n "$PHP_VER" ]]; then
-      apt-get -o Dpkg::Use-Pty=0 -o APT::Color=0 install -y \
-        "php${PHP_VER}-curl" "php${PHP_VER}-xml" "php${PHP_VER}-mbstring" \
-        "php${PHP_VER}-zip" "php${PHP_VER}-intl" "php${PHP_VER}-gd" \
-        "php${PHP_VER}-sqlite3" >/dev/null 2>&1 || true
-    fi
-    # Resolve the latest release tarball from GitHub (robust to version bumps).
-    URL="$(curl -fsSL -H 'User-Agent: NebulaPanel' \
-      https://api.github.com/repos/the-djmaze/snappymail/releases/latest 2>/dev/null \
-      | grep -oE 'https://[^"]+/snappymail-[0-9.]+\.tar\.gz' | head -1)"
-    [[ -n "$URL" ]] || die "could not resolve the latest SnappyMail release (GitHub rate limit?)"
-    TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
-    curl -fL --show-error --progress-bar -o "$TMP/sm.tar.gz" "$URL" || die "snappymail download failed"
-    mkdir -p "$TARGET"
-    # The release tarball extracts directly to the app root (index.php, snappymail/, data/).
-    tar -xzf "$TMP/sm.tar.gz" -C "$TARGET" || die "extract failed"
-    [[ -f "$TARGET/index.php" ]] || die "unexpected SnappyMail archive layout"
-    # Keep runtime data OUTSIDE the webroot (nginx has no .htaccess to hide it).
-    DATA_PATH="/var/lib/nebula-mail/snappymail"
-    install -d -m 0750 -o www-data -g www-data /var/lib/nebula-mail "$DATA_PATH"
-    cat > "$TARGET/include.php" <<PHPEOF
-<?php
-/* Managed by Nebula Panel — store SnappyMail data outside the webroot. */
-define('APP_DATA_FOLDER_PATH', '$DATA_PATH/');
-PHPEOF
-    # Catch-all domain: every mailbox logs in against local IMAP/SMTP.
-    install -d -m 0750 -o www-data -g www-data "$DATA_PATH/_data_/_default_/domains"
-    cat > "$DATA_PATH/_data_/_default_/domains/default.ini" <<'INIEOF'
-imap_host = "127.0.0.1"
-imap_port = 143
-imap_secure = "None"
-imap_short_login = Off
-smtp_host = "127.0.0.1"
-smtp_port = 587
-smtp_secure = "None"
-smtp_short_login = Off
-smtp_use_auth = On
-sieve_use = Off
-white_list = ""
-INIEOF
-    chown -R www-data:www-data "$TARGET" "$DATA_PATH"
-    echo "snappymail installed at $TARGET"
     ;;
 
   # webmail-remove <targetdir>  — generic removal for any panel-managed webmail

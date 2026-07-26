@@ -100,6 +100,7 @@ $totalMb = count($state['accounts']);
   <div class="card" style="margin-bottom:16px">
     <div class="tabs" role="tablist">
       <button class="tab active" type="button" data-tab-target="mail-overview" data-tab-panel-group="#mailPanels"><i data-lucide="gauge"></i>Overview</button>
+      <button class="tab" type="button" data-tab-target="mail-stats" data-tab-panel-group="#mailPanels"><i data-lucide="bar-chart-3"></i>Stats</button>
       <button class="tab" type="button" data-tab-target="mail-boxes" data-tab-panel-group="#mailPanels"><i data-lucide="inbox"></i>Mailboxes</button>
       <button class="tab" type="button" data-tab-target="mail-aliases" data-tab-panel-group="#mailPanels"><i data-lucide="forward"></i>Aliases</button>
       <button class="tab" type="button" data-tab-target="mail-dns" data-tab-panel-group="#mailPanels"><i data-lucide="shield-check"></i>DNS &amp; DKIM</button>
@@ -134,6 +135,49 @@ $totalMb = count($state['accounts']);
           <div class="card-header"><h3>Mail diagnostics</h3></div>
           <pre class="mono" id="mailDiagOut" style="margin:0;padding:16px;font-size:12px;line-height:1.55;white-space:pre-wrap;max-height:50vh;overflow:auto"></pre>
         </div>
+      </div>
+
+      <!-- Stats -->
+      <div id="mail-stats" data-tab-panel class="hidden card-pad">
+        <div class="flex items-center gap-2" style="flex-wrap:wrap;margin-bottom:14px">
+          <span class="field-label" style="margin:0">Period</span>
+          <select class="select" id="statsDays" style="width:auto">
+            <option value="7">Last 7 days</option>
+            <option value="30" selected>Last 30 days</option>
+            <option value="90">Last 90 days</option>
+          </select>
+          <button class="btn btn-secondary btn-sm" id="statsRefresh"><i data-lucide="refresh-cw"></i>Refresh</button>
+          <span class="muted" id="statsSource" style="font-size:12px"></span>
+        </div>
+        <div id="statsError" class="notice notice-warning hidden" style="margin-bottom:14px"><i data-lucide="alert-triangle"></i><div id="statsErrorText"></div></div>
+        <div class="stat-row" style="margin-bottom:16px">
+          <div class="stat"><span class="lbl"><i data-lucide="send"></i>Sent</span><span class="val" id="stSent">–</span></div>
+          <div class="stat"><span class="lbl"><i data-lucide="inbox"></i>Received</span><span class="val" id="stRecv">–</span></div>
+          <div class="stat"><span class="lbl"><i data-lucide="undo-2"></i>Bounced</span><span class="val" id="stBounced">–</span></div>
+          <div class="stat"><span class="lbl"><i data-lucide="clock"></i>Deferred</span><span class="val" id="stDeferred">–</span></div>
+          <div class="stat"><span class="lbl"><i data-lucide="shield-x"></i>Rejected</span><span class="val" id="stRejected">–</span></div>
+        </div>
+        <div class="stat-row" style="margin-bottom:16px">
+          <div class="stat"><span class="lbl"><i data-lucide="log-in"></i>Mailbox logins</span><span class="val" id="stLogins">–</span></div>
+          <div class="stat"><span class="lbl"><i data-lucide="key-round"></i>Failed logins</span><span class="val" id="stAuthFail">–</span></div>
+          <div class="stat"><span class="lbl"><i data-lucide="layers"></i>Queued now</span><span class="val" id="stQueue">–</span></div>
+          <div class="stat"><span class="lbl"><i data-lucide="hard-drive"></i>Mail stored</span><span class="val" id="stStored">–</span></div>
+          <div class="stat"><span class="lbl"><i data-lucide="arrow-up-down"></i>Traffic</span><span class="val" id="stTraffic">–</span></div>
+        </div>
+        <div class="card" style="margin-bottom:16px">
+          <div class="card-header"><h3>Delivery activity</h3><span class="muted" id="statsChartHint">Messages per day</span></div>
+          <div class="card-pad"><div style="height:260px"><canvas id="mailChart"></canvas></div></div>
+        </div>
+        <div class="grid grid-2" style="gap:14px">
+          <div class="card"><div class="card-header"><h3>Top senders</h3><span class="muted">outbound</span></div>
+            <div class="table-wrap"><table class="data-table"><thead><tr><th>Address</th><th style="text-align:right">Messages</th></tr></thead><tbody id="stSenders"></tbody></table></div></div>
+          <div class="card"><div class="card-header"><h3>Top recipients</h3><span class="muted">inbound</span></div>
+            <div class="table-wrap"><table class="data-table"><thead><tr><th>Address</th><th style="text-align:right">Messages</th></tr></thead><tbody id="stRecipients"></tbody></table></div></div>
+        </div>
+        <div class="card" style="margin-top:14px"><div class="card-header"><h3>Mailbox storage</h3><span class="muted">on-disk maildirs</span></div>
+          <div class="table-wrap"><table class="data-table"><thead><tr><th>Mailbox</th><th>Messages</th><th>Unread</th><th style="text-align:right">Size</th></tr></thead><tbody id="stMailboxes"></tbody></table></div></div>
+        <div class="card" style="margin-top:14px"><div class="card-header"><h3>Delivery problems</h3><span class="muted">bounced · deferred · rejected</span></div>
+          <div class="table-wrap"><table class="data-table"><thead><tr><th>When</th><th>Type</th><th>Address</th><th>Reason</th></tr></thead><tbody id="stProblems"></tbody></table></div></div>
       </div>
 
       <!-- Mailboxes -->
@@ -224,23 +268,22 @@ $totalMb = count($state['accounts']);
             <span class="mono" style="color:var(--blue-400)"><?= e((string) $wmUrl) ?></span>
           </div>
           <div class="muted" style="font-size:13px;margin-top:12px">Users log in with their full email address and mailbox password.</div>
+          <?php if ((mail_webmail()['kind'] ?? '') === 'snappymail'): ?>
+            <div class="notice notice-warning" style="margin-top:14px"><i data-lucide="info"></i>
+              <div><strong>SnappyMail is no longer supported by this panel.</strong>
+                <div>It keeps working, but the panel now installs Roundcube only. Remove it below to install Roundcube instead — mail itself is unaffected, since mailboxes live in Dovecot rather than in the webmail client.</div></div>
+            </div>
+          <?php endif; ?>
           <div style="margin-top:18px;padding-top:16px;border-top:1px solid var(--border-subtle)">
             <button class="btn btn-danger btn-sm" id="wmRemove"><i data-lucide="trash-2"></i>Remove <?= e($wmLabel) ?></button>
           </div>
         <?php else: ?>
-          <p style="color:var(--text-secondary);margin:0 0 16px;max-width:70ch">Give your users a browser-based inbox. Each client installs to its own random URL, pre-configured against this server's local IMAP/SMTP — users just log in with their full email address. Only one can be installed at a time.</p>
-          <div class="grid grid-2" style="gap:14px;max-width:760px">
-            <div class="card"><div class="card-pad">
-              <div class="flex items-center gap-2" style="margin-bottom:6px"><i data-lucide="mail"></i><strong>SnappyMail</strong><span class="badge badge-emerald">Recommended</span></div>
-              <p class="muted" style="font-size:13px;margin:0 0 12px">The maintained Rainloop successor. Fast, modern, and known to work on this server's PHP version.</p>
-              <button class="btn btn-primary" id="smInstall"><i data-lucide="download"></i>Install SnappyMail</button>
-            </div></div>
-            <div class="card"><div class="card-pad">
-              <div class="flex items-center gap-2" style="margin-bottom:6px"><i data-lucide="mail"></i><strong>Roundcube</strong></div>
-              <p class="muted" style="font-size:13px;margin:0 0 12px">The long-standing classic webmail, with zero-config SQLite storage.</p>
-              <button class="btn btn-secondary" id="rcInstall"><i data-lucide="download"></i>Install Roundcube</button>
-            </div></div>
-          </div>
+          <p style="color:var(--text-secondary);margin:0 0 16px;max-width:70ch">Give your users a browser-based inbox. Roundcube installs to its own random URL, pre-configured against this server's local IMAP/SMTP with zero-config SQLite storage — users just log in with their full email address and mailbox password.</p>
+          <div class="card" style="max-width:420px"><div class="card-pad">
+            <div class="flex items-center gap-2" style="margin-bottom:6px"><i data-lucide="mail"></i><strong>Roundcube</strong><span class="badge badge-emerald">Webmail</span></div>
+            <p class="muted" style="font-size:13px;margin:0 0 12px">The long-standing classic webmail client, installed and configured for this mail server in one click.</p>
+            <button class="btn btn-primary" id="rcInstall"><i data-lucide="download"></i>Install Roundcube</button>
+          </div></div>
           <div class="card hidden" id="wmLogCard" style="margin-top:16px">
             <div class="card-header"><h3>Install output</h3></div>
             <pre class="mono" id="wmLog" style="margin:0;padding:16px;font-size:12px;line-height:1.55;white-space:pre-wrap;max-height:40vh;overflow:auto"></pre>
@@ -303,8 +346,6 @@ document.addEventListener('DOMContentLoaded', () => {
     btn.disabled = false; btn.innerHTML = orig; if (window.lucide) lucide.createIcons();
   });
 
-  document.getElementById('smInstall')?.addEventListener('click', (e) =>
-    runStream(e.currentTarget, 'snappymail-install', 'wmLog', 'wmLogCard', 'SnappyMail installed', '<i data-lucide="download"></i>Install SnappyMail'));
   document.getElementById('rcInstall')?.addEventListener('click', (e) =>
     runStream(e.currentTarget, 'roundcube-install', 'wmLog', 'wmLogCard', 'Roundcube installed', '<i data-lucide="download"></i>Install Roundcube'));
   document.getElementById('wmRemove')?.addEventListener('click', async () => {
@@ -362,6 +403,110 @@ document.addEventListener('DOMContentLoaded', () => {
     const res = await apiPost('mail', { action: 'alias-delete', from: b.dataset.aliasDeleteFrom, to: b.dataset.aliasDeleteTo });
     if (res.ok) { toast('Alias deleted', 'success'); reload(); } else toast(res.error || 'Failed', 'error');
   }));
+
+  // Stats — loaded on demand; parsing the mail log is not free.
+  let statsChart = null, statsLoaded = false;
+  const fmtBytes = (n) => {
+    if (!n) return '0 B';
+    const u = ['B', 'KB', 'MB', 'GB', 'TB']; let i = 0; let v = n;
+    while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; }
+    return (v >= 10 || i === 0 ? Math.round(v) : v.toFixed(1)) + ' ' + u[i];
+  };
+  const mkRow = (cells) => {
+    const tr = document.createElement('tr');
+    cells.forEach(([text, cls, style]) => {
+      const td = document.createElement('td');
+      td.textContent = text; if (cls) td.className = cls; if (style) td.style.cssText = style;
+      tr.append(td);
+    });
+    return tr;
+  };
+  const emptyRow = (body, cols, text) => {
+    const tr = document.createElement('tr'), td = document.createElement('td');
+    td.colSpan = cols; td.className = 'text-tertiary'; td.style.cssText = 'text-align:center;padding:22px'; td.textContent = text;
+    tr.append(td); body.append(tr);
+  };
+
+  function renderStats(s) {
+    const t = s.totals;
+    document.getElementById('stSent').textContent = t.sent.toLocaleString();
+    document.getElementById('stRecv').textContent = t.received.toLocaleString();
+    document.getElementById('stBounced').textContent = t.bounced.toLocaleString();
+    document.getElementById('stDeferred').textContent = t.deferred.toLocaleString();
+    document.getElementById('stRejected').textContent = t.rejected.toLocaleString();
+    document.getElementById('stLogins').textContent = t.logins.toLocaleString();
+    document.getElementById('stAuthFail').textContent = t.auth_failed.toLocaleString();
+    document.getElementById('stQueue').textContent = s.queue.total + (s.queue.deferred ? ' (' + s.queue.deferred + ' deferred)' : '');
+    const stored = s.mailboxes.reduce((a, m) => a + m.bytes, 0);
+    document.getElementById('stStored').textContent = fmtBytes(stored);
+    document.getElementById('stTraffic').textContent = '↑' + fmtBytes(t.bytes_sent) + ' ↓' + fmtBytes(t.bytes_received);
+    document.getElementById('statsSource').textContent = s.source ? 'Source: ' + s.source : '';
+
+    const err = document.getElementById('statsError');
+    if (s.warning) { err.classList.remove('hidden'); document.getElementById('statsErrorText').textContent = s.warning; }
+    else err.classList.add('hidden');
+
+    const ctx = document.getElementById('mailChart');
+    if (ctx && window.Chart) {
+      const labels = s.timeline.map(d => d.date.slice(5));
+      if (statsChart) statsChart.destroy();
+      statsChart = new Chart(ctx, {
+        type: 'line',
+        data: {
+          labels,
+          datasets: [
+            { label: 'Sent', data: s.timeline.map(d => d.sent), borderColor: '#3b82f6', backgroundColor: 'rgba(59,130,246,.10)', fill: true, tension: .35, pointRadius: 0, borderWidth: 2 },
+            { label: 'Received', data: s.timeline.map(d => d.received), borderColor: '#10b981', backgroundColor: 'rgba(16,185,129,.10)', fill: true, tension: .35, pointRadius: 0, borderWidth: 2 },
+            { label: 'Rejected', data: s.timeline.map(d => d.rejected), borderColor: '#f97316', tension: .35, pointRadius: 0, borderWidth: 2 },
+          ],
+        },
+        options: {
+          maintainAspectRatio: false, animation: false,
+          plugins: { legend: { position: 'top', labels: { boxWidth: 8, boxHeight: 8, usePointStyle: true } } },
+          scales: { x: { grid: { display: false } }, y: { beginAtZero: true, grid: { color: 'rgba(255,255,255,.05)' }, ticks: { precision: 0 } } },
+        },
+      });
+    }
+
+    const senders = document.getElementById('stSenders'); senders.innerHTML = '';
+    s.top_senders.forEach(r => senders.append(mkRow([[r.address, 'mono'], [String(r.count), 'mono', 'text-align:right']])));
+    if (!s.top_senders.length) emptyRow(senders, 2, 'No outbound mail in this period.');
+
+    const recips = document.getElementById('stRecipients'); recips.innerHTML = '';
+    s.top_recipients.forEach(r => recips.append(mkRow([[r.address, 'mono'], [String(r.count), 'mono', 'text-align:right']])));
+    if (!s.top_recipients.length) emptyRow(recips, 2, 'No inbound mail in this period.');
+
+    const boxes = document.getElementById('stMailboxes'); boxes.innerHTML = '';
+    s.mailboxes.forEach(m => boxes.append(mkRow([
+      [m.email, 'mono'], [String(m.messages), 'mono'], [String(m.unread), 'mono'], [fmtBytes(m.bytes), 'mono', 'text-align:right'],
+    ])));
+    if (!s.mailboxes.length) emptyRow(boxes, 4, 'No maildirs on disk yet.');
+
+    const probs = document.getElementById('stProblems'); probs.innerHTML = '';
+    s.recent.forEach(p => probs.append(mkRow([
+      [p.time, 'mono text-tertiary'], [p.kind], [p.address, 'mono'], [p.detail, 'text-tertiary', 'white-space:normal'],
+    ])));
+    if (!s.recent.length) emptyRow(probs, 4, 'No bounced, deferred or rejected mail — nice.');
+  }
+
+  async function loadStats() {
+    const days = +document.getElementById('statsDays').value;
+    const err = document.getElementById('statsError');
+    document.getElementById('statsChartHint').textContent = 'Messages per day · loading…';
+    const res = await apiPost('mail', { action: 'stats', days });
+    document.getElementById('statsChartHint').textContent = 'Messages per day';
+    if (!res.ok) {
+      err.classList.remove('hidden');
+      document.getElementById('statsErrorText').textContent = res.error || 'Could not collect mail statistics.';
+      return;
+    }
+    renderStats(res);
+  }
+  document.getElementById('statsRefresh')?.addEventListener('click', loadStats);
+  document.getElementById('statsDays')?.addEventListener('change', loadStats);
+  document.querySelector('[data-tab-target="mail-stats"]')?.addEventListener('click', () => {
+    if (!statsLoaded) { statsLoaded = true; loadStats(); }
+  });
 
   // DNS
   document.getElementById('dnsPublish')?.addEventListener('click', async (e) => {

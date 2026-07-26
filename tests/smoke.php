@@ -123,6 +123,24 @@ $check(empty(upd_install_package('../bad')['ok']), 'unsafe package name was acce
 $disabledCron = cron_parse_job_line('15 3 * * 1 /usr/bin/example', 4, false);
 $check(($disabledCron['enabled'] ?? true) === false && ($disabledCron['schedule'] ?? '') === '15 3 * * 1', 'disabled cron job parsing failed');
 
+// Fail2Ban module: files, RBAC routing and input validation.
+require APP_ROOT . '/lib/mod_fail2ban.php';
+$check(is_file(APP_ROOT . '/api/fail2ban.php'), 'Fail2Ban API endpoint is missing');
+$check(api_route_owner('fail2ban') === 'firewall' && role_route_allowed('firewall', 'operator') && !role_route_allowed('firewall', 'developer'), 'Fail2Ban API is not scoped to the firewall module');
+$check(empty(f2b_action('unban', 'sshd', 'not-an-ip')['ok']) && empty(f2b_action('unban', 'bad jail', '198.51.100.7')['ok']), 'Fail2Ban ban/unban input validation failed');
+$check(empty(f2b_action('drop', 'sshd', '198.51.100.7')['ok']), 'an unknown Fail2Ban action was accepted');
+
+// Docker Compose: availability is reported with a reason the UI can act on.
+require APP_ROOT . '/lib/mod_compose.php';
+$composeAvail = compose_availability();
+$check(array_key_exists('available', $composeAvail) && array_key_exists('installable', $composeAvail) && array_key_exists('reason', $composeAvail), 'compose availability does not report why Compose is missing');
+$check($composeAvail['available'] || $composeAvail['reason'] !== '', 'unavailable Compose reported no reason');
+$storeApp = compose_catalog_list()[0] ?? [];
+$check(!empty($storeApp['logo']) && strpos($storeApp['logo'], 'logos/') !== false, 'App Store entries carry no official logo');
+foreach (compose_catalog() as $storeKey => $storeEntry) {
+    $check(!empty($storeEntry['logo']) && is_file(APP_ROOT . '/assets/' . $storeEntry['logo']), 'App Store logo file is missing for ' . $storeKey);
+}
+
 $helperSource = (string) file_get_contents(APP_ROOT . '/bin/nebula-helper');
 $check(strpos($helperSource, 'server_name $DOMAIN;') !== false, 'site vhost still adds an implicit hostname');
 $check(strpos($helperSource, '-d "www.$DOMAIN"') === false, 'SSL issuance still requests an implicit www hostname');
@@ -135,9 +153,20 @@ $check(strpos($helperSource, 'systemd-run --quiet') !== false, 'PHP-FPM reload i
 $check(strpos($helperSource, 'site-list)') !== false && strpos($helperSource, 'site-php)') !== false, 'website recovery or PHP reassignment helper is missing');
 $check(strpos($helperSource, 'php-extension)') !== false && strpos($helperSource, 'php-ini-replace)') !== false, 'expanded PHP management helper actions are missing');
 $check(strpos($helperSource, 'pma-signon)') !== false && strpos($helperSource, "SignonSession") !== false, 'phpMyAdmin signed signon support is missing');
-$check(strpos($helperSource, 'snappymail-install)') !== false && strpos($helperSource, 'webmail-remove)') !== false, 'SnappyMail installer or generic webmail remover is missing');
+$check(strpos($helperSource, 'roundcube-install)') !== false && strpos($helperSource, 'webmail-remove)') !== false, 'Roundcube installer or generic webmail remover is missing');
+$check(strpos($helperSource, 'snappymail-install)') === false, 'SnappyMail installer is still present (Roundcube is the only supported webmail)');
+$check(strpos($helperSource, 'compose-install)') !== false, 'Docker Compose installer helper action is missing');
+$check(strpos($helperSource, 'f2b-status)') !== false && strpos($helperSource, 'f2b-unban|f2b-ban)') !== false, 'Fail2Ban helper actions are missing');
+$check(strpos($helperSource, 'mail-stats)') !== false, 'mail statistics helper action is missing');
 $check(strpos($helperSource, 'read -r email hash || [[ -n "$email" ]]') !== false && strpos($helperSource, 'read -r d || [[ -n "$d" ]]') !== false, 'mail-apply drops the final line without a trailing newline (single-mailbox login bug)');
-$check(function_exists('mail_webmail_install') && function_exists('mail_webmail_remove') && function_exists('mail_webmail_installed'), 'generic webmail (Roundcube/SnappyMail) functions are missing');
+$check(function_exists('mail_webmail_install') && function_exists('mail_webmail_remove') && function_exists('mail_webmail_installed'), 'webmail functions are missing');
+$snappy = mail_webmail_install('snappymail');
+$check(empty($snappy['ok']) && stripos((string) ($snappy['error'] ?? ''), 'roundcube') !== false, 'SnappyMail is still installable');
+// Mail statistics: syslog timestamps carry no year, so a "future" stamp is last year's.
+$check(mail_log_time('Jan 02 03:04:05 host postfix/smtp[1]: x') !== null, 'syslog mail-log timestamps are not parsed');
+$check(mail_log_time('not a log line') === null, 'a non-log line was parsed as a timestamp');
+$check(mail_log_time(date('M d H:i:s', strtotime('+40 days')) . ' host postfix/smtp[1]: x') < time(), 'a year-less future timestamp was not rolled back a year');
+$check(mail_log_reason('Jul 01 00:00:00 h postfix/smtp[1]: A1: to=<a@b>, status=bounced (host said: 550 no such user)') === 'host said: 550 no such user', 'the SMTP reason was not extracted from a status line');
 $pmaSource = (string) file_get_contents(APP_ROOT . '/lib/mod_pma.php');
 $check(preg_match("/session_write_close\(\);\s*session_id\(''\);\s*session_name\('NebulaPmaSignon'\)/", $pmaSource) === 1, 'phpMyAdmin signon session is not isolated from the panel session ID');
 $check(strpos($helperSource, 'cert-upload)') !== false && strpos($helperSource, 'openssl x509') !== false, 'custom certificate installation is missing');

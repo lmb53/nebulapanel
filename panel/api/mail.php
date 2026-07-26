@@ -1,7 +1,8 @@
 <?php
 /**
  * api/mail — GET status/config; POST actions for the mail stack, mailboxes,
- * aliases, DKIM/DNS and Roundcube. Streamed installs use ?stream=1.
+ * aliases, DKIM/DNS, statistics and Roundcube webmail. Streamed installs use
+ * ?stream=1.
  */
 require APP_ROOT . '/lib/mod_mail.php';
 
@@ -32,11 +33,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         case 'reapply':
             $res = mail_apply();
             break;
+        case 'stats':
+            $res = mail_stats((int) ($body['days'] ?? 30));
+            break;
         case 'roundcube-install':
             $res = mail_webmail_install('roundcube', $emit);
-            break;
-        case 'snappymail-install':
-            $res = mail_webmail_install('snappymail', $emit);
             break;
         case 'roundcube-remove':
         case 'webmail-remove':

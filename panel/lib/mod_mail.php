@@ -118,6 +118,202 @@ function mail_diag(): array
     return ['ok' => true, 'output' => $summary . $out];
 }
 
+// --- Statistics -------------------------------------------------------------
+
+/**
+ * Aggregate mail activity for the last $days days.
+ *
+ * The helper hands back the raw (root-readable) Postfix/Dovecot log plus maildir
+ * sizes; the counting happens here so the privileged surface stays a dumb reader.
+ * Postfix logs one `status=` line per recipient, and the queue-id links it back
+ * to the `from=` line, which is how senders/recipients are attributed.
+ */
+function mail_stats(int $days = 30): array
+{
+    $days = max(1, min(365, $days));
+    $out = [
+        'ok'          => true,
+        'days'        => $days,
+        'source'      => '',
+        'generated'   => date('c'),
+        'totals'      => ['sent' => 0, 'received' => 0, 'bounced' => 0, 'deferred' => 0, 'rejected' => 0,
+                          'logins' => 0, 'auth_failed' => 0, 'bytes_sent' => 0, 'bytes_received' => 0],
+        'queue'       => ['total' => 0, 'deferred' => 0],
+        'timeline'    => [],   // [ ['date'=>'YYYY-MM-DD','sent'=>n,'received'=>n,'rejected'=>n], … ]
+        'top_senders' => [],
+        'top_recipients' => [],
+        'mailboxes'   => [],
+        'recent'      => [],
+        'warning'     => '',
+    ];
+    if (!helper_available()) {
+        return ['ok' => false, 'error' => 'Privileged helper not installed. Re-run install.sh.'];
+    }
+    [$code, $raw] = helper_cmd('mail-stats ' . $days, 120);
+    if ($code !== 0) {
+        $err = trim($raw);
+        if (stripos($err, 'unknown command') !== false) {
+            $err = 'The privileged helper on this server is out of date. Update the panel (Panel Updates) or re-run install.sh, then try again.';
+        }
+        return ['ok' => false, 'error' => $err ?: 'Could not collect mail statistics.'];
+    }
+
+    // Seed the timeline so quiet days still show up on the chart.
+    $buckets = [];
+    for ($i = $days - 1; $i >= 0; $i--) {
+        $d = date('Y-m-d', strtotime("-$i days"));
+        $buckets[$d] = ['date' => $d, 'sent' => 0, 'received' => 0, 'rejected' => 0];
+    }
+    $cutoff = strtotime("-$days days");
+
+    $senders = $recipients = [];
+    $qidFrom = $qidSize = [];
+    $recent = [];
+    $inLog = false;
+
+    foreach (preg_split('/\r?\n/', $raw) as $line) {
+        if (!$inLog) {
+            if ($line === '== log ==') { $inLog = true; continue; }
+            if (strpos($line, "mailbox\t") === 0) {
+                $c = explode("\t", $line);
+                $out['mailboxes'][] = [
+                    'email'    => $c[1] ?? '',
+                    'bytes'    => (int) ($c[2] ?? 0),
+                    'messages' => (int) ($c[3] ?? 0),
+                    'unread'   => (int) ($c[4] ?? 0),
+                ];
+                continue;
+            }
+            $kv = explode('=', $line, 2);
+            if (count($kv) === 2) {
+                if ($kv[0] === 'source') { $out['source'] = $kv[1]; }
+                elseif ($kv[0] === 'queue_total') { $out['queue']['total'] = (int) $kv[1]; }
+                elseif ($kv[0] === 'queue_deferred') { $out['queue']['deferred'] = (int) $kv[1]; }
+            }
+            continue;
+        }
+        if ($line === '') { continue; }
+
+        $ts = mail_log_time($line);
+        if ($ts !== null && $ts < $cutoff) { continue; }
+        $day = $ts !== null ? date('Y-m-d', $ts) : null;
+        $bump = static function (string $key) use (&$buckets, $day): void {
+            if ($day !== null && isset($buckets[$day])) { $buckets[$day][$key]++; }
+        };
+
+        // qmgr publishes the envelope sender + size once per queue id.
+        if (preg_match('/: ([0-9A-F]{6,}): from=<([^>]*)>, size=(\d+)/i', $line, $m)) {
+            $qidFrom[$m[1]] = strtolower($m[2]);
+            $qidSize[$m[1]] = (int) $m[3];
+            continue;
+        }
+
+        if (preg_match('/: ([0-9A-F]{6,}): to=<([^>]*)>.*?status=(\w+)/i', $line, $m)) {
+            [$all, $qid, $to, $status] = $m;
+            $to = strtolower($to);
+            $status = strtolower($status);
+            $size = $qidSize[$qid] ?? 0;
+            $from = $qidFrom[$qid] ?? '';
+            // Local delivery goes through the virtual/dovecot transport; anything
+            // else left this server for a remote MTA.
+            $inbound = (bool) preg_match('/relay=(virtual|dovecot|local)|delivered to (maildir|mailbox)/i', $line);
+            if ($status === 'sent') {
+                if ($inbound) {
+                    $out['totals']['received']++;
+                    $out['totals']['bytes_received'] += $size;
+                    $bump('received');
+                    if ($to !== '') { $recipients[$to] = ($recipients[$to] ?? 0) + 1; }
+                } else {
+                    $out['totals']['sent']++;
+                    $out['totals']['bytes_sent'] += $size;
+                    $bump('sent');
+                    if ($from !== '') { $senders[$from] = ($senders[$from] ?? 0) + 1; }
+                }
+            } elseif ($status === 'bounced' || $status === 'expired') {
+                $out['totals']['bounced']++;
+                if (count($recent) < 40) {
+                    $recent[] = ['time' => $ts ? date('Y-m-d H:i', $ts) : '', 'kind' => 'bounced', 'address' => $to, 'detail' => mail_log_reason($line)];
+                }
+            } elseif ($status === 'deferred') {
+                $out['totals']['deferred']++;
+                if (count($recent) < 40) {
+                    $recent[] = ['time' => $ts ? date('Y-m-d H:i', $ts) : '', 'kind' => 'deferred', 'address' => $to, 'detail' => mail_log_reason($line)];
+                }
+            }
+            continue;
+        }
+
+        if (stripos($line, 'NOQUEUE: reject') !== false || stripos($line, 'reject: RCPT') !== false) {
+            $out['totals']['rejected']++;
+            $bump('rejected');
+            if (count($recent) < 40 && preg_match('/to=<([^>]*)>/', $line, $m)) {
+                $recent[] = ['time' => $ts ? date('Y-m-d H:i', $ts) : '', 'kind' => 'rejected', 'address' => strtolower($m[1]), 'detail' => mail_log_reason($line)];
+            }
+            continue;
+        }
+
+        if (preg_match('/(imap|pop3)-login: Login: user=<([^>]*)>/i', $line, $m)) {
+            $out['totals']['logins']++;
+            continue;
+        }
+        if (stripos($line, 'auth failed') !== false || stripos($line, 'authentication failure') !== false) {
+            $out['totals']['auth_failed']++;
+        }
+    }
+
+    arsort($senders);
+    arsort($recipients);
+    $top = static function (array $counts): array {
+        $list = [];
+        foreach (array_slice($counts, 0, 8, true) as $addr => $n) {
+            $list[] = ['address' => $addr, 'count' => $n];
+        }
+        return $list;
+    };
+    $out['top_senders'] = $top($senders);
+    $out['top_recipients'] = $top($recipients);
+    $out['timeline'] = array_values($buckets);
+    usort($out['mailboxes'], fn($a, $b) => $b['bytes'] <=> $a['bytes']);
+    $out['recent'] = $recent;
+    if ($out['totals']['sent'] + $out['totals']['received'] === 0) {
+        $out['warning'] = 'No delivery activity found in the mail log yet' . ($out['source'] !== '' ? ' (' . $out['source'] . ')' : '') . '.';
+    }
+    return $out;
+}
+
+/** Parse a syslog-style timestamp ("Jul 26 12:00:01") into a unix time. */
+function mail_log_time(string $line): ?int
+{
+    if (preg_match('/^(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2})/', $line, $m)) {
+        $t = strtotime($m[1]);
+        return $t === false ? null : $t;
+    }
+    if (!preg_match('/^([A-Z][a-z]{2}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2})/', $line, $m)) {
+        return null;
+    }
+    $t = strtotime($m[1] . ' ' . date('Y'));
+    if ($t === false) {
+        return null;
+    }
+    // Syslog omits the year: a "future" stamp is really last year's log.
+    if ($t > time() + 86400) {
+        $t = strtotime($m[1] . ' ' . (date('Y') - 1));
+    }
+    return $t === false ? null : $t;
+}
+
+/** The human-readable tail of a Postfix status line (the SMTP reason). */
+function mail_log_reason(string $line): string
+{
+    if (preg_match('/status=\w+ \((.*)\)\s*$/', $line, $m)) {
+        return mb_substr(trim($m[1]), 0, 180);
+    }
+    if (preg_match('/reject: RCPT[^:]*: (.*)$/', $line, $m)) {
+        return mb_substr(trim($m[1]), 0, 180);
+    }
+    return mb_substr(trim(substr($line, strpos($line, ']:') !== false ? strpos($line, ']:') + 2 : 0)), 0, 180);
+}
+
 /** Install the mail stack (streamed). */
 function mail_setup(?callable $onOutput = null): array
 {
@@ -470,10 +666,11 @@ function mail_dns_publish(string $domain): array
     return $res;
 }
 
-// --- Webmail (Roundcube or SnappyMail) --------------------------------------
-// One webmail client is active at a time. State lives under the 'webmail' key;
-// older installs that predate SnappyMail keep their record under 'roundcube',
-// which is read transparently here.
+// --- Webmail (Roundcube) ----------------------------------------------------
+// Roundcube is the only webmail client the panel installs. State lives under the
+// 'webmail' key; older installs keep their record under 'roundcube', which is
+// read transparently here. Installs made by earlier panel versions that chose
+// SnappyMail are still recognised and removable — just no longer installable.
 
 /** The active webmail record, or null. Always carries a 'kind'. */
 function mail_webmail(): ?array
@@ -496,7 +693,8 @@ function mail_webmail(): ?array
 function mail_webmail_label(?string $kind = null): string
 {
     $kind = $kind ?? (mail_webmail()['kind'] ?? '');
-    return $kind === 'snappymail' ? 'SnappyMail' : ($kind === 'roundcube' ? 'Roundcube' : 'Webmail');
+    // 'snappymail' only ever appears for installs made by an older panel build.
+    return $kind === 'snappymail' ? 'SnappyMail (legacy)' : ($kind === 'roundcube' ? 'Roundcube' : 'Webmail');
 }
 
 function mail_webmail_installed(): bool
@@ -505,20 +703,19 @@ function mail_webmail_installed(): bool
     return is_array($w) && !empty($w['dir']) && is_dir($w['dir']) && is_file($w['dir'] . '/index.php');
 }
 
-/** Shared installer for either client. $kind selects the helper action. */
-function mail_webmail_install(string $kind, ?callable $onOutput = null): array
+/** Install the webmail client. Roundcube is the only supported client. */
+function mail_webmail_install(string $kind = 'roundcube', ?callable $onOutput = null): array
 {
+    if ($kind !== 'roundcube') {
+        return ['ok' => false, 'error' => 'Roundcube is the only webmail client this panel installs.'];
+    }
     if (!helper_available()) {
         return ['ok' => false, 'error' => 'Privileged helper not installed.'];
-    }
-    if (!in_array($kind, ['roundcube', 'snappymail'], true)) {
-        return ['ok' => false, 'error' => 'Unknown webmail client.'];
     }
     if (mail_webmail_installed()) {
         return ['ok' => false, 'error' => 'A webmail client is already installed. Remove it first.'];
     }
-    $prefix = $kind === 'snappymail' ? 'snappymail-' : 'webmail-';
-    $name = $prefix . bin2hex(random_bytes(4));
+    $name = 'webmail-' . bin2hex(random_bytes(4));
     $target = dirname(APP_ROOT) . '/' . $name;
     $args = $kind . '-install ' . escapeshellarg($target);
     [$code, $out] = $onOutput ? helper_cmd_stream($args, $onOutput, 900) : helper_cmd($args, 900);
@@ -570,4 +767,5 @@ function mail_webmail_remove(): array
 function mail_roundcube(): ?array { $w = mail_webmail(); return ($w && $w['kind'] === 'roundcube') ? $w : null; }
 function mail_roundcube_installed(): bool { $w = mail_webmail(); return $w !== null && $w['kind'] === 'roundcube' && mail_webmail_installed(); }
 function mail_roundcube_install(?callable $onOutput = null): array { return mail_webmail_install('roundcube', $onOutput); }
+
 function mail_roundcube_remove(): array { return mail_webmail_remove(); }

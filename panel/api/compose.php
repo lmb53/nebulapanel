@@ -6,9 +6,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     require_post();
     csrf_check();
     require_capability('docker.manage');
-    if (!compose_available()) {
-        json_out(['ok' => false, 'error' => 'Docker Compose is not available on this server.'], 400);
-    }
     $body = read_json_body();
     $action = (string) ($body['action'] ?? '');
     $name = (string) ($body['name'] ?? '');
@@ -22,7 +19,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         };
     }
 
+    // Everything except installing Compose itself needs a working Compose CLI.
+    // Report *why* it is missing rather than a bare "not available".
+    if ($action !== 'install-compose' && !compose_available()) {
+        $res = ['ok' => false, 'error' => compose_availability()['reason']];
+        if ($streaming) {
+            stream_json_event(['type' => 'result', 'result' => $res]);
+            exit;
+        }
+        json_out($res, 400);
+    }
+
     switch ($action) {
+        case 'install-compose':
+            $res = compose_install($emit);
+            break;
         case 'save':
             $res = compose_save($name, (string) ($body['content'] ?? ''), (bool) ($body['create'] ?? false));
             break;
@@ -62,9 +73,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 }
 
 require_capability('docker.manage');
+$avail = compose_availability();
 json_out([
-    'ok'        => true,
-    'available' => compose_available(),
-    'stacks'    => compose_available() ? compose_list() : [],
-    'catalog'   => compose_catalog_list(),
+    'ok'          => true,
+    'available'   => $avail['available'],
+    'installable' => $avail['installable'],
+    'reason'      => $avail['reason'],
+    'bin'         => $avail['bin'],
+    'stacks'      => $avail['available'] ? compose_list() : [],
+    'catalog'     => compose_catalog_list(),
 ]);
