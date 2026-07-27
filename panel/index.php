@@ -81,11 +81,18 @@ switch ($route) {
 // Bearer API authentication happens before the session guard. Tokens have an
 // identity, role, expiry and endpoint scopes, and never use CSRF.
 // --------------------------------------------------------------------------
-if (strpos($route, 'api/') === 0 && preg_match('/^Bearer\s+(.+)$/i', (string) ($_SERVER['HTTP_AUTHORIZATION'] ?? ''), $bearer)) {
+if (strpos($route, 'api/') === 0) {
+    // API-token helpers are also needed to distinguish an ordinary browser
+    // session from a bearer-authenticated request during scope enforcement.
+    // Load them for every API route, not only when an Authorization header is
+    // present; otherwise normal session API calls fatal before reaching the
+    // endpoint or the structured error handler.
     require_once APP_ROOT . '/lib/mod_api.php';
-    if (!api_token_authenticate(trim($bearer[1]))) {
+}
+if (strpos($route, 'api/') === 0
+    && preg_match('/^Bearer\s+(.+)$/i', (string) ($_SERVER['HTTP_AUTHORIZATION'] ?? ''), $bearer)
+    && !api_token_authenticate(trim($bearer[1]))) {
         json_out(['ok' => false, 'error' => 'Invalid or expired bearer token.'], 401);
-    }
 }
 
 require_auth();
@@ -121,13 +128,13 @@ if (strpos($route, 'api/') === 0) {
     $name = $versioned ? substr($route, 7) : substr($route, 4);
     $file = APP_ROOT . '/api/' . $name . '.php';
     if (preg_match('/^[a-z0-9_-]+$/', $name) && is_file($file)) {
-        if (!can_access_api($name, $method)) {
-            json_out(['ok' => false, 'error' => 'Your role does not have permission for this action.'], 403);
-        }
-        if (is_api_token_authenticated() && !api_token_scope_allows($name, $method)) {
-            json_out(['ok' => false, 'error' => 'The bearer token does not allow this endpoint.'], 403);
-        }
         try {
+            if (!can_access_api($name, $method)) {
+                json_out(['ok' => false, 'error' => 'Your role does not have permission for this action.'], 403);
+            }
+            if (is_api_token_authenticated() && !api_token_scope_allows($name, $method)) {
+                json_out(['ok' => false, 'error' => 'The bearer token does not allow this endpoint.'], 403);
+            }
             require $file;
         } catch (Throwable $error) {
             $safeMessage = redact_secrets($error->getMessage());
