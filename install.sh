@@ -398,8 +398,8 @@ done
 # "View not found" errors in the panel). Every routed view must be present.
 _missing=""
 for v in setup-wizard dashboard websites domains dns files services databases phpmyadmin \
-         ssl php cron firewall logs updates users sshkeys docker backups terminal \
-         sysinfo diagnostics notifications apps selfupdate settings service \
+         mail ssl php cron firewall logs updates users sshkeys docker backups terminal \
+         sysinfo diagnostics notifications apps selfupdate settings api service \
          file-edit login setup layout; do
   [[ -f "$DEST/views/$v.php" ]] || _missing="$_missing $v"
 done

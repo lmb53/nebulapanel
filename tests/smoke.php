@@ -217,6 +217,38 @@ $installerSource = (string) file_get_contents(dirname(__DIR__) . '/install.sh');
 $check(strpos($installerSource, 'api/file-owner.php') === false
     && strpos($installerSource, 'api/file-chmod.php') !== false,
     'installer release validation still requires the removed ownership endpoint');
+
+// The installer aborts on any file it lists but cannot find, so a manifest that
+// drifts ahead of the tree bricks every install ("Deployed source is
+// incomplete"). Both installer manifests are checked against the real tree here
+// rather than by naming individual files, so deletions cannot outrun them.
+$installerList = static function (string $source, string $marker): array {
+    if (!preg_match('/for ' . preg_quote($marker, '/') . ' in (.*?);\s*do/s', $source, $m)) {
+        return [];
+    }
+    $names = preg_split('/\s+/', trim(str_replace('\\', ' ', $m[1])));
+    return array_values(array_filter((array) $names, static fn($n) => $n !== ''));
+};
+
+$requiredFiles = $installerList($installerSource, '_required');
+$check($requiredFiles !== [], 'installer release manifest could not be parsed');
+foreach ($requiredFiles as $required) {
+    $check(is_file(APP_ROOT . '/' . $required),
+        "installer requires $required but it is missing from the panel source");
+}
+
+$installerViews = $installerList($installerSource, 'v');
+$check($installerViews !== [], 'installer view integrity list could not be parsed');
+foreach ($installerViews as $view) {
+    $check(is_file(APP_ROOT . "/views/$view.php"),
+        "installer expects views/$view.php but it is missing from the panel source");
+}
+// Every routed page must also be covered, or the check silently passes on a
+// release that is missing a view the panel will try to render.
+foreach (array_merge(array_keys(nebula_modules()), nebula_extra_routes()) as $route) {
+    $check(in_array($route, $installerViews, true),
+        "installer view integrity check does not cover the routed page '$route'");
+}
 $check(strpos($installerSource, 'repair_legacy_modsecurity_loader') !== false
     && strpos($helperSource, 'repair_legacy_modsecurity_loader') !== false,
     'updates and later package installs do not repair the legacy broken ModSecurity loader');
