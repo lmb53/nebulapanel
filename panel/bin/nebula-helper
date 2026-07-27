@@ -780,8 +780,10 @@ EOF
       rmdir "$SITE_PUBLIC" "$SITE_BASE" >/dev/null 2>&1 || true
       die "nginx config test failed"
     }
-    systemctl restart "php${PHPVER}-fpm"
     systemctl reload nginx
+    # The panel request may itself be running on this PHP version. Defer the
+    # FPM reload until after its JSON response has reached the browser.
+    schedule_php_service reload "$PHPVER"
     echo "created $SITE_ID $DOMAIN -> $SITE_PUBLIC (PHP $PHPVER)"
     ;;
 
@@ -823,8 +825,8 @@ EOF
     OLD_VER="$(awk -F/ '{print $4}' <<<"$OLD_POOL")"
     cp "$OLD_POOL" "$TARGET_DIR/nebula-site-${SITE_ID}.conf"
     if [[ "$OLD_POOL" != "$TARGET_DIR/nebula-site-${SITE_ID}.conf" ]]; then rm -f "$OLD_POOL"; fi
-    systemctl restart "php${PHPVER}-fpm"
-    [[ "$OLD_VER" == "$PHPVER" ]] || systemctl reload "php${OLD_VER}-fpm" >/dev/null 2>&1 || true
+    schedule_php_service reload "$PHPVER"
+    [[ "$OLD_VER" == "$PHPVER" ]] || schedule_php_service reload "$OLD_VER"
     echo "updated $DOMAIN to PHP $PHPVER"
     ;;
 
@@ -931,7 +933,7 @@ EOF
     fi
     for POOL in /etc/php/*/fpm/pool.d/nebula-site-"${SITE_ID}".conf; do
       [[ -f "$POOL" ]] || continue
-      VER="$(awk -F/ '{print $4}' <<<"$POOL")"; rm -f "$POOL"; systemctl reload "php${VER}-fpm" >/dev/null 2>&1 || true
+      VER="$(awk -F/ '{print $4}' <<<"$POOL")"; rm -f "$POOL"; schedule_php_service reload "$VER"
     done
     if [[ "$PURGE" == "archive" ]]; then
       ARCHIVE="$SITES_TRASH/${SITE_ID}-$(date +%Y%m%d-%H%M%S)"

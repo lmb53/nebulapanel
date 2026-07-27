@@ -127,7 +127,25 @@ if (strpos($route, 'api/') === 0) {
         if (is_api_token_authenticated() && !api_token_scope_allows($name, $method)) {
             json_out(['ok' => false, 'error' => 'The bearer token does not allow this endpoint.'], 403);
         }
-        require $file;
+        try {
+            require $file;
+        } catch (Throwable $error) {
+            $safeMessage = redact_secrets($error->getMessage());
+            error_log('API ' . $name . ' failed [' . request_id() . ']: ' . $safeMessage
+                . ' in ' . basename($error->getFile()) . ':' . $error->getLine());
+            $result = [
+                'ok' => false,
+                'error' => $safeMessage !== '' ? $safeMessage : 'Internal API error.',
+                'code' => 'internal_error',
+                'request_id' => request_id(),
+            ];
+            if (($_GET['stream'] ?? '') === '1') {
+                if (!headers_sent()) { stream_json_start(); }
+                stream_json_event(['type' => 'result', 'result' => $result]);
+                exit;
+            }
+            json_out($result, 500);
+        }
         return;
     }
     json_out(['ok' => false, 'error' => 'Unknown endpoint'], 404);

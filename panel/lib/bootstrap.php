@@ -22,6 +22,8 @@ if (!empty($config['debug'])) {
     error_reporting(E_ALL & ~E_DEPRECATED & ~E_NOTICE);
     ini_set('display_errors', '0');
 }
+ini_set('log_errors', '1');
+ini_set('error_log', DATA_DIR . '/php-errors.log');
 
 // Ensure the data dir exists and is writable (setup + audit log live here).
 if (!is_dir(DATA_DIR)) {

@@ -21,15 +21,42 @@ function su_remote_latest(): array
     global $config;
     $repo = (string) ($config['repo'] ?? '');
     $ref = (string) ($config['repo_ref'] ?? 'main');
-    if (!preg_match('#^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$#', $repo)) {
+    if (!preg_match('#^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$#', $repo)
+        || !preg_match('#^[A-Za-z0-9._/-]{1,200}$#', $ref)
+        || str_contains($ref, '..')) {
         return ['ok'=>false,'error'=>'The update repository is invalid.'];
     }
-    $url = 'https://api.github.com/repos/' . $repo . '/commits/' . rawurlencode($ref);
-    [$ok,$body] = http_get($url,30);
-    if (!$ok || $body === '') return ['ok'=>false,'error'=>'Could not reach GitHub (rate limit or network?).'];
-    $json = json_decode($body,true);
-    if (!is_array($json) || !preg_match('/^[a-f0-9]{40}$/i',(string)($json['sha']??''))) return ['ok'=>false,'error'=>'Unexpected response from GitHub.'];
-    return ['ok'=>true,'sha'=>$json['sha'],'message'=>$json['commit']['message']??'','date'=>$json['commit']['committer']['date']??($json['commit']['author']['date']??''),'author'=>$json['commit']['author']['name']??''];
+    $sha = preg_match('/^[a-f0-9]{40}$/i', $ref) ? strtolower($ref) : '';
+    if ($sha === '' && has_cmd('git')) {
+        $remote = 'https://github.com/' . $repo . '.git';
+        foreach (['refs/heads/' . $ref, 'refs/tags/' . $ref . '^{}', 'refs/tags/' . $ref] as $remoteRef) {
+            [$code, $output] = run_cmd('git ls-remote ' . escapeshellarg($remote) . ' ' . escapeshellarg($remoteRef), 30);
+            if ($code === 0 && preg_match('/^([a-f0-9]{40})\s/im', $output, $match)) {
+                $sha = strtolower($match[1]);
+                break;
+            }
+        }
+    }
+    // API fallback supports minimal hosts without Git. A timestamp avoids the
+    // stale branch-head cache that can point codeload at an orphaned commit.
+    if ($sha === '') {
+        $url = 'https://api.github.com/repos/' . $repo . '/commits/' . rawurlencode($ref) . '?nebula=' . time();
+        [$ok, $body] = http_get($url, 30);
+        $json = $ok ? json_decode($body, true) : null;
+        $sha = is_array($json) ? strtolower((string) ($json['sha'] ?? '')) : '';
+    }
+    if (!preg_match('/^[a-f0-9]{40}$/', $sha)) {
+        return ['ok'=>false,'error'=>'Could not resolve the latest GitHub commit. Check outbound HTTPS and Git access.'];
+    }
+    $message = $date = $author = '';
+    [$metaOk, $metaBody] = http_get('https://api.github.com/repos/' . $repo . '/commits/' . $sha, 20);
+    $meta = $metaOk ? json_decode($metaBody, true) : null;
+    if (is_array($meta)) {
+        $message = (string) ($meta['commit']['message'] ?? '');
+        $date = (string) ($meta['commit']['committer']['date'] ?? ($meta['commit']['author']['date'] ?? ''));
+        $author = (string) ($meta['commit']['author']['name'] ?? '');
+    }
+    return ['ok'=>true,'sha'=>$sha,'message'=>$message,'date'=>$date,'author'=>$author];
 }
 
 function su_check(): array
