@@ -6,6 +6,8 @@
  * first-run setup and stored (hashed) under data/admin.json.
  */
 
+$forceHttpsEnv = getenv('NEBULA_FORCE_HTTPS');
+
 return [
     // Display name shown in the sidebar / titles.
     'panel_name' => 'Nebula Panel',
@@ -47,7 +49,9 @@ return [
 
     // Refuse credentials and authenticated traffic over cleartext. Loopback is
     // exempt so a fresh install can be claimed through an SSH port-forward.
-    'force_https' => filter_var(getenv('NEBULA_FORCE_HTTPS') ?: '1', FILTER_VALIDATE_BOOL),
+    'force_https' => $forceHttpsEnv === false
+        ? true
+        : filter_var($forceHttpsEnv, FILTER_VALIDATE_BOOL),
 
     // Login throttling. Failed attempts are tracked per remote IP in data/.
     'login_max_attempts' => 5,
