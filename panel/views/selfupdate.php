@@ -55,8 +55,22 @@ document.addEventListener('DOMContentLoaded', () => {
     statusEl.innerHTML = '<span class="text-tertiary" style="font-size:13px">Checking…</span>';
     msgEl.textContent = '';
     let res;
-    try { res = await apiGet('selfupdate'); } catch (e) { toast('Check failed', 'error'); return; }
-    if (!res.ok) { statusEl.innerHTML = ''; toast(res.error || 'Check failed', 'error'); return; }
+    try {
+      res = await apiGet('selfupdate');
+    } catch (e) {
+      const message = e?.message || 'Could not contact the update source.';
+      badge('badge-red', 'Check failed');
+      msgEl.textContent = message;
+      toast(message, 'error');
+      return;
+    }
+    if (!res.ok) {
+      const message = res.error || 'Could not check for updates.';
+      badge('badge-red', 'Check failed');
+      msgEl.textContent = message;
+      toast(message, 'error');
+      return;
+    }
     document.getElementById('suLatest').textContent =
       res.latest_sha.slice(0, 12) + (res.date ? ' · ' + res.date : '');
     msgEl.textContent = res.message ? 'Latest commit: ' + res.message.split('\n')[0] : '';

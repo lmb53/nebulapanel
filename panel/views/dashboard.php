@@ -1,4 +1,13 @@
-<?php /** @var array $config */ $facts = system_facts(); ?>
+<?php
+/** @var array $config */
+$facts = system_facts();
+$initialCpu = cpu_usage();
+$initialMem = mem_info();
+$initialDisk = disk_info('/');
+$initialLoad = load_avg();
+$initialMemPct = $initialMem ? round($initialMem['used'] / max(1, $initialMem['total']) * 100, 1) : null;
+$initialDiskPct = $initialDisk ? round($initialDisk['used'] / max(1, $initialDisk['total']) * 100, 1) : null;
+?>
 <?php if (!empty($permissionError)): ?><div class="notice notice-warning" style="margin-bottom:16px"><i data-lucide="shield-alert"></i><div><strong>Access restricted</strong><div>Your role does not have permission to open that area.</div></div></div><?php endif; ?>
 <div class="page-header">
   <div>
@@ -15,25 +24,25 @@
     <div class="stat-top">
       <div class="stat-icon" style="background:rgba(59,130,246,.12)"><i data-lucide="cpu" style="color:var(--blue-400)"></i></div>
     </div>
-    <div class="stat-val" data-stat="cpu">–<span style="font-size:14px;color:var(--text-tertiary)">%</span></div>
-    <div class="stat-label" data-stat="load">CPU · Load –, –, –</div>
-    <div class="progress" style="margin-top:10px"><div data-stat-bar="cpu" style="width:0;background:var(--blue-500)"></div></div>
+    <div class="stat-val" data-stat="cpu"><?= e($initialCpu ?? 'n/a') ?><span style="font-size:14px;color:var(--text-tertiary)">%</span></div>
+    <div class="stat-label" data-stat="load">CPU · Load <?= e(implode(', ', array_map(fn($n) => number_format((float) $n, 2), $initialLoad))) ?></div>
+    <div class="progress" style="margin-top:10px"><div data-stat-bar="cpu" style="width:<?= e($initialCpu ?? 0) ?>%;background:var(--blue-500)"></div></div>
   </div>
   <div class="stat-card">
     <div class="stat-top">
       <div class="stat-icon" style="background:rgba(245,158,11,.12)"><i data-lucide="memory-stick" style="color:var(--orange-400)"></i></div>
     </div>
-    <div class="stat-val" data-stat="mem">–<span style="font-size:14px;color:var(--text-tertiary)">%</span></div>
-    <div class="stat-label" data-stat="mem-detail">Memory</div>
-    <div class="progress" style="margin-top:10px"><div data-stat-bar="mem" style="width:0;background:var(--orange-500)"></div></div>
+    <div class="stat-val" data-stat="mem"><?= e($initialMemPct ?? 'n/a') ?><span style="font-size:14px;color:var(--text-tertiary)">%</span></div>
+    <div class="stat-label" data-stat="mem-detail"><?= $initialMem ? e(human_bytes($initialMem['used']) . ' / ' . human_bytes($initialMem['total'])) : 'Memory unavailable' ?></div>
+    <div class="progress" style="margin-top:10px"><div data-stat-bar="mem" style="width:<?= e($initialMemPct ?? 0) ?>%;background:var(--orange-500)"></div></div>
   </div>
   <div class="stat-card">
     <div class="stat-top">
       <div class="stat-icon" style="background:rgba(168,85,247,.12)"><i data-lucide="hard-drive" style="color:var(--purple-400)"></i></div>
     </div>
-    <div class="stat-val" data-stat="disk">–<span style="font-size:14px;color:var(--text-tertiary)">%</span></div>
-    <div class="stat-label" data-stat="disk-detail">Disk /</div>
-    <div class="progress" style="margin-top:10px"><div data-stat-bar="disk" style="width:0;background:var(--purple-500)"></div></div>
+    <div class="stat-val" data-stat="disk"><?= e($initialDiskPct ?? 'n/a') ?><span style="font-size:14px;color:var(--text-tertiary)">%</span></div>
+    <div class="stat-label" data-stat="disk-detail"><?= $initialDisk ? e(human_bytes($initialDisk['used']) . ' / ' . human_bytes($initialDisk['total'])) : 'Disk unavailable' ?></div>
+    <div class="progress" style="margin-top:10px"><div data-stat-bar="disk" style="width:<?= e($initialDiskPct ?? 0) ?>%;background:var(--purple-500)"></div></div>
   </div>
   <div class="stat-card">
     <div class="stat-top">

@@ -46,14 +46,10 @@ $apacheStatus = service_status('apache2');
   <div class="card hidden" id="wsForm" style="margin-bottom:16px">
     <div class="card-header"><h3>Add website</h3></div>
     <div class="card-pad">
-      <div class="grid" style="grid-template-columns:1fr 1fr auto auto auto;gap:12px;align-items:end">
+      <div class="grid" style="grid-template-columns:1fr auto auto auto;gap:12px;align-items:end">
         <div>
           <label class="field-label">Domain</label>
           <input class="input mono" id="wsDomain" placeholder="example.com">
-        </div>
-        <div>
-          <label class="field-label">Document root</label>
-          <input class="input mono" value="Allocated automatically under /srv/nebula/sites" disabled>
         </div>
         <div>
           <label class="field-label">PHP</label>
