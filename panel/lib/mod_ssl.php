@@ -22,7 +22,7 @@ function ssl_certbot_available(): bool
 /** Validate a certificate name / domain. */
 function ssl_domain_ok($d): bool
 {
-    return (bool) preg_match('/^[a-zA-Z0-9]([a-zA-Z0-9.-]{0,251}[a-zA-Z0-9])?$/', (string) $d);
+    return domain_name_ok((string) $d);
 }
 
 function ssl_custom_file(): string

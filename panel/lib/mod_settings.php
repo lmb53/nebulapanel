@@ -53,8 +53,8 @@ function change_admin_password(string $current, string $new): array
     if (!is_setup_complete()) {
         return ['ok' => false, 'error' => 'No admin account exists.'];
     }
-    if (strlen($new) < 12 || strlen($new) > 1024) {
-        return ['ok' => false, 'error' => 'New password must be between 12 and 1024 characters.'];
+    if (($passwordError = panel_password_error($new, (string) ($_SESSION['username'] ?? ''))) !== null) {
+        return ['ok' => false, 'error' => $passwordError];
     }
     $uid = (int) ($_SESSION['uid'] ?? 0);
     $result = with_panel_users_lock(function () use ($uid, $current, $new): array {
@@ -66,7 +66,10 @@ function change_admin_password(string $current, string $new): array
         if ($index === null || empty($users[$index]['hash']) || !password_verify($current, (string) $users[$index]['hash'])) {
             return ['ok' => false, 'invalid_password' => true, 'error' => 'Current password is incorrect.'];
         }
-        $users[$index]['hash'] = password_hash($new, PASSWORD_DEFAULT);
+        $users[$index]['hash'] = panel_password_hash($new);
+        if ($users[$index]['hash'] === false) {
+            return ['ok' => false, 'error' => 'Could not hash the new password.'];
+        }
         $users[$index]['updated'] = date('c');
         $users[$index]['session_version'] = max(1, (int) ($users[$index]['session_version'] ?? 1)) + 1;
         if (!save_panel_users($users)) {

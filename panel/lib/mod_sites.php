@@ -38,9 +38,10 @@ function sites_discover(): array
     $found = [];
     foreach (preg_split('/\r?\n/', trim($output)) as $line) {
         if ($line === '') { continue; }
-        [$domain, $docroot, $php, $ssl] = array_pad(explode("\t", $line, 4), 4, '');
-        if (!sv_domain_ok($domain) || !sv_path_ok($docroot)) { continue; }
+        [$id, $domain, $docroot, $php, $ssl] = array_pad(explode("\t", $line, 5), 5, '');
+        if (!preg_match('/^[a-f0-9]{32}$/', $id) || !sv_domain_ok($domain) || !sv_managed_path_ok($docroot, $id)) { continue; }
         $found[] = [
+            'id' => $id,
             'domain' => $domain,
             'docroot' => $docroot,
             'php' => php_valid_version_for_site($php) ? $php : '',
@@ -74,7 +75,7 @@ function sites_list(): array
             $changed = true;
         } else {
             // Nginx is authoritative for runtime fields after manual changes.
-            foreach (['docroot', 'php', 'ssl', 'server'] as $field) {
+            foreach (['id', 'docroot', 'php', 'ssl', 'server'] as $field) {
                 if (($byDomain[$domain][$field] ?? null) !== $site[$field]) {
                     $byDomain[$domain][$field] = $site[$field];
                     $changed = true;
@@ -103,8 +104,9 @@ function sites_with_runtime(): array
         $site['disk_used'] = 0;
         $site['file_count'] = 0;
         $docroot = (string) ($site['docroot'] ?? '');
-        if (sv_path_ok($docroot)) {
-            [$c, $o] = helper_cmd('site-stats ' . escapeshellarg($docroot), 60);
+        $id = (string) ($site['id'] ?? '');
+        if (sv_managed_path_ok($docroot, $id)) {
+            [$c, $o] = helper_cmd('site-stats ' . escapeshellarg($id), 60);
             if ($c === 0) {
                 [$bytes, $files] = array_pad(explode("\t", trim($o), 2), 2, 0);
                 $site['disk_used'] = max(0, (int) $bytes);
@@ -118,23 +120,30 @@ function sites_with_runtime(): array
     return $sites;
 }
 
-/** Persist the tracked sites (pretty JSON, private perms). */
-function sites_save(array $s): void
+/** Persist the tracked sites (atomic JSON, private perms). */
+function sites_save(array $s): bool
 {
-    file_put_contents(sites_file(), json_encode(array_values($s), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
-    @chmod(sites_file(), 0600);
+    return write_json_file(sites_file(), array_values($s));
 }
 
 /** Validate a domain name. */
 function sv_domain_ok($d): bool
 {
-    return (bool) preg_match('/^[a-zA-Z0-9]([a-zA-Z0-9.-]{0,251}[a-zA-Z0-9])?$/', (string) $d);
+    return domain_name_ok((string) $d);
 }
 
 /** Validate a filesystem path (absolute, safe charset, no traversal). */
 function sv_path_ok($p): bool
 {
     return (bool) preg_match('#^/[A-Za-z0-9._/-]+$#', (string) $p) && strpos((string) $p, '..') === false;
+}
+
+function sv_managed_path_ok(string $path, string $id): bool
+{
+    global $config;
+    if (!preg_match('/^[a-f0-9]{32}$/', $id)) { return false; }
+    $root = rtrim((string) ($config['sites_root'] ?? '/srv/nebula/sites'), '/');
+    return $path === $root . '/' . $id . '/public';
 }
 
 /** Installed PHP-FPM versions reported by the helper (e.g. ["8.1","8.2"]). */
@@ -148,16 +157,11 @@ function php_versions(): array
 }
 
 /** Create a new website (docroot + nginx vhost via the helper). */
-function site_create(string $domain, string $docroot, string $php): array
+function site_create(string $domain, string $php): array
 {
+    $domain = strtolower(rtrim(trim($domain), '.'));
     if (!sv_domain_ok($domain)) {
         return ['ok' => false, 'error' => 'Invalid domain.'];
-    }
-    if ($docroot === '') {
-        $docroot = '/var/www/' . $domain;
-    }
-    if (!sv_path_ok($docroot)) {
-        return ['ok' => false, 'error' => 'Invalid document root.'];
     }
     if (!in_array($php, php_versions(), true)) {
         return ['ok' => false, 'error' => 'PHP version not installed.'];
@@ -167,8 +171,11 @@ function site_create(string $domain, string $docroot, string $php): array
             return ['ok' => false, 'error' => 'A site with that domain already exists.'];
         }
     }
+    $id = bin2hex(random_bytes(16));
+    global $config;
+    $docroot = rtrim((string) ($config['sites_root'] ?? '/srv/nebula/sites'), '/') . '/' . $id . '/public';
     [$c, $o] = helper_cmd(
-        'site-create ' . escapeshellarg($domain) . ' ' . escapeshellarg($docroot) . ' ' . escapeshellarg($php)
+        'site-create ' . escapeshellarg($id) . ' ' . escapeshellarg($domain) . ' ' . escapeshellarg($php)
     );
     if ($c !== 0) {
         return ['ok' => false, 'error' => trim($o) ?: 'site-create failed'];
@@ -177,7 +184,7 @@ function site_create(string $domain, string $docroot, string $php): array
     // created. Enrich that record instead of adding a duplicate row.
     $sites = sites_list();
     $record = [
-        'domain' => $domain, 'docroot' => $docroot, 'php' => $php,
+        'id' => $id, 'domain' => $domain, 'docroot' => $docroot, 'php' => $php,
         'ssl' => false, 'server' => 'nginx', 'created' => date('c'),
     ];
     $recorded = false;
@@ -191,35 +198,45 @@ function site_create(string $domain, string $docroot, string $php): array
     }
     unset($site);
     if (!$recorded) { $sites[] = $record; }
-    sites_save($sites);
+    if (!sites_save($sites)) {
+        // The host mutation succeeded, so make it inactive and recoverable
+        // rather than leaving an untracked live vhost.
+        helper_cmd('site-delete ' . escapeshellarg($id) . ' ' . escapeshellarg($domain) . ' archive');
+        return ['ok' => false, 'error' => 'Website provisioning was rolled back because panel state could not be saved.'];
+    }
     audit('site.create', $domain);
     return ['ok' => true];
 }
 
-/** Delete a website vhost (and its docroot when $purge). */
+/** Archive a managed website and remove its active configuration. */
 function site_delete(string $domain, bool $purge = false): array
 {
+    $domain = strtolower(rtrim(trim($domain), '.'));
     if (!sv_domain_ok($domain)) {
         return ['ok' => false, 'error' => 'Invalid domain.'];
     }
     $sites = sites_list();
-    $docroot = '';
+    $id = '';
     foreach ($sites as $s) {
         if (($s['domain'] ?? '') === $domain) {
-            $docroot = (string) ($s['docroot'] ?? '');
+            $id = (string) ($s['id'] ?? '');
             break;
         }
     }
-    $args = 'site-delete ' . escapeshellarg($domain) . ' ' . ($purge ? 'purge' : 'no');
-    if ($purge && $docroot !== '') {
-        $args .= ' ' . escapeshellarg($docroot);
+    if (!preg_match('/^[a-f0-9]{32}$/', $id)) {
+        return ['ok' => false, 'error' => 'This legacy site has no immutable ID and cannot be deleted by the panel. Migrate it first.'];
     }
+    // Deletion is deliberately recoverable. The helper owns the archive
+    // location, so callers can never turn this into an arbitrary path delete.
+    $args = 'site-delete ' . escapeshellarg($id) . ' ' . escapeshellarg($domain) . ' archive';
     [$c, $o] = helper_cmd($args);
     if ($c !== 0) {
         return ['ok' => false, 'error' => trim($o) ?: 'site-delete failed'];
     }
     $sites = array_values(array_filter($sites, fn($s) => ($s['domain'] ?? '') !== $domain));
-    sites_save($sites);
+    if (!sites_save($sites)) {
+        return ['ok' => false, 'error' => 'The site was archived, but panel state could not be updated. Repair data/sites.json before retrying.'];
+    }
     require_once APP_ROOT . '/lib/mod_dns.php';
     dns_forget_zone($domain);
     audit('site.delete', $domain);
@@ -229,6 +246,7 @@ function site_delete(string $domain, bool $purge = false): array
 /** Issue a Let's Encrypt certificate for a site (certbot --nginx via helper). */
 function site_ssl(string $domain, string $email = ''): array
 {
+    $domain = strtolower(rtrim(trim($domain), '.'));
     if (!sv_domain_ok($domain)) {
         return ['ok' => false, 'error' => 'Invalid domain.'];
     }
@@ -251,7 +269,9 @@ function site_ssl(string $domain, string $email = ''): array
         }
     }
     unset($s);
-    sites_save($sites);
+    if (!sites_save($sites)) {
+        return ['ok' => false, 'error' => 'TLS was issued, but panel state could not be updated.'];
+    }
     audit('site.ssl', $domain);
     return ['ok' => true];
 }
@@ -259,18 +279,24 @@ function site_ssl(string $domain, string $email = ''): array
 /** Switch an existing managed Nginx website to another installed PHP-FPM version. */
 function site_set_php(string $domain, string $version): array
 {
+    $domain = strtolower(rtrim(trim($domain), '.'));
     if (!sv_domain_ok($domain)) { return ['ok' => false, 'error' => 'Invalid domain.']; }
     if (!in_array($version, php_versions(), true)) { return ['ok' => false, 'error' => 'PHP version is not installed.']; }
     $found = false;
+    $id = '';
     foreach (sites_list() as $site) {
-        if (($site['domain'] ?? '') === $domain) { $found = true; break; }
+        if (($site['domain'] ?? '') === $domain) { $found = true; $id = (string) ($site['id'] ?? ''); break; }
     }
     if (!$found) { return ['ok' => false, 'error' => 'Website not found.']; }
-    [$code, $output] = helper_cmd('site-php ' . escapeshellarg($domain) . ' ' . escapeshellarg($version));
+    if (!preg_match('/^[a-f0-9]{32}$/', $id)) { return ['ok' => false, 'error' => 'Legacy site must be migrated before changing PHP.']; }
+    [$code, $output] = helper_cmd('site-php ' . escapeshellarg($id) . ' ' . escapeshellarg($domain) . ' ' . escapeshellarg($version));
     if ($code !== 0) { return ['ok' => false, 'error' => trim($output) ?: 'Could not switch PHP version.']; }
     $sites = sites_list();
     foreach ($sites as &$site) { if (($site['domain'] ?? '') === $domain) { $site['php'] = $version; } }
-    unset($site); sites_save($sites);
+    unset($site);
+    if (!sites_save($sites)) {
+        return ['ok' => false, 'error' => 'PHP was switched, but panel state could not be updated.'];
+    }
     audit('site.php', $domain . ' -> ' . $version);
     return ['ok' => true];
 }

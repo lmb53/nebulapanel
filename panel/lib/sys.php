@@ -6,13 +6,35 @@
  */
 
 /** Run a shell command, return [exitCode, stdout, stderr]. */
+function command_launch_spec(string $cmd)
+{
+    if (PHP_OS_FAMILY === 'Linux' && is_executable('/usr/bin/setsid')) {
+        return ['/usr/bin/setsid', '/bin/sh', '-c', $cmd];
+    }
+    return $cmd;
+}
+
+function terminate_command_process($proc, array $status): void
+{
+    $pid = (int) ($status['pid'] ?? 0);
+    if ($pid > 1 && function_exists('posix_kill') && defined('SIGTERM')) {
+        @posix_kill(-$pid, SIGTERM);
+        usleep(200000);
+        if (defined('SIGKILL')) { @posix_kill(-$pid, SIGKILL); }
+        return;
+    }
+    @proc_terminate($proc);
+    usleep(200000);
+    @proc_terminate($proc, 9);
+}
+
 function run_cmd(string $cmd, int $timeout = 15): array
 {
     if (!function_exists('proc_open')) {
         return [127, '', 'proc_open disabled'];
     }
     $desc = [1 => ['pipe', 'w'], 2 => ['pipe', 'w']];
-    $proc = @proc_open($cmd, $desc, $pipes);
+    $proc = @proc_open(command_launch_spec($cmd), $desc, $pipes);
     if (!is_resource($proc)) {
         return [127, '', 'could not start process'];
     }
@@ -24,18 +46,21 @@ function run_cmd(string $cmd, int $timeout = 15): array
     $truncated = false;
     $timedOut = false;
     $start = microtime(true);
-    $append = static function (string &$target, string $chunk) use ($maxBytes, &$truncated): void {
-        $left = $maxBytes - strlen($target);
+    $capturedBytes = 0;
+    $append = static function (string &$target, string $chunk) use ($maxBytes, &$capturedBytes, &$truncated): void {
+        $left = $maxBytes - $capturedBytes;
         if ($left <= 0) {
             $truncated = true;
             return;
         }
         if (strlen($chunk) > $left) {
             $target .= substr($chunk, 0, $left);
+            $capturedBytes += $left;
             $truncated = true;
             return;
         }
         $target .= $chunk;
+        $capturedBytes += strlen($chunk);
     };
     $status = ['running' => true, 'exitcode' => -1];
     do {
@@ -47,10 +72,12 @@ function run_cmd(string $cmd, int $timeout = 15): array
         }
         if (microtime(true) - $start >= max(1, $timeout)) {
             $timedOut = true;
-            proc_terminate($proc);
+            terminate_command_process($proc, $status);
             break;
         }
-        usleep(50000);
+        $readable = [$pipes[1], $pipes[2]];
+        $write = null; $except = null;
+        @stream_select($readable, $write, $except, 0, 200000);
     } while (true);
     $append($out, (string) stream_get_contents($pipes[1]));
     $append($err, (string) stream_get_contents($pipes[2]));
@@ -64,7 +91,7 @@ function run_cmd(string $cmd, int $timeout = 15): array
     if ($truncated) {
         $err .= ($err === '' ? '' : "\n") . 'Command output was truncated at 2 MB.';
     }
-    return [$code, trim($out), trim($err)];
+    return [$code, $out, $err];
 }
 
 /**
@@ -79,7 +106,7 @@ function run_cmd_stream(string $cmd, callable $onChunk, int $timeout = 15): arra
         return [127, '', 'proc_open disabled'];
     }
     $desc = [1 => ['pipe', 'w'], 2 => ['pipe', 'w']];
-    $proc = @proc_open($cmd, $desc, $pipes);
+    $proc = @proc_open(command_launch_spec($cmd), $desc, $pipes);
     if (!is_resource($proc)) {
         return [127, '', 'could not start process'];
     }
@@ -91,10 +118,12 @@ function run_cmd_stream(string $cmd, callable $onChunk, int $timeout = 15): arra
     $truncated = false;
     $timedOut = false;
     $start = microtime(true);
-    $append = static function (string &$target, string $chunk) use ($maxBytes, &$truncated): void {
-        $left = $maxBytes - strlen($target);
+    $capturedBytes = 0;
+    $append = static function (string &$target, string $chunk) use ($maxBytes, &$capturedBytes, &$truncated): void {
+        $left = $maxBytes - $capturedBytes;
         if ($left <= 0) { $truncated = true; return; }
         $target .= strlen($chunk) > $left ? substr($chunk, 0, $left) : $chunk;
+        $capturedBytes += min(strlen($chunk), $left);
         if (strlen($chunk) > $left) { $truncated = true; }
     };
     $drain = static function ($pipe, string $channel, string &$capture) use ($onChunk, $append): void {
@@ -111,10 +140,12 @@ function run_cmd_stream(string $cmd, callable $onChunk, int $timeout = 15): arra
         if (!$status['running']) { break; }
         if (microtime(true) - $start >= max(1, $timeout)) {
             $timedOut = true;
-            proc_terminate($proc);
+            terminate_command_process($proc, $status);
             break;
         }
-        usleep(50000);
+        $readable = [$pipes[1], $pipes[2]];
+        $write = null; $except = null;
+        @stream_select($readable, $write, $except, 0, 200000);
     } while (true);
     $drain($pipes[1], 'stdout', $out);
     $drain($pipes[2], 'stderr', $err);
@@ -130,7 +161,7 @@ function run_cmd_stream(string $cmd, callable $onChunk, int $timeout = 15): arra
     if ($truncated) {
         $err .= ($err === '' ? '' : "\n") . 'Captured command output was truncated at 2 MB.';
     }
-    return [$code, trim($out), trim($err)];
+    return [$code, $out, $err];
 }
 
 function is_linux(): bool
@@ -185,12 +216,12 @@ function http_download(string $url, string $dest, int $timeout = 300): bool
 /** Run a command as root via passwordless sudo. Returns [code, out, err]. */
 function sudo_cmd(string $cmd, int $timeout = 30): array
 {
-    return run_cmd('sudo -n ' . $cmd . ' 2>&1', $timeout);
+    return helper_cmd('broker-command ' . escapeshellarg(base64_encode($cmd)), $timeout);
 }
 
 function sudo_cmd_stream(string $cmd, callable $onChunk, int $timeout = 30): array
 {
-    return run_cmd_stream('sudo -n ' . $cmd . ' 2>&1', $onChunk, $timeout);
+    return helper_cmd_stream('broker-command ' . escapeshellarg(base64_encode($cmd)), $onChunk, $timeout);
 }
 
 /** Absolute path to the privileged helper (installed by install.sh). */
@@ -211,7 +242,12 @@ function helper_cmd(string $args, int $timeout = 180): array
     if (!helper_available()) {
         return [127, '', 'nebula-helper is not installed (re-run install.sh).'];
     }
-    return sudo_cmd(NEBULA_HELPER . ' ' . $args, $timeout);
+    $started = microtime(true);
+    $result = run_cmd('sudo -n ' . NEBULA_HELPER . ' ' . $args . ' 2>&1', $timeout);
+    $action = preg_split('/\s+/', trim($args), 2)[0] ?? 'unknown';
+    audit('helper.command', 'action=' . $action . ' outcome=' . ((int)$result[0] === 0 ? 'success' : 'failure')
+        . ' exit=' . (int)$result[0] . ' duration_ms=' . (int) round((microtime(true) - $started) * 1000));
+    return $result;
 }
 
 function helper_cmd_stream(string $args, callable $onChunk, int $timeout = 180): array
@@ -219,19 +255,24 @@ function helper_cmd_stream(string $args, callable $onChunk, int $timeout = 180):
     if (!helper_available()) {
         return [127, '', 'nebula-helper is not installed (re-run install.sh).'];
     }
-    return sudo_cmd_stream(NEBULA_HELPER . ' ' . $args, $onChunk, $timeout);
+    $started = microtime(true);
+    $result = run_cmd_stream('sudo -n ' . NEBULA_HELPER . ' ' . $args . ' 2>&1', $onChunk, $timeout);
+    $action = preg_split('/\s+/', trim($args), 2)[0] ?? 'unknown';
+    audit('helper.command', 'action=' . $action . ' outcome=' . ((int)$result[0] === 0 ? 'success' : 'failure')
+        . ' exit=' . (int)$result[0] . ' duration_ms=' . (int) round((microtime(true) - $started) * 1000));
+    return $result;
 }
 
 /** Normalise a sudo/permission failure into a friendly message. */
 function sudo_error(string $out, int $code): string
 {
     if (stripos($out, 'a password is required') !== false || stripos($out, 'may not run sudo') !== false) {
-        return 'Permission denied — the web user needs a sudoers rule for this command (see README).';
+        return 'Permission denied — verify nebula-helper and its single sudoers rule.';
     }
     return trim($out) ?: ('Command failed (exit ' . $code . ').');
 }
 
-/** CPU usage percent, sampled over ~200ms from /proc/stat. */
+/** CPU usage percent derived from the previous cached /proc/stat sample. */
 function cpu_usage(): ?float
 {
     if (!is_readable('/proc/stat')) {
@@ -248,17 +289,15 @@ function cpu_usage(): ?float
         $total = array_sum($vals);
         return [$idle, $total];
     };
-    $a = $read();
-    if (!$a) {
-        return null;
-    }
-    usleep(200000);
-    $b = $read();
-    if (!$b) {
-        return null;
-    }
-    $dTotal = $b[1] - $a[1];
-    $dIdle = $b[0] - $a[0];
+    $current = $read();
+    if (!$current) { return null; }
+    $path = DATA_DIR . '/cache/cpu-sample.json';
+    if (!is_dir(dirname($path))) { @mkdir(dirname($path), 0700, true); }
+    $previous = @json_decode((string) @file_get_contents($path), true);
+    write_json_file($path, ['idle' => $current[0], 'total' => $current[1], 'time' => microtime(true)]);
+    if (!is_array($previous) || !isset($previous['idle'], $previous['total'])) { return null; }
+    $dTotal = $current[1] - (int) $previous['total'];
+    $dIdle = $current[0] - (int) $previous['idle'];
     if ($dTotal <= 0) {
         return null;
     }
@@ -431,7 +470,7 @@ function service_enabled(string $name): ?bool
 
 /**
  * Perform a service action. $action in start|stop|restart|enable|disable.
- * Requires the web user to have a sudoers rule for systemctl (see README).
+ * The requested action is validated by the privileged helper.
  */
 function service_action(string $name, string $action, array $whitelist): array
 {
@@ -441,14 +480,13 @@ function service_action(string $name, string $action, array $whitelist): array
     if (!in_array($action, ['start', 'stop', 'restart', 'enable', 'disable'], true)) {
         return ['ok' => false, 'error' => 'Invalid action.'];
     }
-    $cmd = sprintf('sudo -n systemctl %s %s 2>&1', escapeshellarg($action), escapeshellarg($name));
-    [$code, $out, $err] = run_cmd($cmd, 30);
+    [$code, $out, $err] = helper_cmd(
+        'service-action ' . escapeshellarg($action) . ' ' . escapeshellarg($name),
+        30
+    );
     audit('service.' . $action, $name . ' (exit ' . $code . ')');
     if ($code !== 0) {
         $msg = trim($out . ' ' . $err);
-        if (stripos($msg, 'a password is required') !== false || stripos($msg, 'sudo') !== false) {
-            $msg = 'Permission denied. The web user needs a sudoers rule for systemctl (see README).';
-        }
         return ['ok' => false, 'error' => $msg ?: 'Command failed (exit ' . $code . ').'];
     }
     return ['ok' => true, 'status' => service_status($name), 'enabled' => service_enabled($name)];

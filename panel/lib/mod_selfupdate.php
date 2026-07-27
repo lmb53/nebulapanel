@@ -58,7 +58,23 @@ function su_apply(): array
 
     [$listCode,$listing,$listError]=run_cmd('tar -tzf '.escapeshellarg($tar),120);
     if($listCode!==0){run_cmd('rm -rf '.escapeshellarg($work));return ['ok'=>false,'error'=>'Downloaded archive is invalid: '.trim($listError?:$listing),'log'=>$log];}
-    foreach(preg_split('/\r?\n/',$listing) as $entry){if($entry===''||str_starts_with($entry,'/')||preg_match('#(^|/)\.\.(/|$)#',$entry)){run_cmd('rm -rf '.escapeshellarg($work));return ['ok'=>false,'error'=>'Downloaded archive contains an unsafe path.','log'=>$log];}}
+    $topLevels=[];
+    foreach(preg_split('/\r?\n/',$listing) as $entry){
+        if($entry===''||str_starts_with($entry,'/')||preg_match('#(^|/)\.\.(/|$)#',$entry)){
+            run_cmd('rm -rf '.escapeshellarg($work));
+            return ['ok'=>false,'error'=>'Downloaded archive contains an unsafe path.','log'=>$log];
+        }
+        $topLevels[explode('/',$entry,2)[0]]=true;
+    }
+    if(count($topLevels)!==1){
+        run_cmd('rm -rf '.escapeshellarg($work));
+        return ['ok'=>false,'error'=>'Release archive must contain exactly one top-level directory.','log'=>$log];
+    }
+    [$typesCode,$types]=run_cmd('tar -tvzf '.escapeshellarg($tar),120);
+    if($typesCode!==0||preg_match('/^[^d-]/m',$types)){
+        run_cmd('rm -rf '.escapeshellarg($work));
+        return ['ok'=>false,'error'=>'Release archive contains links or special files.','log'=>$log];
+    }
 
     $add('Extracting and validating…');
     [$extractCode,$extractOutput]=run_cmd('tar -xzf '.escapeshellarg($tar).' -C '.escapeshellarg($work).' 2>&1',120);
@@ -101,7 +117,10 @@ function su_php_cli(): string
 
 function su_find_panel_dir(string $root): ?string
 {
-    $iterator=new RecursiveIteratorIterator(new RecursiveDirectoryIterator($root,FilesystemIterator::SKIP_DOTS));
-    foreach($iterator as $file){if($file->getFilename()==='bootstrap.php'&&basename(dirname($file->getPathname()))==='lib'){$dir=dirname(dirname($file->getPathname()));if(is_file($dir.'/index.php'))return $dir;}}
-    return null;
+    $entries=array_values(array_filter(scandir($root)?:[],fn($entry)=>$entry!=='.'&&$entry!=='..'&&$entry!=='src.tar.gz'));
+    if(count($entries)!==1)return null;
+    $top=$root.'/'.$entries[0];
+    $candidates=[$top.'/panel',$top];
+    $matches=array_values(array_filter($candidates,fn($dir)=>is_file($dir.'/index.php')&&is_file($dir.'/lib/bootstrap.php')));
+    return count($matches)===1?$matches[0]:null;
 }

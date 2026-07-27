@@ -1,8 +1,7 @@
 <?php
 /**
- * Updates module — inspects and applies apt package updates.
- * Read operations use the unprivileged apt client; refresh/upgrade need a
- * sudoers rule for apt-get (see README).
+ * Updates module — inspects and applies apt package updates through the
+ * validating privileged helper.
  */
 
 /** Is the apt package manager available? */

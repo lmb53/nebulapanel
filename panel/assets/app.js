@@ -3,7 +3,16 @@
   const META = (n) => document.querySelector(`meta[name="${n}"]`)?.content || '';
   const BASE = META('base-url');
   const CSRF = META('csrf-token');
-  const api = (endpoint) => `${BASE}/?r=api/${endpoint}`;
+  const api = (endpoint) => {
+    endpoint = String(endpoint);
+    const separator = endpoint.indexOf('&');
+    const name = separator === -1 ? endpoint : endpoint.slice(0, separator);
+    const query = separator === -1 ? '' : endpoint.slice(separator + 1);
+    const target = new URL(`${BASE || ''}/`, window.location.origin);
+    target.searchParams.set('r', `api/${name}`);
+    new URLSearchParams(query).forEach((value, key) => target.searchParams.append(key, value));
+    return target.pathname + target.search;
+  };
 
   // Apply the persisted theme immediately (before any DOMContentLoaded handler,
   // e.g. code editors) so light/dark is settled when views initialise.
@@ -24,9 +33,14 @@
         headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': CSRF, Accept: 'application/json' },
         body: JSON.stringify(body || {}),
       });
+      const type = (r.headers.get('content-type') || '').toLowerCase();
       const text = await r.text();
+      if (!type.includes('application/json')) {
+        return { ok: false, error: `Unexpected response type (HTTP ${r.status})` };
+      }
       try {
-        return JSON.parse(text);
+        const data = JSON.parse(text);
+        return r.ok ? data : { ...data, ok: false, error: data.message || data.error || `HTTP ${r.status}` };
       } catch (e) {
         return {
           ok: false,
@@ -459,7 +473,7 @@
     document.querySelectorAll('[data-fm-delete]').forEach((btn) => {
       btn.addEventListener('click', async () => {
         const path = btn.dataset.fmDelete;
-        if (!confirm(`Delete "${path}"? This cannot be undone.`)) return;
+        if (!confirm(`Move "${path}" to the administrator recovery trash?`)) return;
         const res = await apiPost('file-delete', { path });
         if (res.ok) { toast('Deleted', 'success'); btn.closest('tr')?.remove(); }
         else toast(res.error || 'Delete failed', 'error');
@@ -527,8 +541,20 @@
       items.forEach((it) => it.classList.toggle('hidden', !!q && !it.dataset.label.includes(q)));
       setSel(0);
     }
-    function open() { overlay.classList.remove('hidden'); input.value = ''; filter(''); input.focus(); }
-    function close() { overlay.classList.add('hidden'); }
+    let returnFocus = null;
+    function open() {
+      returnFocus = document.activeElement;
+      overlay.classList.remove('hidden');
+      overlay.setAttribute('aria-hidden', 'false');
+      input.value = '';
+      filter('');
+      input.focus();
+    }
+    function close() {
+      overlay.classList.add('hidden');
+      overlay.setAttribute('aria-hidden', 'true');
+      returnFocus?.focus?.();
+    }
     function go() { const vis = visible(); if (vis[sel]) window.location.href = vis[sel].dataset.href; }
 
     document.getElementById('searchTrigger')?.addEventListener('click', open);
@@ -546,6 +572,108 @@
     overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
   }
 
+  // ---- Accessibility ------------------------------------------------------
+  function wireAccessibility() {
+    const dialogState = new WeakMap();
+    const labelIcons = (root = document) => {
+      const elements = [];
+      if (root instanceof Element && root.matches('.icon-btn:not([aria-label])')) elements.push(root);
+      root.querySelectorAll?.('.icon-btn:not([aria-label])').forEach((el) => elements.push(el));
+      elements.forEach((el) => {
+        const iconName = el.querySelector('[data-lucide]')?.getAttribute('data-lucide') || '';
+        const label = el.getAttribute('title') || el.textContent.trim()
+          || iconName.replace(/-/g, ' ').replace(/^\w/, (letter) => letter.toUpperCase());
+        if (label) el.setAttribute('aria-label', label);
+      });
+    };
+    const setBackgroundInert = (overlay, inert) => {
+      const state = dialogState.get(overlay) || {};
+      if (inert) {
+        state.inerted = [];
+        let branch = overlay;
+        while (branch.parentElement) {
+          Array.from(branch.parentElement.children).forEach((sibling) => {
+            if (sibling === branch || sibling.inert) return;
+            sibling.inert = true;
+            state.inerted.push(sibling);
+          });
+          branch = branch.parentElement;
+        }
+      } else {
+        (state.inerted || []).forEach((element) => { element.inert = false; });
+        state.inerted = [];
+      }
+      dialogState.set(overlay, state);
+    };
+    const prepareDialog = (overlay) => {
+      const dialog = overlay.querySelector('.drawer, .modal, .cmdk');
+      if (!dialog) return;
+      dialog.setAttribute('role', 'dialog');
+      dialog.setAttribute('aria-modal', 'true');
+      const open = !overlay.classList.contains('hidden');
+      const state = dialogState.get(overlay) || { open: false, returnFocus: null, inerted: [] };
+      overlay.setAttribute('aria-hidden', open ? 'false' : 'true');
+      if (open && !state.open) {
+        state.returnFocus = document.activeElement;
+        dialogState.set(overlay, state);
+        setBackgroundInert(overlay, true);
+        const first = dialog.querySelector(
+          '[autofocus], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), button:not([disabled]), a[href]'
+        );
+        if (first) first.focus();
+        else {
+          dialog.setAttribute('tabindex', '-1');
+          dialog.focus();
+        }
+      } else if (!open && state.open) {
+        setBackgroundInert(overlay, false);
+        state.returnFocus?.focus?.();
+      }
+      state.open = open;
+      dialogState.set(overlay, state);
+    };
+    labelIcons();
+    document.querySelectorAll('.drawer-overlay, .modal-overlay, #cmdk').forEach(prepareDialog);
+
+    const observer = new MutationObserver((changes) => {
+      changes.forEach((change) => {
+        change.addedNodes.forEach((node) => {
+          if (!(node instanceof Element)) return;
+          labelIcons(node);
+          if (node.matches('.drawer-overlay, .modal-overlay, #cmdk')) prepareDialog(node);
+          node.querySelectorAll?.('.drawer-overlay, .modal-overlay, #cmdk').forEach(prepareDialog);
+        });
+        if (change.type === 'attributes' && change.target instanceof Element
+            && change.target.matches('.drawer-overlay, .modal-overlay, #cmdk')) {
+          prepareDialog(change.target);
+        }
+      });
+    });
+    observer.observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['class'] });
+
+    document.addEventListener('keydown', (event) => {
+      const overlay = Array.from(document.querySelectorAll('.drawer-overlay:not(.hidden), .modal-overlay:not(.hidden), #cmdk:not(.hidden)')).pop();
+      if (!overlay) return;
+      if (event.key === 'Escape') {
+        overlay.classList.add('hidden');
+        overlay.setAttribute('aria-hidden', 'true');
+        return;
+      }
+      if (event.key !== 'Tab') return;
+      const focusable = Array.from(overlay.querySelectorAll(
+        'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+      )).filter((el) => !el.closest('.hidden'));
+      if (!focusable.length) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault(); last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault(); first.focus();
+      }
+    });
+  }
+
   // ---- Boot ---------------------------------------------------------------
   document.addEventListener('DOMContentLoaded', () => {
     if (window.lucide) lucide.createIcons();
@@ -553,6 +681,7 @@
     wireCmdk();
     wireTabs();
     wireNotifications();
+    wireAccessibility();
 
     const page = window.NEBULA_PAGE;
     // Live metrics run on every authenticated page (topbar), chart on dashboard.
