@@ -155,6 +155,7 @@ $check(strpos($helperSource, 'PANEL_ROOT_FILE=/etc/nebula-panel/panel-root') !==
 $check(strpos($helperSource, 'install -m 0755 -o root -g root "$SOURCE/bin/nebula-helper" /usr/local/bin/nebula-helper') !== false, 'panel-update does not refresh the privileged helper from the staged release');
 $check(strpos($helperSource, 'file-compress)') !== false && strpos($helperSource, 'zip -rq') !== false, 'privileged zip compression is missing');
 $check(strpos($helperSource, 'systemd-run --quiet') !== false, 'PHP-FPM reload is not deferred');
+$check(strpos($helperSource, 'systemctl reload "php${VER}-fpm"') === false, 'a website action can still reload its serving PHP-FPM process inline');
 $check(strpos($helperSource, 'site-list)') !== false && strpos($helperSource, 'site-php)') !== false, 'website recovery or PHP reassignment helper is missing');
 $check(strpos($helperSource, 'php-extension)') !== false && strpos($helperSource, 'php-ini-replace)') !== false, 'expanded PHP management helper actions are missing');
 $check(strpos($helperSource, 'pma-signon)') !== false && strpos($helperSource, "SignonSession") !== false, 'phpMyAdmin signed signon support is missing');
@@ -195,6 +196,22 @@ $check(strpos($installerSource, 'nebula-panel-selfsigned.crt') !== false
     && strpos($installerSource, 'listen 443 ssl default_server') !== false
     && strpos($installerSource, 'subjectAltName=IP:${SERVER_IP}') !== false,
     'domainless self-signed HTTPS provisioning is missing');
+$check(strpos($installerSource, 'request_terminate_timeout = 930s') !== false
+    && strpos($installerSource, 'fastcgi_read_timeout 930s;') !== false
+    && strpos($installerSource, 'env[PATH] = /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin') !== false,
+    'long operations or command discovery are not configured for the dedicated panel FPM pool');
+$websitesSource = (string) file_get_contents(APP_ROOT . '/views/websites.php');
+$check(strpos($websitesSource, 'id="wsRoot"') === false
+    && strpos($websitesSource, '<label class="field-label">Document root</label>') === false,
+    'the website creation form still exposes the automatically allocated document root');
+$dashboardSource = (string) file_get_contents(APP_ROOT . '/views/dashboard.php');
+$check(strpos($dashboardSource, '$initialMem = mem_info();') !== false
+    && strpos($dashboardSource, '$initialDisk = disk_info') !== false,
+    'dashboard resource cards have no server-rendered fallback');
+$indexSource = (string) file_get_contents(APP_ROOT . '/index.php');
+$check(strpos($indexSource, 'catch (Throwable $error)') !== false
+    && strpos($indexSource, "stream_json_event(['type' => 'result'") !== false,
+    'API failures are not converted to structured JSON/stream results');
 $uploadSource = (string) file_get_contents(APP_ROOT . '/views/files.php');
 $check(strpos($uploadSource, 'Replace it with the uploaded file?') !== false, 'upload overwrite confirmation is missing');
 $check(strpos($uploadSource, 'fm-tree-section-title">Pinned') === false && strpos($uploadSource, 'No subfolders') === false, 'File Manager tree still includes removed sidebar placeholders');
@@ -241,6 +258,7 @@ $check(is_file(APP_ROOT . '/api/modsecurity.php') && strpos((string) file_get_co
 
 $updaterSource = (string) file_get_contents(APP_ROOT . '/lib/mod_selfupdate.php');
 $check(strpos($updaterSource, "preg_match('/^[a-f0-9]{40}$/") !== false && strpos($updaterSource, 'panel-update') !== false, 'self-update is not pinned and delegated to the confined helper');
+$check(strpos($updaterSource, 'git ls-remote') !== false, 'self-update does not resolve the configured Git ref directly');
 
 @unlink($config['fm_root'] . '/site/index.txt');
 @rmdir($config['fm_root'] . '/site/private');

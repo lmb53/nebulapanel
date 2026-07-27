@@ -470,7 +470,11 @@ pm = ondemand
 pm.max_children = 10
 pm.process_idle_timeout = 20s
 pm.max_requests = 500
+request_terminate_timeout = 930s
 clear_env = yes
+env[PATH] = /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+env[HOME] = /var/lib/nebula-panel
+env[TMPDIR] = ${DEST}/data/tmp
 env[NEBULA_FORCE_HTTPS] = ${PANEL_FORCE_HTTPS}
 catch_workers_output = yes
 security.limit_extensions = .php
@@ -572,6 +576,8 @@ ${ACCESS_RULES}
 ${ACCESS_RULES}
         include snippets/fastcgi-php.conf;
         fastcgi_pass unix:${PANEL_FPM_SOCK};
+        fastcgi_read_timeout 930s;
+        fastcgi_send_timeout 930s;
     }
     location ~ \.php\$ {
         include snippets/fastcgi-php.conf;
