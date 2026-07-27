@@ -1,6 +1,6 @@
 <?php
 /**
- * Databases module — MariaDB/MySQL admin via root socket auth (`sudo mysql`).
+ * Databases module — MariaDB/MySQL administration through the typed helper.
  *
  * SECURITY: identifiers (db / user names) are validated against a strict
  * whitelist regex before ever touching SQL; host strings likewise. String
@@ -37,7 +37,7 @@ function db_sql_str(string $v): string
 /** Run SQL as root via socket auth. Returns [code, out, err]. */
 function db_run(string $sql): array
 {
-    return sudo_cmd('mysql -N -B -e ' . escapeshellarg($sql));
+    return helper_cmd('db-query ' . escapeshellarg(base64_encode($sql)), 120);
 }
 
 /** List databases with total (data+index) size in bytes. */

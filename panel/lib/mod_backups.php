@@ -1,8 +1,8 @@
 <?php
 /**
  * Backups module — creates, lists, resolves and deletes .tar.gz archives
- * stored under data/backups. Archives are created as the panel web user and
- * are intentionally limited to readable, File-Manager-approved website paths.
+ * stored under data/backups. Site selection uses an immutable ID and the
+ * helper derives the root from root-owned site state.
  */
 
 /** Absolute path to the backups storage directory (created on demand). */
@@ -38,47 +38,43 @@ function backup_list(): array
 function backup_resolve(string $file): ?string
 {
     $name = basename($file);
-    if ($name === '') {
+    if (!preg_match('/^[A-Za-z0-9_.-]{1,100}-[0-9]{8}-[0-9]{6}\.tar\.gz$/', $name)) {
         return null;
     }
     $abs = backup_store() . '/' . $name;
     return is_file($abs) ? $abs : null;
 }
 
-/** Create a .tar.gz archive of $source, labelled $label. */
-function backup_create(string $source, string $label): array
+/** Create a .tar.gz archive of a managed site, labelled $label. */
+function backup_create(string $siteId, string $label): array
 {
-    require_once APP_ROOT . '/lib/files.php';
-    $real = realpath($source);
-    if ($real === false) {
-        return ['ok' => false, 'error' => 'Source path not found.'];
+    require_once APP_ROOT . '/lib/mod_sites.php';
+    if (!preg_match('/^[a-f0-9]{32}$/', $siteId)) return ['ok' => false, 'error' => 'Invalid site ID.'];
+    $site = null;
+    foreach (sites_list() as $candidate) {
+        if (($candidate['id'] ?? '') === $siteId) { $site = $candidate; break; }
     }
-    if (!fm_absolute_allowed($real)) {
-        return ['ok' => false, 'error' => 'Backups are limited to allowed website files and cannot include panel-private paths.'];
-    }
-    foreach (fm_forbidden_roots() as $blocked) {
-        if (str_starts_with($blocked, rtrim($real, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR)) {
-            return ['ok' => false, 'error' => 'Choose a website folder rather than a parent containing panel-private files.'];
-        }
-    }
+    if (!$site) return ['ok' => false, 'error' => 'Managed site not found.'];
     $label = trim($label);
     if ($label === '') {
-        $label = basename($real);
+        $label = (string) ($site['domain'] ?? 'site');
     }
     if (!preg_match('/^[A-Za-z0-9_.-]{1,60}$/', $label)) {
         return ['ok' => false, 'error' => 'Label may only contain letters, numbers, _ . -'];
     }
     $fname = $label . '-' . date('Ymd-His') . '.tar.gz';
-    $dest = backup_store() . '/' . $fname;
-    $parent = dirname($real);
-    $base = basename($real);
-    $cmd = 'tar -czf ' . escapeshellarg($dest) . ' -C ' . escapeshellarg($parent) . ' ' . escapeshellarg($base);
-    [$c, $o, $e] = run_cmd($cmd, 600);
+    [$c, $o] = helper_cmd('site-backup ' . escapeshellarg($siteId) . ' ' . escapeshellarg($fname), 900);
     if ($c !== 0) {
-        return ['ok' => false, 'error' => trim($o . ' ' . $e) ?: 'Backup failed. Ensure the website files are readable by the panel.'];
+        return ['ok' => false, 'error' => trim($o) ?: 'Backup failed.'];
     }
-    @chmod($dest, 0600);
-    audit('backup.create', $fname . ' <= ' . $real);
+    $meta = ['site_id'=>$siteId,'domain'=>(string)($site['domain']??''),'file'=>$fname,'created_at'=>date('c')];
+    foreach (preg_split('/\r?\n/', trim($o)) as $line) {
+        if (str_contains($line, '=')) { [$key,$value]=explode('=',$line,2);$meta[$key]=$value; }
+    }
+    if (!write_json_file(backup_store() . '/' . $fname . '.manifest.json', $meta)) {
+        return ['ok'=>false,'error'=>'Archive created, but its integrity manifest could not be saved.'];
+    }
+    audit('backup.create', $fname . ' <= site ' . $siteId);
     return ['ok' => true, 'file' => $fname];
 }
 
@@ -90,6 +86,7 @@ function backup_delete(string $file): array
         return ['ok' => false, 'error' => 'Not found.'];
     }
     $ok = @unlink($abs);
+    if ($ok) @unlink($abs . '.manifest.json');
     audit('backup.delete', basename($abs) . ($ok ? '' : ' FAILED'));
     return $ok ? ['ok' => true] : ['ok' => false, 'error' => 'Delete failed.'];
 }
@@ -107,5 +104,17 @@ function backup_verify(string $file): array
     if ($code !== 0) {
         return ['ok' => false, 'error' => trim($out . ' ' . $err) ?: 'Archive integrity check failed.'];
     }
-    return ['ok' => true, 'entries' => $entries, 'size' => @filesize($abs) ?: 0];
+    if ($entries > 100000) return ['ok'=>false,'error'=>'Archive exceeds the 100,000-entry safety limit.'];
+    foreach (preg_split('/\r?\n/', trim($out)) as $entry) {
+        if ($entry === '' || str_starts_with($entry, '/') || preg_match('#(^|/)\.\.(/|$)#', $entry)) {
+            return ['ok'=>false,'error'=>'Archive contains an unsafe path.'];
+        }
+    }
+    $manifest = json_decode((string) @file_get_contents($abs . '.manifest.json'), true);
+    $actualHash = hash_file('sha256', $abs);
+    if (!is_array($manifest) || !preg_match('/^[a-f0-9]{64}$/', (string)($manifest['sha256']??''))
+        || $actualHash === false || !hash_equals((string)$manifest['sha256'], $actualHash)) {
+        return ['ok'=>false,'error'=>'Backup checksum manifest is missing or does not match.'];
+    }
+    return ['ok' => true, 'entries' => $entries, 'size' => @filesize($abs) ?: 0, 'sha256'=>$actualHash];
 }

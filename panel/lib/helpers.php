@@ -53,9 +53,45 @@ function e($s): string
     return htmlspecialchars((string) $s, ENT_QUOTES, 'UTF-8');
 }
 
+/** Validate an ASCII DNS name label-by-label (IDNA must be supplied as A-labels). */
+function domain_name_ok(string $domain, bool $requireDot = true, bool $allowWildcard = false): bool
+{
+    $domain = rtrim($domain, '.');
+    if ($allowWildcard && str_starts_with($domain, '*.')) $domain = substr($domain, 2);
+    if ($domain === '' || strlen($domain) > 253 || str_contains($domain, '..')) return false;
+    if ($requireDot && !str_contains($domain, '.')) return false;
+    foreach (explode('.', $domain) as $label) {
+        if (strlen($label) < 1 || strlen($label) > 63
+            || !preg_match('/^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?$/', $label)) {
+            return false;
+        }
+    }
+    return true;
+}
+
 /** Send a JSON response and stop. */
 function json_out($data, int $code = 200): void
 {
+    if ($code === 400 && is_array($data)) {
+        $message = strtolower((string) ($data['error'] ?? ''));
+        if (!empty($data['conflict'])) $code = 409;
+        elseif (str_contains($message,'not found')) $code = 404;
+        elseif (str_contains($message,'not installed') || str_contains($message,'not available')
+            || str_contains($message,'helper required') || str_contains($message,'unavailable')) $code = 503;
+        elseif (preg_match('/^(invalid|enter |must |unknown action|unsupported)/',$message)) $code = 422;
+        elseif (str_contains($message,'too many')) $code = 429;
+    }
+    if ($code >= 400 && is_array($data) && isset($data['error'])) {
+        $names = [400=>'bad_request',401=>'unauthorized',403=>'forbidden',404=>'not_found',
+            405=>'method_not_allowed',409=>'conflict',413=>'payload_too_large',
+            415=>'unsupported_media_type',419=>'csrf_failed',422=>'validation_failed',
+            429=>'rate_limited',500=>'internal_error',503=>'unavailable'];
+        $data += [
+            'code'=>$names[$code] ?? 'request_failed',
+            'message'=>(string)$data['error'],
+            'request_id'=>request_id(),
+        ];
+    }
     http_response_code($code);
     header('Content-Type: application/json; charset=UTF-8');
     header('Cache-Control: no-store');
@@ -66,8 +102,8 @@ function json_out($data, int $code = 200): void
 /** Begin a newline-delimited JSON response that proxies must not buffer. */
 function stream_json_start(): void
 {
-    ignore_user_abort(true);
-    @set_time_limit(0);
+    ignore_user_abort(false);
+    @set_time_limit(900);
     @ini_set('zlib.output_compression', '0');
     header('Content-Type: application/x-ndjson; charset=UTF-8');
     header('Cache-Control: no-store, no-cache, must-revalidate');
@@ -143,6 +179,9 @@ function csrf_field(): string
  */
 function csrf_check(): void
 {
+    if (function_exists('is_api_token_authenticated') && is_api_token_authenticated()) {
+        return;
+    }
     $sent = $_POST['_csrf'] ?? ($_SERVER['HTTP_X_CSRF_TOKEN'] ?? '');
     if (empty($_SESSION['csrf']) || !hash_equals($_SESSION['csrf'], (string) $sent)) {
         if (is_json_request()) {
@@ -233,12 +272,27 @@ function cache_remember(string $key, int $ttl, callable $producer)
     }
 }
 
-/** Read a JSON request body, falling back to POST fields. */
+/** Read a JSON request body. API endpoints intentionally reject form bodies. */
 function read_json_body(): array
 {
-    $raw = file_get_contents('php://input');
-    $j = json_decode((string) $raw, true);
-    return is_array($j) ? $j : $_POST;
+    $type = strtolower(trim(explode(';', (string) ($_SERVER['CONTENT_TYPE'] ?? ''))[0]));
+    if ($type !== 'application/json') {
+        json_out(['ok' => false, 'error' => 'Content-Type must be application/json.'], 415);
+    }
+    $length = (int) ($_SERVER['CONTENT_LENGTH'] ?? 0);
+    if ($length > 1024 * 1024) {
+        json_out(['ok' => false, 'error' => 'Request body is too large.'], 413);
+    }
+    $raw = (string) file_get_contents('php://input');
+    try {
+        $j = json_decode($raw, true, 32, JSON_THROW_ON_ERROR);
+    } catch (JsonException $e) {
+        json_out(['ok' => false, 'error' => 'Malformed JSON request body.'], 400);
+    }
+    if (!is_array($j)) {
+        json_out(['ok' => false, 'error' => 'JSON body must be an object.'], 400);
+    }
+    return $j;
 }
 
 /** Guard: only allow POST for a write endpoint, else 405 JSON. */
@@ -259,9 +313,48 @@ function audit(string $action, string $detail = ''): void
     $user = $clean((string) (function_exists('current_user') ? (current_user() ?? 'anon') : ($_SESSION['username'] ?? 'anon')), 100);
     $ip = $clean(client_ip(), 64);
     $action = $clean($action, 120);
-    $detail = $clean($detail, 2000);
-    $line = sprintf("[%s] %s (%s) %s %s\n", date('c'), $user, $ip, $action, $detail);
-    @file_put_contents(DATA_DIR . '/audit.log', $line, FILE_APPEND | LOCK_EX);
+    $detail = redact_secrets($clean($detail, 2000));
+    global $apiAuthId;
+    $authId = function_exists('is_api_token_authenticated') && is_api_token_authenticated()
+        ? 'token:' . $clean((string) ($apiAuthId ?? ''), 32)
+        : (session_status() === PHP_SESSION_ACTIVE && session_id() !== ''
+            ? 'session:' . substr(hash('sha256', session_id()), 0, 16) : 'none');
+    $event = [
+        'time' => date('c'),
+        'actor' => $user,
+        'role' => function_exists('current_role') ? current_role() : 'anonymous',
+        'auth_id' => $authId,
+        'ip' => $ip,
+        'action' => $action,
+        'detail' => $detail,
+        'request_id' => request_id(),
+    ];
+    @file_put_contents(DATA_DIR . '/audit.log', json_encode($event, JSON_UNESCAPED_SLASHES) . "\n", FILE_APPEND | LOCK_EX);
+    if (function_exists('openlog') && function_exists('syslog')) {
+        openlog('nebula-panel', LOG_PID, LOG_AUTHPRIV);
+        syslog(LOG_NOTICE, json_encode($event, JSON_UNESCAPED_SLASHES));
+        closelog();
+    }
+}
+
+function request_id(): string
+{
+    static $id;
+    if ($id === null) {
+        $provided = (string) ($_SERVER['HTTP_X_REQUEST_ID'] ?? '');
+        $id = preg_match('/^[A-Za-z0-9._-]{8,80}$/', $provided) ? $provided : bin2hex(random_bytes(8));
+        if (!headers_sent()) header('X-Request-ID: ' . $id);
+    }
+    return $id;
+}
+
+function redact_secrets(string $value): string
+{
+    $value = preg_replace('#(https?://)[^/@\s:]+:[^/@\s]+@#i', '$1[redacted]@', $value) ?? $value;
+    $value = preg_replace('/\b(Bearer|Basic)\s+[A-Za-z0-9._~+\/=-]+/i', '$1 [redacted]', $value) ?? $value;
+    $value = preg_replace('/\b(authorization|cookie)\s*[:=]\s*[^\r\n]+/i', '$1=[redacted]', $value) ?? $value;
+    $value = preg_replace('/\b(password|passwd|token|secret)\s*[:=]\s*[^\s,;]+/i', '$1=[redacted]', $value) ?? $value;
+    return $value;
 }
 
 /** Client address, honoring forwarding headers only from configured proxies. */

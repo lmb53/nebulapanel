@@ -1,8 +1,7 @@
 <?php
 /**
  * App catalog + PHP version management + dynamic service discovery.
- * apt operations use the (SETENV) apt-get sudo rule; PHP version installs go
- * through the privileged helper (needs the ondrej PPA on Ubuntu).
+ * Package and PHP operations are validated by the privileged helper.
  */
 
 /**
@@ -66,7 +65,17 @@ function app_install(string $key, ?callable $onOutput = null): array
         return ['ok' => false, 'error' => sudo_error($out, $code)];
     }
     if (!empty($c['unit'])) {
-        sudo_cmd('systemctl enable --now ' . escapeshellarg($c['unit']));
+        [$enableCode, $enableOut] = helper_cmd('service-action enable ' . escapeshellarg($c['unit']));
+        [$startCode, $startOut] = helper_cmd('service-action start ' . escapeshellarg($c['unit']));
+        if ($enableCode !== 0 || $startCode !== 0) {
+            return [
+                'ok'=>false,
+                'partial'=>true,
+                'error'=>'Package installed, but its service did not reach the requested state: '
+                    . sudo_error(trim($enableOut . "\n" . $startOut), $startCode ?: $enableCode),
+                'output'=>$out,
+            ];
+        }
     }
     return ['ok' => true, 'output' => $out];
 }

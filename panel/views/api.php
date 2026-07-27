@@ -1,9 +1,45 @@
-<?php $tokens = array_map('api_token_public', api_tokens_load()); ?>
-<div class="page-header"><div><h1 class="page-title">API</h1><p class="page-subtitle">Bearer keys for authenticated JSON automation</p></div></div>
-<div class="card" style="margin-bottom:16px"><div class="card-header"><h3>Generate new key</h3></div><div class="card-pad"><div class="flex gap-2"><input class="input" id="apiLabel" maxlength="80" placeholder="Key label, e.g. deployment script"><button class="btn btn-primary" id="apiGenerate"><i data-lucide="key-round"></i>Generate</button></div></div></div>
-<div class="card" id="apiReveal" style="display:none;margin-bottom:16px;border-color:rgba(245,158,11,.45)"><div class="card-header"><h3>Copy this token now</h3><span class="badge badge-orange">Shown once</span></div><div class="card-pad"><div class="flex gap-2"><input class="input mono" id="apiPlain" readonly><button class="btn btn-secondary" id="apiCopy"><i data-lucide="copy"></i>Copy</button></div></div></div>
-<div class="card" style="margin-bottom:16px"><div class="card-header"><h3>API keys</h3><span class="muted"><?= count($tokens) ?> active</span></div><div class="table-wrap"><table class="data-table"><thead><tr><th>Label</th><th>Created</th><th>Last used</th><th></th></tr></thead><tbody>
-<?php foreach ($tokens as $token): ?><tr><td style="font-weight:600"><?= e($token['label']) ?></td><td class="mono text-tertiary"><?= e($token['created_at']) ?></td><td class="mono text-tertiary"><?= e($token['last_used_at'] ?? 'Never') ?></td><td style="text-align:right"><button class="btn btn-danger btn-sm" data-api-revoke="<?= e($token['id']) ?>">Revoke</button></td></tr><?php endforeach; ?>
-<?php if (!$tokens): ?><tr><td colspan="4" class="text-tertiary" style="text-align:center;padding:24px">No API keys have been generated.</td></tr><?php endif; ?></tbody></table></div></div>
-<div class="card"><div class="card-header"><h3>Usage</h3></div><div class="card-pad"><p class="text-tertiary" style="font-size:13px;margin-top:0">Send the key as <span class="mono">Authorization: Bearer TOKEN</span>. API routes are the same as the panel routes under <span class="mono"><?= e(base_url()) ?>/?r=api/…</span>.</p><pre class="mono" style="white-space:pre-wrap;margin:0">curl -H "Authorization: Bearer nbp_…" "<?= e(base_url()) ?>/?r=api/health"</pre></div></div>
-<script>document.addEventListener('DOMContentLoaded',()=>{const{apiPost,toast}=window.Nebula;document.getElementById('apiGenerate')?.addEventListener('click',async()=>{const label=document.getElementById('apiLabel').value.trim();if(!label){toast('Enter a key label','warning');return}const res=await apiPost('tokens',{action:'generate',label});if(res.ok){const box=document.getElementById('apiReveal');document.getElementById('apiPlain').value=res.token;box.style.display='';box.scrollIntoView({behavior:'smooth'});toast('API key generated','success')}else toast(res.error||'Failed','error')});document.getElementById('apiCopy')?.addEventListener('click',async()=>{await navigator.clipboard.writeText(document.getElementById('apiPlain').value);toast('Copied','success')});document.querySelectorAll('[data-api-revoke]').forEach(btn=>btn.addEventListener('click',async()=>{if(!confirm('Revoke this API key?'))return;const res=await apiPost('tokens',{action:'revoke',id:btn.dataset.apiRevoke});if(res.ok){toast('Key revoked','success');setTimeout(()=>location.reload(),300)}else toast(res.error||'Failed','error')}))});</script>
+<?php
+require_once APP_ROOT . '/lib/mod_api.php';
+$tokens = array_map('api_token_public', api_tokens_load());
+?>
+<div class="page-header">
+  <div><h1 class="page-title">API tokens</h1><p class="page-subtitle">Named, expiring bearer credentials for automation</p></div>
+</div>
+<div class="card" style="margin-bottom:16px">
+  <div class="card-header"><h3>Generate token</h3></div>
+  <div class="card-pad">
+    <label class="field-label" for="apiLabel">Automation identity</label>
+    <div class="grid grid-3">
+      <input class="input" id="apiLabel" maxlength="80" placeholder="monitoring-bot">
+      <select class="input" id="apiRole"><option value="auditor">Auditor</option><option value="operator">Operator</option><option value="developer">Developer</option><option value="admin">Administrator</option></select>
+      <input class="input mono" id="apiTtl" type="number" min="1" max="365" value="30" aria-label="Token lifetime in days">
+    </div>
+    <label class="field-label" for="apiScopes" style="margin-top:10px">Scopes (comma-separated method:endpoint)</label>
+    <div style="display:flex;gap:8px"><input class="input mono" id="apiScopes" value="get:health"><button class="btn btn-primary" id="apiGenerate">Generate token</button></div>
+    <label class="field-label" for="apiIps" style="margin-top:10px">Allowed source IPs (optional, comma-separated)</label>
+    <input class="input mono" id="apiIps" placeholder="203.0.113.10, 2001:db8::10">
+    <div id="apiReveal" class="hidden" style="margin-top:12px">
+      <label class="field-label" for="apiPlain">Copy now; this value is shown once</label>
+      <div style="display:flex;gap:8px"><input class="input mono" id="apiPlain" readonly><button class="btn btn-secondary" id="apiCopy">Copy</button></div>
+    </div>
+  </div>
+</div>
+<div class="card">
+  <div class="card-header"><h3>Active tokens</h3><span class="muted"><?= count($tokens) ?></span></div>
+  <div class="table-wrap"><table class="data-table"><thead><tr><th>Identity</th><th>Role / scopes</th><th>Expires</th><th>Last used</th><th></th></tr></thead><tbody>
+  <?php foreach ($tokens as $token): ?><tr>
+    <td><?= e($token['label']) ?></td>
+    <td class="mono"><?= e($token['role'] ?? 'auditor') ?> · <?= e(implode(', ', (array) ($token['scopes'] ?? []))) ?><?php if(!empty($token['allowed_ips'])): ?><br><span class="text-tertiary"><?= e(implode(', ', $token['allowed_ips'])) ?></span><?php endif; ?></td>
+    <td class="mono"><?= e($token['expires_at'] ?? '') ?></td>
+    <td class="mono"><?= e($token['last_used_at'] ?? 'Never') ?></td>
+    <td><button class="btn btn-danger btn-sm" data-api-revoke="<?= e($token['id']) ?>">Revoke</button></td>
+  </tr><?php endforeach; ?>
+  <?php if (!$tokens): ?><tr><td colspan="5" class="text-tertiary" style="text-align:center;padding:24px">No active API tokens.</td></tr><?php endif; ?>
+  </tbody></table></div>
+</div>
+<script>
+document.addEventListener('DOMContentLoaded',()=>{const{apiPost,toast}=window.Nebula;
+document.getElementById('apiGenerate').onclick=async()=>{const label=document.getElementById('apiLabel').value.trim();if(!label)return toast('Enter an identity','warning');const role=document.getElementById('apiRole').value,ttl_days=Number(document.getElementById('apiTtl').value),scopes=document.getElementById('apiScopes').value.split(',').map(x=>x.trim()).filter(Boolean),allowed_ips=document.getElementById('apiIps').value.split(',').map(x=>x.trim()).filter(Boolean);const r=await apiPost('tokens',{action:'generate',label,role,scopes,ttl_days,allowed_ips});if(!r.ok)return toast(r.error||'Failed','error');document.getElementById('apiPlain').value=r.token;document.getElementById('apiReveal').classList.remove('hidden');};
+document.getElementById('apiCopy').onclick=()=>navigator.clipboard.writeText(document.getElementById('apiPlain').value);
+document.querySelectorAll('[data-api-revoke]').forEach(b=>b.onclick=async()=>{if(!confirm('Revoke this token?'))return;const r=await apiPost('tokens',{action:'revoke',id:b.dataset.apiRevoke});if(r.ok)location.reload();else toast(r.error||'Failed','error');});});
+</script>

@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+set -euo pipefail
+[[ $EUID -eq 0 ]] || { echo "Run as root." >&2; exit 1; }
+[[ -r /etc/nebula-panel/panel-root ]] || { echo "Panel root is not configured." >&2; exit 1; }
+PANEL_ROOT="$(realpath "$(head -n 1 /etc/nebula-panel/panel-root)")"
+RECOVERY="$PANEL_ROOT/bin/recovery.php"
+[[ -f "$RECOVERY" ]] || { echo "Recovery program is missing." >&2; exit 1; }
+case "${1:-}" in
+  reset-admin)
+    read -r -p "Administrator username: " username
+    read -r -s -p "New password: " password; echo
+    read -r -s -p "Confirm password: " confirmation; echo
+    [[ "$password" == "$confirmation" ]] || { echo "Passwords do not match." >&2; exit 1; }
+    printf '%s\n%s\n' "$username" "$password" | php "$RECOVERY" reset-admin
+    ;;
+  issue-bootstrap)
+    php "$RECOVERY" issue-bootstrap
+    ;;
+  *)
+    echo "Usage: nebula-recovery reset-admin | issue-bootstrap" >&2
+    exit 2
+    ;;
+esac

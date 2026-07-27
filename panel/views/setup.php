@@ -19,14 +19,16 @@
         </div>
         <div style="font-weight:700;font-size:16px">Welcome to <?= e($config['panel_name']) ?></div>
       </div>
-      <p style="font-size:13px;color:var(--text-tertiary);margin:0 0 18px">Create the administrator account. This is a one-time setup.</p>
+      <p style="font-size:13px;color:var(--text-tertiary);margin:0 0 18px">Create the administrator account using the single-use token printed by the installer.</p>
       <?php if ($error): ?>
         <div class="badge badge-red" style="width:100%;justify-content:flex-start;padding:9px 12px;border-radius:9px;margin-bottom:14px"><i data-lucide="alert-triangle"></i><?= e($error) ?></div>
       <?php endif; ?>
       <form method="post" action="<?= e(url('setup')) ?>">
         <?= csrf_field() ?>
+        <label class="field-label">Bootstrap token</label>
+        <input class="input mono" type="password" name="bootstrap_token" required minlength="32" maxlength="128" autocomplete="one-time-code" autofocus style="margin-bottom:14px">
         <label class="field-label">Username</label>
-        <input class="input" type="text" name="username" required minlength="3" maxlength="64" pattern="[A-Za-z0-9_.-]+" autocomplete="username" autofocus style="margin-bottom:14px">
+        <input class="input" type="text" name="username" required minlength="3" maxlength="64" pattern="[A-Za-z0-9_.-]+" autocomplete="username" style="margin-bottom:14px">
         <label class="field-label">Password <span style="color:var(--text-tertiary);font-weight:400">(min 12 characters)</span></label>
         <input class="input" type="password" name="password" required minlength="12" maxlength="1024" autocomplete="new-password" style="margin-bottom:18px">
         <button class="btn btn-primary" type="submit" style="width:100%;justify-content:center"><i data-lucide="user-plus"></i>Create account &amp; sign in</button>

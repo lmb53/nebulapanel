@@ -37,6 +37,7 @@ function nebula_modules(): array
         'notifications'=>['bell',            'Notifications','Tools'],
         'selfupdate' => ['git-branch',       'Panel Updates','Tools'],
         'settings'   => ['settings',         'Settings',     'Tools'],
+        'api'        => ['braces',           'API Tokens',   'Tools'],
     ];
 }
 

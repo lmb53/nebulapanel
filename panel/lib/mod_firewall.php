@@ -1,7 +1,6 @@
 <?php
 /**
- * Firewall module — manages UFW (Uncomplicated Firewall) rules via sudo.
- * Requires the web user to have a sudoers rule for ufw (see README).
+ * Firewall module — manages UFW through validated privileged helper actions.
  */
 
 function fw_available(): bool

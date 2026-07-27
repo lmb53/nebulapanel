@@ -27,6 +27,12 @@ if (!empty($config['debug'])) {
 if (!is_dir(DATA_DIR)) {
     @mkdir(DATA_DIR, 0700, true);
 }
+if (PHP_SAPI !== 'cli' && is_file(DATA_DIR . '/maintenance')) {
+    http_response_code(503);
+    header('Retry-After: 30');
+    header('Cache-Control: no-store');
+    exit('Nebula Panel is applying a validated update. Retry shortly.');
+}
 
 // Baseline browser protections for every dynamic response.
 $cspNonce = base64_encode(random_bytes(18));
@@ -35,6 +41,8 @@ header('X-Content-Type-Options: nosniff');
 header('X-Frame-Options: DENY');
 header('Referrer-Policy: same-origin');
 header('Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=()');
+header('Cross-Origin-Opener-Policy: same-origin');
+header('Cross-Origin-Resource-Policy: same-origin');
 header("Content-Security-Policy: default-src 'self'; script-src 'self' 'nonce-{$cspNonce}'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'");
 header('Cache-Control: no-store');
 
@@ -51,6 +59,12 @@ $https = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off')
       || (($_SERVER['SERVER_PORT'] ?? null) == 443)
       || ($trustProxy && strtolower((string) ($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '')) === 'https');
 if ($https) { header('Strict-Transport-Security: max-age=31536000'); }
+$loopback = in_array($remote, ['127.0.0.1', '::1'], true);
+if (!empty($config['force_https']) && !$https && !$loopback) {
+    http_response_code(426);
+    header('Upgrade: TLS/1.2, HTTP/1.1');
+    exit('HTTPS is required. Configure a certificate, or use an SSH port-forward to loopback for first-run setup.');
+}
 
 session_name('nebula_sess');
 ini_set('session.use_strict_mode', '1');
@@ -77,9 +91,18 @@ if (!empty($_SESSION['uid'])) {
 // Enforce idle timeout for logged-in sessions.
 if (!empty($_SESSION['uid'])) {
     $timeout = (int) ($config['session_timeout'] ?? 1800);
-    if (isset($_SESSION['last_seen']) && (time() - $_SESSION['last_seen']) > $timeout) {
+    $absolute = max($timeout, (int) ($config['session_absolute_timeout'] ?? 43200));
+    $created = (int) ($_SESSION['created_at'] ?? time());
+    if ((isset($_SESSION['last_seen']) && (time() - $_SESSION['last_seen']) > $timeout)
+        || time() - $created > $absolute) {
         logout_user();
     } else {
+        $_SESSION['created_at'] = $created;
+        $rotate = max(300, (int) ($config['session_rotate_interval'] ?? 900));
+        if (time() - (int) ($_SESSION['rotated_at'] ?? $created) >= $rotate) {
+            session_regenerate_id(true);
+            $_SESSION['rotated_at'] = time();
+        }
         $_SESSION['last_seen'] = time();
     }
 }

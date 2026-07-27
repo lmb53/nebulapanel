@@ -12,7 +12,13 @@ return [
 
     // Root directory the File Manager is allowed to browse. It can never
     // escape above this path. Override with env NEBULA_FM_ROOT.
-    'fm_root' => getenv('NEBULA_FM_ROOT') ?: '/var/www',
+    'fm_root' => getenv('NEBULA_FM_ROOT') ?: '/srv/nebula/sites',
+
+    // Every managed site's root is derived from an immutable random ID below
+    // this directory. User-supplied document roots are never accepted.
+    'sites_root' => getenv('NEBULA_SITES_ROOT') ?: '/srv/nebula/sites',
+    'max_upload_bytes' => 50 * 1024 * 1024,
+    'allow_php_uploads' => false,
 
     // Optional additional absolute paths to hide and reject. The panel's own
     // application and private data directories are always denied automatically.
@@ -36,6 +42,12 @@ return [
 
     // Session idle timeout in seconds (default 30 min).
     'session_timeout' => 1800,
+    'session_absolute_timeout' => 43200,
+    'session_rotate_interval' => 900,
+
+    // Refuse credentials and authenticated traffic over cleartext. Loopback is
+    // exempt so a fresh install can be claimed through an SSH port-forward.
+    'force_https' => filter_var(getenv('NEBULA_FORCE_HTTPS') ?: '1', FILTER_VALIDATE_BOOL),
 
     // Login throttling. Failed attempts are tracked per remote IP in data/.
     'login_max_attempts' => 5,

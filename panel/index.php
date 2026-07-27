@@ -24,7 +24,11 @@ switch ($route) {
         $error = null;
         if ($method === 'POST') {
             csrf_check();
-            $res = create_admin($_POST['username'] ?? '', $_POST['password'] ?? '');
+            $res = create_admin(
+                $_POST['username'] ?? '',
+                $_POST['password'] ?? '',
+                $_POST['bootstrap_token'] ?? ''
+            );
             if ($res['ok']) {
                 attempt_login($_POST['username'], $_POST['password']);
                 redirect('setup-wizard');
@@ -44,13 +48,14 @@ switch ($route) {
         $error = null;
         if ($method === 'POST') {
             csrf_check();
-            $retry = reserve_login_attempt();
+            $loginName = (string) ($_POST['username'] ?? '');
+            $retry = reserve_login_attempt(null, $loginName);
             if ($retry > 0) {
                 http_response_code(429);
                 header('Retry-After: ' . $retry);
                 audit('login', 'rate limited');
                 $error = 'Too many login attempts. Try again in ' . (int) ceil($retry / 60) . ' minute(s).';
-            } elseif (attempt_login($_POST['username'] ?? '', $_POST['password'] ?? '')) {
+            } elseif (attempt_login($loginName, $_POST['password'] ?? '')) {
                 redirect('dashboard');
             } else {
                 audit('login', 'failed for ' . ($_POST['username'] ?? '?'));
@@ -73,8 +78,16 @@ switch ($route) {
 }
 
 // --------------------------------------------------------------------------
-// Everything below requires an authenticated panel session.
+// Bearer API authentication happens before the session guard. Tokens have an
+// identity, role, expiry and endpoint scopes, and never use CSRF.
 // --------------------------------------------------------------------------
+if (strpos($route, 'api/') === 0 && preg_match('/^Bearer\s+(.+)$/i', (string) ($_SERVER['HTTP_AUTHORIZATION'] ?? ''), $bearer)) {
+    require_once APP_ROOT . '/lib/mod_api.php';
+    if (!api_token_authenticate(trim($bearer[1]))) {
+        json_out(['ok' => false, 'error' => 'Invalid or expired bearer token.'], 401);
+    }
+}
+
 require_auth();
 
 // --------------------------------------------------------------------------
@@ -104,11 +117,15 @@ if (strpos($route, 'api/') === 0) {
     if (session_status() === PHP_SESSION_ACTIVE) {
         session_write_close();
     }
-    $name = substr($route, 4);
+    $versioned = str_starts_with($route, 'api/v1/');
+    $name = $versioned ? substr($route, 7) : substr($route, 4);
     $file = APP_ROOT . '/api/' . $name . '.php';
     if (preg_match('/^[a-z0-9_-]+$/', $name) && is_file($file)) {
         if (!can_access_api($name, $method)) {
             json_out(['ok' => false, 'error' => 'Your role does not have permission for this action.'], 403);
+        }
+        if (is_api_token_authenticated() && !api_token_scope_allows($name, $method)) {
+            json_out(['ok' => false, 'error' => 'The bearer token does not allow this endpoint.'], 403);
         }
         require $file;
         return;

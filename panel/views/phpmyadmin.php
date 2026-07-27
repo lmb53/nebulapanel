@@ -34,7 +34,7 @@ $helper = helper_available();
     <div class="card-pad">
       <p style="color:var(--text-secondary);margin:0 0 16px">
         phpMyAdmin provides a full web interface for managing your MySQL / MariaDB
-        databases, tables, and users. Installing downloads the latest release
+        databases, tables, and users. Installation uses the signed distribution package
         (~15MB) and may take a moment.
       </p>
       <button class="btn btn-primary" id="pmaInstall"<?= $helper ? '' : ' disabled' ?>>

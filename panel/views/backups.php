@@ -1,6 +1,8 @@
 <?php
 require_once APP_ROOT . '/lib/mod_backups.php';
+require_once APP_ROOT . '/lib/mod_sites.php';
 $backups = backup_list();
+$sites = sites_list();
 ?>
 <div class="page-header">
   <div>
@@ -14,8 +16,13 @@ $backups = backup_list();
   <div class="card-pad">
     <div class="grid" style="grid-template-columns:1fr 220px auto;gap:12px;align-items:end">
       <div>
-        <label class="field-label">Source path</label>
-        <input class="input mono" id="bkSource" placeholder="/var/www/mysite">
+        <label class="field-label">Managed website</label>
+        <select class="select" id="bkSite">
+          <option value="">Choose a site…</option>
+          <?php foreach ($sites as $site): if (!preg_match('/^[a-f0-9]{32}$/', (string)($site['id']??''))) continue; ?>
+            <option value="<?= e($site['id']) ?>"><?= e($site['domain'] ?? $site['id']) ?></option>
+          <?php endforeach; ?>
+        </select>
       </div>
       <div>
         <label class="field-label">Label</label>
@@ -24,7 +31,7 @@ $backups = backup_list();
       <button class="btn btn-primary" id="bkCreate"><i data-lucide="archive"></i>Create backup</button>
     </div>
     <div style="font-size:12px;color:var(--text-tertiary);margin-top:10px">
-      Sources must be inside the configured website-file root. Nebula's own files are always excluded.
+      The helper derives the source from the site's immutable ID and writes a checksum manifest.
     </div>
   </div>
 </div>
@@ -59,9 +66,9 @@ $backups = backup_list();
 document.addEventListener('DOMContentLoaded', () => {
   const { apiPost, toast } = window.Nebula;
   document.getElementById('bkCreate')?.addEventListener('click', async () => {
-    const source = document.getElementById('bkSource').value;
+    const siteId = document.getElementById('bkSite').value;
     const label = document.getElementById('bkLabel').value;
-    const res = await apiPost('backups', { action: 'create', source, label });
+    const res = await apiPost('backups', { action: 'create', site_id: siteId, label });
     if (res.ok) { toast('Backup created', 'success'); setTimeout(() => location.reload(), 500); }
     else toast(res.error || 'Failed', 'error');
   });

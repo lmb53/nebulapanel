@@ -309,42 +309,6 @@ function fm_state_entries(string $key): array
     return $items;
 }
 
-/** Common interactive/service accounts exposed by the ownership editor. */
-function fm_account_names(string $kind): array
-{
-    $file = $kind === 'group' ? '/etc/group' : '/etc/passwd';
-    $names = ['root', 'www-data'];
-    foreach (@file($file, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) ?: [] as $line) {
-        $parts = explode(':', $line);
-        $name = (string) ($parts[0] ?? '');
-        $id = (int) ($parts[2] ?? -1);
-        if ($name !== '' && ($id >= 1000 || in_array($name, ['root', 'www-data', 'staff'], true))) {
-            $names[] = $name;
-        }
-    }
-    $names = array_values(array_unique($names));
-    sort($names, SORT_NATURAL | SORT_FLAG_CASE);
-    return $names;
-}
-
-/** Change owner/group through the root-owned helper, confined to FM_ROOT. */
-function fm_chown(string $rel, string $owner, string $group): array
-{
-    $abs = fm_resolve($rel);
-    if ($abs === null || !file_exists($abs)) {
-        return ['ok' => false, 'error' => 'Path not found or not allowed.'];
-    }
-    if (!preg_match('/^[a-z_][a-z0-9_-]{0,31}$/', $owner)
-        || !preg_match('/^[a-z_][a-z0-9_-]{0,31}$/', $group)) {
-        return ['ok' => false, 'error' => 'Invalid owner or group.'];
-    }
-    [$code, $out] = helper_cmd(
-        'file-chown ' . escapeshellarg($abs) . ' ' . escapeshellarg($owner) . ' ' . escapeshellarg($group)
-    );
-    audit('file.chown', fm_rel($abs) . " $owner:$group");
-    return $code === 0 ? ['ok' => true] : ['ok' => false, 'error' => trim($out) ?: 'Ownership change failed.'];
-}
-
 /** Create a zip (default) or .tar.gz archive in a directory within FM_ROOT. */
 function fm_compress(array $paths, string $destDir, string $name): array
 {
@@ -398,8 +362,16 @@ function fm_compress(array $paths, string $destDir, string $name): array
 function fm_valid_name(string $n): bool
 {
     return $n !== '' && $n !== '.' && $n !== '..'
-        && !preg_match('#[/\\\\\x00]#', $n)
+        && preg_match('/^[A-Za-z0-9._ -]+$/', $n) === 1
         && strlen($n) <= 255;
+}
+
+function fm_stage_path(): ?string
+{
+    $dir = DATA_DIR . '/file-staging';
+    if (!is_dir($dir) && !@mkdir($dir, 0700, true)) return null;
+    $path = $dir . '/' . bin2hex(random_bytes(16));
+    return file_exists($path) ? null : $path;
 }
 
 /** Create a new directory named $name inside relative dir $relDir. */
@@ -417,7 +389,8 @@ function fm_mkdir(string $relDir, string $name): array
         return ['ok' => false, 'error' => 'A file or folder with that name already exists.'];
     }
     if (!@mkdir($target, 0755)) {
-        return ['ok' => false, 'error' => 'Could not create directory (permissions?).'];
+        [$code,$out] = helper_cmd('file-mkdir ' . escapeshellarg($target));
+        if ($code !== 0) return ['ok' => false, 'error' => trim($out) ?: 'Could not create directory.'];
     }
     audit('file.mkdir', fm_rel($target));
     return ['ok' => true];
@@ -438,7 +411,8 @@ function fm_mkfile(string $relDir, string $name): array
         return ['ok' => false, 'error' => 'A file or folder with that name already exists.'];
     }
     if (!@touch($target)) {
-        return ['ok' => false, 'error' => 'Could not create file (permissions?).'];
+        [$code,$out] = helper_cmd('file-mkfile ' . escapeshellarg($target));
+        if ($code !== 0) return ['ok' => false, 'error' => trim($out) ?: 'Could not create file.'];
     }
     audit('file.mkfile', fm_rel($target));
     return ['ok' => true];
@@ -459,7 +433,8 @@ function fm_rename(string $rel, string $newName): array
         return ['ok' => false, 'error' => 'A file or folder with that name already exists.'];
     }
     if (!@rename($abs, $target)) {
-        return ['ok' => false, 'error' => 'Rename failed (permissions?).'];
+        [$code,$out] = helper_cmd('file-rename ' . escapeshellarg($abs) . ' ' . escapeshellarg($target));
+        if ($code !== 0) return ['ok' => false, 'error' => trim($out) ?: 'Rename failed.'];
     }
     audit('file.rename', fm_rel($abs) . ' -> ' . fm_rel($target));
     return ['ok' => true];
@@ -472,7 +447,7 @@ function fm_chmod(string $rel, string $mode): array
     if ($abs === null || !file_exists($abs)) {
         return ['ok' => false, 'error' => 'Path not found or not allowed.'];
     }
-    if (!preg_match('/^[0-7]{3,4}$/', $mode)) {
+    if (!preg_match('/^[0-7]{3}$/', $mode)) {
         return ['ok' => false, 'error' => 'Invalid mode.'];
     }
     if (!@chmod($abs, octdec($mode))) {
@@ -492,9 +467,6 @@ function fm_save(string $rel, string $content, string $expectedHash = ''): array
     if ($abs === null || !is_file($abs)) {
         return ['ok' => false, 'error' => 'File not found or not allowed.'];
     }
-    if (!is_writable($abs)) {
-        return ['ok' => false, 'error' => 'File is not writable.'];
-    }
     if (strlen($content) > 5 * 1024 * 1024) {
         return ['ok' => false, 'error' => 'Content too large (max 5 MB).'];
     }
@@ -502,16 +474,24 @@ function fm_save(string $rel, string $content, string $expectedHash = ''): array
     if ($expectedHash !== '' && !hash_equals($currentHash, $expectedHash)) {
         return ['ok'=>false,'conflict'=>true,'error'=>'This file changed on disk after you opened it. Reload or copy your draft before saving.','current_hash'=>$currentHash];
     }
-    $tmp = @tempnam(dirname($abs), '.nebula-edit-');
-    if ($tmp === false) {
-        return ['ok' => false, 'error' => 'Save failed (permissions?).'];
+    if (is_writable($abs)) {
+        $tmp = @tempnam(dirname($abs), '.nebula-edit-');
+        if ($tmp === false || @file_put_contents($tmp, $content, LOCK_EX) === false) {
+            if (is_string($tmp)) @unlink($tmp);
+            return ['ok' => false, 'error' => 'Save failed (permissions?).'];
+        }
+        @chmod($tmp, @fileperms($abs) & 0777);
+        if (!@rename($tmp, $abs)) { @unlink($tmp); return ['ok'=>false,'error'=>'Could not replace the file atomically.']; }
+    } else {
+        $staged = fm_stage_path();
+        if ($staged === null || @file_put_contents($staged, $content, LOCK_EX) === false) {
+            if ($staged !== null) @unlink($staged);
+            return ['ok'=>false,'error'=>'Could not stage the file update.'];
+        }
+        @chmod($staged,0600);
+        [$code,$out] = helper_cmd('file-install '.escapeshellarg($staged).' '.escapeshellarg($abs).' yes');
+        if ($code !== 0) { @unlink($staged); return ['ok'=>false,'error'=>trim($out)?:'Could not install the file update.']; }
     }
-    if (@file_put_contents($tmp, $content, LOCK_EX) === false) {
-        @unlink($tmp);
-        return ['ok' => false, 'error' => 'Save failed (permissions?).'];
-    }
-    @chmod($tmp, @fileperms($abs) & 0777);
-    if (!@rename($tmp, $abs)) { @unlink($tmp); return ['ok'=>false,'error'=>'Could not replace the file atomically.']; }
     audit('file.save', fm_rel($abs));
     return ['ok' => true, 'hash' => hash_file('sha256', $abs) ?: '', 'mtime' => @filemtime($abs) ?: time()];
 }
@@ -568,13 +548,15 @@ function fm_op(string $rel, string $destDir, string $op): array
     if (file_exists($target)) {
         return ['ok' => false, 'error' => 'Target already exists in destination.'];
     }
-    if ($op === 'copy') {
-        $ok = is_dir($abs) ? fm_copy_recursive($abs, $target) : @copy($abs, $target);
+    $useHelper = helper_available() && (!is_writable($destAbs) || ($op === 'move' && !is_writable(dirname($abs))));
+    if ($useHelper) {
+        [$code,$out] = helper_cmd('file-op ' . escapeshellarg($op) . ' ' . escapeshellarg($abs) . ' ' . escapeshellarg($target), 300);
+        if ($code !== 0) return ['ok' => false, 'error' => trim($out) ?: ucfirst($op) . ' failed.'];
     } else {
-        $ok = @rename($abs, $target);
-    }
-    if (!$ok) {
-        return ['ok' => false, 'error' => ucfirst($op) . ' failed (permissions?).'];
+        $ok = $op === 'copy'
+            ? (is_dir($abs) ? fm_copy_recursive($abs, $target) : @copy($abs, $target))
+            : @rename($abs, $target);
+        if (!$ok) return ['ok' => false, 'error' => ucfirst($op) . ' failed (permissions?).'];
     }
     audit('file.' . $op, fm_rel($abs) . ' -> ' . fm_rel($target));
     return ['ok' => true];
@@ -583,6 +565,7 @@ function fm_op(string $rel, string $destDir, string $op): array
 /** Handle an uploaded file into relative directory $relDir. */
 function fm_upload(string $relDir, array $file, bool $overwrite = false): array
 {
+    global $config;
     $abs = fm_resolve($relDir);
     if ($abs === null || !is_dir($abs)) {
         return ['ok' => false, 'error' => 'Directory not found or not allowed.'];
@@ -596,9 +579,22 @@ function fm_upload(string $relDir, array $file, bool $overwrite = false): array
     if (!is_uploaded_file($file['tmp_name'])) {
         return ['ok' => false, 'error' => 'Invalid upload.'];
     }
+    $measuredSize = @filesize((string) $file['tmp_name']);
+    $size = max(0, $measuredSize === false ? (int) ($file['size'] ?? 0) : (int) $measuredSize);
+    $maxBytes = max(1024 * 1024, (int) ($config['max_upload_bytes'] ?? 50 * 1024 * 1024));
+    if ($size > $maxBytes) {
+        return ['ok' => false, 'error' => 'Upload exceeds the configured ' . human_bytes($maxBytes) . ' limit.'];
+    }
+    $free = @disk_free_space($abs);
+    if ($free !== false && $free < $size + 16 * 1024 * 1024) {
+        return ['ok' => false, 'error' => 'Not enough free disk space for this upload.'];
+    }
     $name = basename((string) $file['name']);
     if (!fm_valid_name($name)) {
         return ['ok' => false, 'error' => 'Invalid file name.'];
+    }
+    if (empty($config['allow_php_uploads']) && preg_match('/\.(?:php[0-9]?|phtml|phar)$/i', $name)) {
+        return ['ok' => false, 'error' => 'Executable PHP uploads are disabled by policy.'];
     }
     $target = $abs . '/' . $name;
     if (file_exists($target)) {
@@ -609,7 +605,16 @@ function fm_upload(string $relDir, array $file, bool $overwrite = false): array
             return ['ok' => false, 'error' => 'Only an existing regular file can be overwritten.'];
         }
     }
-    if (!@move_uploaded_file($file['tmp_name'], $target)) {
+    if (helper_available()) {
+        $staged = fm_stage_path();
+        if ($staged === null || !@move_uploaded_file($file['tmp_name'], $staged)) {
+            if ($staged !== null) @unlink($staged);
+            return ['ok'=>false,'error'=>'Could not stage uploaded file.'];
+        }
+        @chmod($staged,0600);
+        [$code,$out] = helper_cmd('file-install '.escapeshellarg($staged).' '.escapeshellarg($target).' '.($overwrite?'yes':'no'),120);
+        if ($code !== 0) { @unlink($staged); return ['ok'=>false,'error'=>trim($out)?:'Could not install uploaded file.']; }
+    } elseif (!@move_uploaded_file($file['tmp_name'], $target)) {
         return ['ok' => false, 'error' => 'Could not save uploaded file (permissions?).'];
     }
     audit($overwrite ? 'file.upload.overwrite' : 'file.upload', fm_rel($target));

@@ -107,9 +107,11 @@ $statusBadge = static function (string $status): array {
               <div class="stat-card"><div class="stat-label">Systemd instance</div><div class="stat-val mono" style="font-size:17px"><?= e($unit) ?></div></div>
             </div>
             <div class="flex gap-2" style="flex-wrap:wrap">
-              <button class="btn btn-secondary" data-service-action="start" data-service-name="<?= e($unit) ?>"><i data-lucide="play"></i>Start</button>
-              <button class="btn btn-primary" data-service-action="restart" data-service-name="<?= e($unit) ?>"><i data-lucide="rotate-cw"></i>Restart</button>
-              <button class="btn btn-danger" data-service-action="stop" data-service-name="<?= e($unit) ?>"><i data-lucide="square"></i>Stop</button>
+              <?php if (role_can('services.control')): ?>
+                <button class="btn btn-secondary" data-service-action="start" data-service-name="<?= e($unit) ?>"><i data-lucide="play"></i>Start</button>
+                <button class="btn btn-primary" data-service-action="restart" data-service-name="<?= e($unit) ?>"><i data-lucide="rotate-cw"></i>Restart</button>
+                <button class="btn btn-danger" data-service-action="stop" data-service-name="<?= e($unit) ?>"><i data-lucide="square"></i>Stop</button>
+              <?php else: ?><span class="muted">Read only</span><?php endif; ?>
               <?php if ($enabled !== null): ?><button class="btn btn-secondary" data-service-action="<?= $enabled ? 'disable' : 'enable' ?>" data-service-name="<?= e($unit) ?>"><i data-lucide="power"></i><?= $enabled ? 'Disable at boot' : 'Enable at boot' ?></button><?php endif; ?>
             </div>
           </div>

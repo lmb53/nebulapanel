@@ -19,8 +19,8 @@ function panel_roles(): array
 {
     return [
         'admin' => ['label' => 'Administrator', 'description' => 'Full panel access, including users, updates and settings.'],
-        'operator' => ['label' => 'Operator', 'description' => 'Runs scoped hosting operations without root-equivalent package, Docker, terminal, or panel administration access.'],
-        'developer' => ['label' => 'Developer', 'description' => 'Manages assigned hosting resources without server-level or panel administration access.'],
+        'operator' => ['label' => 'Operator', 'description' => 'Reads operational state and controls the fixed service allowlist; root-equivalent features remain administrator-only.'],
+        'developer' => ['label' => 'Developer', 'description' => 'Read-only until per-resource ownership assignments are configured.'],
         'auditor' => ['label' => 'Auditor', 'description' => 'Read-only access to dashboards, services, logs and diagnostics.'],
     ];
 }
@@ -72,15 +72,56 @@ function panel_user_public(array $user): array
     ];
 }
 
+function panel_password_hash(string $password): string|false
+{
+    if (defined('PASSWORD_ARGON2ID')) {
+        return password_hash($password, PASSWORD_ARGON2ID, [
+            'memory_cost' => 65536,
+            'time_cost' => 4,
+            'threads' => 2,
+        ]);
+    }
+    return password_hash($password, PASSWORD_BCRYPT, ['cost' => 12]);
+}
+
+function panel_password_needs_rehash(string $hash): bool
+{
+    return defined('PASSWORD_ARGON2ID')
+        ? password_needs_rehash($hash, PASSWORD_ARGON2ID, ['memory_cost' => 65536, 'time_cost' => 4, 'threads' => 2])
+        : password_needs_rehash($hash, PASSWORD_BCRYPT, ['cost' => 12]);
+}
+
+/** Local password baseline used for setup, panel users, and password changes. */
+function panel_password_error(string $password, string $username = ''): ?string
+{
+    if (strlen($password) < 12 || strlen($password) > 1024) {
+        return 'Password must be between 12 and 1024 characters.';
+    }
+    $normal = strtolower(preg_replace('/[^a-z0-9]/i', '', $password) ?? '');
+    $common = [
+        'password', 'password123', 'password1234', 'admin123456',
+        'administrator', 'letmein123456', 'qwerty123456', 'welcome123456',
+        'changeme1234', '123456789012',
+    ];
+    if (in_array($normal, $common, true)) {
+        return 'Choose a password that is not in the local common-password list.';
+    }
+    $userNormal = strtolower(preg_replace('/[^a-z0-9]/i', '', $username) ?? '');
+    if (strlen($userNormal) >= 3 && str_contains($normal, $userNormal)) {
+        return 'Password must not contain the username.';
+    }
+    return null;
+}
+
 function panel_user_create(string $username, string $password, string $role): array
 {
     $username = trim($username);
     if (!preg_match('/^[A-Za-z0-9_.-]{3,64}$/', $username)) return ['ok' => false, 'error' => 'Username must be 3-64 letters, numbers, dots, dashes, or underscores.'];
-    if (strlen($password) < 12 || strlen($password) > 1024) return ['ok' => false, 'error' => 'Password must be between 12 and 1024 characters.'];
+    if (($passwordError = panel_password_error($password, $username)) !== null) return ['ok' => false, 'error' => $passwordError];
     if (!isset(panel_roles()[$role])) return ['ok' => false, 'error' => 'Invalid role.'];
     return with_panel_users_lock(function() use($username,$password,$role){
         $users=panel_users();foreach($users as $user)if(strcasecmp((string)($user['username']??''),$username)===0)return ['ok'=>false,'error'=>'That username already exists.'];
-        $ids=array_map(fn($user)=>(int)($user['id']??0),$users);$users[]=['id'=>$ids?max($ids)+1:1,'username'=>$username,'hash'=>password_hash($password,PASSWORD_DEFAULT),'role'=>$role,'enabled'=>true,'created'=>date('c'),'session_version'=>1];
+        $ids=array_map(fn($user)=>(int)($user['id']??0),$users);$users[]=['id'=>$ids?max($ids)+1:1,'username'=>$username,'hash'=>panel_password_hash($password),'role'=>$role,'enabled'=>true,'created'=>date('c'),'session_version'=>1];
         if(!save_panel_users($users))return ['ok'=>false,'error'=>'Could not save the panel user.'];audit('panel_user.create',$username.' ('.$role.')');return ['ok'=>true];
     });
 }
@@ -88,9 +129,9 @@ function panel_user_create(string $username, string $password, string $role): ar
 function panel_user_update(int $id, string $role, bool $enabled, string $password = ''): array
 {
     if (!isset(panel_roles()[$role])) return ['ok' => false, 'error' => 'Invalid role.'];
-    if ($password !== '' && (strlen($password) < 12 || strlen($password) > 1024)) return ['ok' => false, 'error' => 'Password must be between 12 and 1024 characters.'];
+    if ($password !== '' && ($passwordError = panel_password_error($password)) !== null) return ['ok' => false, 'error' => $passwordError];
     return with_panel_users_lock(function() use($id,$role,$enabled,$password){
-        $users=panel_users();$found=false;foreach($users as &$user){if((int)($user['id']??0)!==$id)continue;if((int)($_SESSION['uid']??0)===$id&&(!$enabled||$role!=='admin'))return ['ok'=>false,'error'=>'You cannot disable or demote your own active administrator account.'];$changed=($user['role']??'')!==$role||(bool)($user['enabled']??true)!==$enabled||$password!=='';$user['role']=$role;$user['enabled']=$enabled;if($password!=='')$user['hash']=password_hash($password,PASSWORD_DEFAULT);if($changed)$user['session_version']=max(1,(int)($user['session_version']??1))+1;$found=true;break;}unset($user);
+        $users=panel_users();$found=false;foreach($users as &$user){if((int)($user['id']??0)!==$id)continue;if((int)($_SESSION['uid']??0)===$id&&(!$enabled||$role!=='admin'))return ['ok'=>false,'error'=>'You cannot disable or demote your own active administrator account.'];$changed=($user['role']??'')!==$role||(bool)($user['enabled']??true)!==$enabled||$password!=='';$user['role']=$role;$user['enabled']=$enabled;if($password!=='')$user['hash']=panel_password_hash($password);if($changed)$user['session_version']=max(1,(int)($user['session_version']??1))+1;$found=true;break;}unset($user);
         if(!$found)return ['ok'=>false,'error'=>'Panel user not found.'];if(!save_panel_users($users))return ['ok'=>false,'error'=>'Could not save the panel user.'];audit('panel_user.update','id '.$id.' ('.$role.', '.($enabled?'enabled':'disabled').')');return ['ok'=>true];
     });
 }
@@ -103,6 +144,10 @@ function panel_user_delete(int $id): array
 
 function current_role(): string
 {
+    if (function_exists('is_api_token_authenticated') && is_api_token_authenticated()) {
+        global $apiAuthRole;
+        return (string) ($apiAuthRole ?? 'auditor');
+    }
     return (string) ($_SESSION['role'] ?? 'auditor');
 }
 
@@ -111,10 +156,9 @@ function role_can(string $capability, ?string $role = null): bool
     $role = $role ?? current_role();
     if ($role === 'admin') { return true; }
     $common = ['dashboard.read','services.read','logs.read','sysinfo.read','diagnostics.read','notifications.read'];
-    $hosting = ['websites.manage','files.manage','domains.manage','dns.manage','ssl.manage','php.manage','databases.manage','phpmyadmin.use'];
     $caps = $role === 'operator'
-        ? array_merge($common, $hosting, ['mail.manage','services.control','cron.manage','firewall.manage','backups.manage'])
-        : ($role === 'developer' ? array_merge($common, $hosting) : $common);
+        ? array_merge($common, ['services.control'])
+        : $common;
     return in_array($capability, $caps, true);
 }
 
@@ -132,16 +176,16 @@ function role_route_allowed(string $route, ?string $role = null): bool
 {
     $role = $role ?? current_role();
     if ($role === 'admin') return true;
-    $common = ['dashboard','services','logs','sysinfo','diagnostics','notifications'];
-    $operator = array_merge($common, ['websites','files','file-edit','domains','dns','ssl','php','databases','phpmyadmin','mail','cron','firewall','backups']);
-    $developer = array_merge($common, ['websites','files','file-edit','domains','dns','ssl','php','databases','phpmyadmin']);
+    $common = ['dashboard','services','service','logs','sysinfo','diagnostics','notifications'];
+    $operator = $common;
+    $developer = $common;
     $allowed = $role === 'operator' ? $operator : ($role === 'developer' ? $developer : $common);
     return in_array($route, $allowed, true);
 }
 
 function api_route_owner(string $name): string
 {
-    $map = ['metrics'=>'dashboard','health'=>'dashboard','processes'=>'dashboard','file-upload'=>'files','file-state'=>'files','file-save'=>'files','file-rename'=>'files','file-owner'=>'files','file-op'=>'files','file-mkfile'=>'files','file-mkdir'=>'files','file-chmod'=>'files','file-compress'=>'files','file-delete'=>'files','file-tree'=>'files','sites'=>'websites','git'=>'websites','compose'=>'docker','fail2ban'=>'firewall','modsecurity'=>'firewall','provision'=>'apps','pma'=>'phpmyadmin','selfupdate'=>'selfupdate'];
+    $map = ['metrics'=>'dashboard','health'=>'dashboard','processes'=>'dashboard','file-upload'=>'files','file-state'=>'files','file-save'=>'files','file-rename'=>'files','file-op'=>'files','file-mkfile'=>'files','file-mkdir'=>'files','file-chmod'=>'files','file-compress'=>'files','file-delete'=>'files','file-tree'=>'files','sites'=>'websites','git'=>'websites','compose'=>'docker','fail2ban'=>'firewall','modsecurity'=>'firewall','provision'=>'apps','pma'=>'phpmyadmin','selfupdate'=>'selfupdate'];
     return $map[$name] ?? $name;
 }
 
@@ -159,16 +203,29 @@ function is_setup_complete(): bool
 }
 
 /** Create the admin account (first-run only). */
-function create_admin(string $username, string $password): array
+function bootstrap_file(): string
+{
+    return DATA_DIR . '/bootstrap.json';
+}
+
+function create_admin(string $username, string $password, string $bootstrapToken = ''): array
 {
     $username = trim($username);
     if (!preg_match('/^[A-Za-z0-9_.-]{3,64}$/', $username)) {
         return ['ok' => false, 'error' => 'Username must be 3–64 letters, numbers, dots, dashes, or underscores.'];
     }
-    if (strlen($password) < 12 || strlen($password) > 1024) {
-        return ['ok' => false, 'error' => 'Password must be between 12 and 1024 characters.'];
+    if (($passwordError = panel_password_error($password, $username)) !== null) {
+        return ['ok' => false, 'error' => $passwordError];
     }
-    $hash = password_hash($password, PASSWORD_DEFAULT);
+    $bootstrap = @json_decode((string) @file_get_contents(bootstrap_file()), true);
+    if (!is_array($bootstrap)
+        || empty($bootstrap['hash'])
+        || (int) ($bootstrap['expires_at'] ?? 0) < time()
+        || !hash_equals((string) $bootstrap['hash'], hash('sha256', $bootstrapToken))) {
+        audit('setup.denied', 'invalid or expired bootstrap token');
+        return ['ok' => false, 'error' => 'The bootstrap token is invalid or expired. Re-run the installer to issue a new one.'];
+    }
+    $hash = panel_password_hash($password);
     if ($hash === false) {
         return ['ok' => false, 'error' => 'Could not hash the password.'];
     }
@@ -194,6 +251,8 @@ function create_admin(string $username, string $password): array
     if (!$ok) {
         return ['ok' => false, 'error' => 'Could not write ' . admin_file() . ' — check permissions.'];
     }
+    @unlink(bootstrap_file());
+    audit('setup.complete', $username);
     return ['ok' => true];
 }
 
@@ -203,15 +262,16 @@ function login_attempts_file(): string
 }
 
 /** Return seconds until another login is allowed (0 means allowed). */
-function login_retry_after(?string $ip = null): int
+function login_retry_after(?string $ip = null, string $username = ''): int
 {
     global $config;
     $ip = $ip ?? client_ip();
     $max = max(1, (int) ($config['login_max_attempts'] ?? 5));
     $window = max(60, (int) ($config['login_window'] ?? 600));
     $data = @json_decode((string) @file_get_contents(login_attempts_file()), true);
-    $attempts = is_array($data) && isset($data[hash('sha256', $ip)]) && is_array($data[hash('sha256', $ip)])
-        ? $data[hash('sha256', $ip)] : [];
+    $key = hash('sha256', $ip . "\0" . strtolower(trim($username)));
+    $attempts = is_array($data) && isset($data[$key]) && is_array($data[$key])
+        ? $data[$key] : [];
     $cutoff = time() - $window;
     $attempts = array_values(array_filter($attempts, fn($ts) => (int) $ts > $cutoff));
     if (count($attempts) < $max) {
@@ -221,11 +281,11 @@ function login_retry_after(?string $ip = null): int
 }
 
 /** Atomically reserve one attempt, returning retry seconds when blocked. */
-function reserve_login_attempt(?string $ip = null): int
+function reserve_login_attempt(?string $ip = null, string $username = ''): int
 {
     global $config;
     $ip = $ip ?? client_ip();
-    $key = hash('sha256', $ip);
+    $key = hash('sha256', $ip . "\0" . strtolower(trim($username)));
     $max = max(1, (int) ($config['login_max_attempts'] ?? 5));
     $window = max(60, (int) ($config['login_window'] ?? 600));
     $path = login_attempts_file();
@@ -257,11 +317,11 @@ function reserve_login_attempt(?string $ip = null): int
     return $retry;
 }
 
-function record_login_attempt(bool $success, ?string $ip = null): void
+function record_login_attempt(bool $success, ?string $ip = null, string $username = ''): void
 {
     global $config;
     $ip = $ip ?? client_ip();
-    $key = hash('sha256', $ip);
+    $key = hash('sha256', $ip . "\0" . strtolower(trim($username)));
     $window = max(60, (int) ($config['login_window'] ?? 600));
     $path = login_attempts_file();
     $handle = @fopen($path, 'c+');
@@ -318,8 +378,8 @@ function attempt_login(string $username, string $password): bool
                 unset($candidate);
                 return ['ok' => false];
             }
-            if (password_needs_rehash((string) $candidate['hash'], PASSWORD_DEFAULT)) {
-                $candidate['hash'] = password_hash($password, PASSWORD_DEFAULT);
+            if (panel_password_needs_rehash((string) $candidate['hash'])) {
+                $candidate['hash'] = panel_password_hash($password);
             }
             $candidate['last_login'] = date('c');
             $fresh = $candidate;
@@ -339,7 +399,9 @@ function attempt_login(string $username, string $password): bool
     $_SESSION['role'] = (string) ($matched['role'] ?? 'admin');
     $_SESSION['session_version'] = max(1, (int) ($matched['session_version'] ?? 1));
     $_SESSION['last_seen'] = time();
-    record_login_attempt(true);
+    $_SESSION['created_at'] = time();
+    $_SESSION['rotated_at'] = time();
+    record_login_attempt(true, null, $username);
     audit('login', 'success');
     return true;
 }
@@ -379,12 +441,17 @@ function logout_user(): void
 
 function current_user(): ?string
 {
+    if (function_exists('is_api_token_authenticated') && is_api_token_authenticated()) {
+        global $apiAuthLabel;
+        return 'token:' . (string) $apiAuthLabel;
+    }
     return $_SESSION['username'] ?? null;
 }
 
 function is_logged_in(): bool
 {
-    return !empty($_SESSION['uid']);
+    return !empty($_SESSION['uid'])
+        || (function_exists('is_api_token_authenticated') && is_api_token_authenticated());
 }
 
 /** Guard: require an authenticated session or bounce to login/setup. */

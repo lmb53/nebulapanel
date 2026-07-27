@@ -9,7 +9,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $body = read_json_body();
     $action = (string) ($body['action'] ?? '');
     if ($action === 'create') {
-        $res = backup_create((string) ($body['source'] ?? ''), (string) ($body['label'] ?? ''));
+        $res = backup_create((string) ($body['site_id'] ?? ''), (string) ($body['label'] ?? ''));
     } elseif ($action === 'delete') {
         $res = backup_delete((string) ($body['file'] ?? ''));
     } elseif ($action === 'verify') {

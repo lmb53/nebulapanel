@@ -37,6 +37,17 @@ function mail_save(array $state): bool
     return write_json_file(mail_file(), $state, 0600);
 }
 
+function with_mail_state_lock(callable $callback)
+{
+    $handle = @fopen(DATA_DIR . '/mail-state.lock', 'c');
+    if ($handle === false || !@flock($handle, LOCK_EX)) {
+        if (is_resource($handle)) fclose($handle);
+        return ['ok'=>false,'error'=>'Could not lock mail state.'];
+    }
+    try { return $callback(); }
+    finally { @flock($handle,LOCK_UN);fclose($handle); }
+}
+
 /** Ordered list of configured mail domains. */
 function mail_domains(): array
 {
@@ -70,18 +81,11 @@ function mail_status(): array
     return $status;
 }
 
-/** Best-effort primary public IPv4 of this host. */
+/** Explicit public address configured by the installer. */
 function mail_server_ip(): string
 {
-    [$code, $out] = run_cmd('hostname -I 2>/dev/null');
-    if ($code === 0) {
-        foreach (preg_split('/\s+/', trim($out)) as $ip) {
-            if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4)) {
-                return $ip;
-            }
-        }
-    }
-    return '';
+    $ip = trim((string) @file_get_contents('/etc/nebula-panel/public-ip'));
+    return filter_var($ip, FILTER_VALIDATE_IP) !== false ? $ip : '';
 }
 
 /** Human-readable login/auth diagnostics from the mail server. */
@@ -367,6 +371,33 @@ function mail_apply(): array
     return $code === 0 ? ['ok' => true] : ['ok' => false, 'error' => sudo_error($out, $code)];
 }
 
+/**
+ * Save a mail-state mutation and apply it. If the runtime apply fails, restore
+ * both the previous state and the previous generated maps before returning.
+ */
+function mail_commit_state(array $previous, array $next, string $label): array
+{
+    return with_mail_state_lock(static function () use ($previous,$next,$label): array {
+        if (hash('sha256',serialize(mail_state())) !== hash('sha256',serialize($previous))) {
+            return ['ok'=>false,'conflict'=>true,'error'=>'Mail state changed in another session; reload and retry.'];
+        }
+        if (!mail_save($next)) {
+            return ['ok' => false, 'error' => 'Could not save ' . $label . '.'];
+        }
+        $applied = mail_apply();
+        if (!empty($applied['ok'])) {
+            return ['ok' => true];
+        }
+        $stateRestored = mail_save($previous);
+        $runtimeRestored = $stateRestored ? mail_apply() : ['ok' => false];
+        $suffix = (!empty($runtimeRestored['ok']))
+            ? ' The previous configuration was restored.'
+            : ' Automatic rollback also failed; run the mail repair action.';
+        return ['ok' => false, 'error' => 'The mail server rejected the change: '
+            . ($applied['error'] ?? 'unknown error') . $suffix];
+    });
+}
+
 /** SHA-512 crypt hash in the scheme Dovecot's passwd-file expects. */
 function mail_hash_password(string $password): string
 {
@@ -376,7 +407,7 @@ function mail_hash_password(string $password): string
 
 function mail_valid_domain(string $domain): bool
 {
-    return (bool) preg_match('/^[a-zA-Z0-9]([a-zA-Z0-9.-]{0,251}[a-zA-Z0-9])?$/', $domain) && strpos($domain, '.') !== false;
+    return domain_name_ok($domain);
 }
 
 function mail_valid_localpart(string $local): bool
@@ -402,14 +433,10 @@ function mail_domain_add(string $domain): array
     if (isset($state['domains'][$domain])) {
         return ['ok' => false, 'error' => 'That mail domain already exists.'];
     }
+    $previous = $state;
     $state['domains'][$domain] = ['created' => date('c'), 'selector' => 'mail'];
-    if (!mail_save($state)) {
-        return ['ok' => false, 'error' => 'Could not save the mail domain.'];
-    }
-    $applied = mail_apply();
-    if (empty($applied['ok'])) {
-        return ['ok' => true, 'warning' => 'Domain saved, but the mail server could not be updated: ' . ($applied['error'] ?? 'unknown error')];
-    }
+    $committed = mail_commit_state($previous, $state, 'the mail domain');
+    if (empty($committed['ok'])) return $committed;
     audit('mail.domain.add', $domain);
     return ['ok' => true];
 }
@@ -421,13 +448,12 @@ function mail_domain_delete(string $domain): array
     if (!isset($state['domains'][$domain])) {
         return ['ok' => false, 'error' => 'Mail domain not found.'];
     }
+    $previous = $state;
     unset($state['domains'][$domain]);
     $state['accounts'] = array_values(array_filter($state['accounts'], fn($a) => !str_ends_with((string) ($a['email'] ?? ''), '@' . $domain)));
     $state['aliases']  = array_values(array_filter($state['aliases'], fn($a) => !str_ends_with((string) ($a['from'] ?? ''), '@' . $domain)));
-    if (!mail_save($state)) {
-        return ['ok' => false, 'error' => 'Could not save mail state.'];
-    }
-    mail_apply();
+    $committed = mail_commit_state($previous, $state, 'mail state');
+    if (empty($committed['ok'])) return $committed;
     audit('mail.domain.delete', $domain);
     return ['ok' => true];
 }
@@ -440,8 +466,8 @@ function mail_account_add(string $email, string $password): array
     if (!mail_valid_email($email)) {
         return ['ok' => false, 'error' => 'Enter a valid email address.'];
     }
-    if (strlen($password) < 8 || strlen($password) > 1024) {
-        return ['ok' => false, 'error' => 'Mailbox password must be between 8 and 1024 characters.'];
+    if (($passwordError = panel_password_error($password, strstr($email, '@', true) ?: '')) !== null) {
+        return ['ok' => false, 'error' => 'Mailbox ' . lcfirst($passwordError)];
     }
     $domain = substr($email, strpos($email, '@') + 1);
     $state = mail_state();
@@ -453,14 +479,10 @@ function mail_account_add(string $email, string $password): array
             return ['ok' => false, 'error' => 'That mailbox already exists.'];
         }
     }
+    $previous = $state;
     $state['accounts'][] = ['email' => $email, 'hash' => mail_hash_password($password), 'created' => date('c')];
-    if (!mail_save($state)) {
-        return ['ok' => false, 'error' => 'Could not save the mailbox.'];
-    }
-    $applied = mail_apply();
-    if (empty($applied['ok'])) {
-        return ['ok' => true, 'warning' => 'Mailbox saved, but the mail server could not be updated: ' . ($applied['error'] ?? 'unknown error')];
-    }
+    $committed = mail_commit_state($previous, $state, 'the mailbox');
+    if (empty($committed['ok'])) return $committed;
     audit('mail.account.add', $email);
     return ['ok' => true];
 }
@@ -468,10 +490,11 @@ function mail_account_add(string $email, string $password): array
 function mail_account_passwd(string $email, string $password): array
 {
     $email = strtolower(trim($email));
-    if (strlen($password) < 8 || strlen($password) > 1024) {
-        return ['ok' => false, 'error' => 'Mailbox password must be between 8 and 1024 characters.'];
+    if (($passwordError = panel_password_error($password, strstr($email, '@', true) ?: '')) !== null) {
+        return ['ok' => false, 'error' => 'Mailbox ' . lcfirst($passwordError)];
     }
     $state = mail_state();
+    $previous = $state;
     $found = false;
     foreach ($state['accounts'] as &$a) {
         if (strcasecmp((string) ($a['email'] ?? ''), $email) === 0) {
@@ -484,10 +507,8 @@ function mail_account_passwd(string $email, string $password): array
     if (!$found) {
         return ['ok' => false, 'error' => 'Mailbox not found.'];
     }
-    if (!mail_save($state)) {
-        return ['ok' => false, 'error' => 'Could not save the mailbox.'];
-    }
-    mail_apply();
+    $committed = mail_commit_state($previous, $state, 'the mailbox');
+    if (empty($committed['ok'])) return $committed;
     audit('mail.account.passwd', $email);
     return ['ok' => true];
 }
@@ -496,15 +517,14 @@ function mail_account_delete(string $email): array
 {
     $email = strtolower(trim($email));
     $state = mail_state();
+    $previous = $state;
     $next = array_values(array_filter($state['accounts'], fn($a) => strcasecmp((string) ($a['email'] ?? ''), $email) !== 0));
     if (count($next) === count($state['accounts'])) {
         return ['ok' => false, 'error' => 'Mailbox not found.'];
     }
     $state['accounts'] = $next;
-    if (!mail_save($state)) {
-        return ['ok' => false, 'error' => 'Could not save mail state.'];
-    }
-    mail_apply();
+    $committed = mail_commit_state($previous, $state, 'mail state');
+    if (empty($committed['ok'])) return $committed;
     audit('mail.account.delete', $email);
     return ['ok' => true];
 }
@@ -531,14 +551,10 @@ function mail_alias_add(string $from, string $to): array
             return ['ok' => false, 'error' => 'That alias already exists.'];
         }
     }
+    $previous = $state;
     $state['aliases'][] = ['from' => $from, 'to' => $to, 'created' => date('c')];
-    if (!mail_save($state)) {
-        return ['ok' => false, 'error' => 'Could not save the alias.'];
-    }
-    $applied = mail_apply();
-    if (empty($applied['ok'])) {
-        return ['ok' => true, 'warning' => 'Alias saved, but the mail server could not be updated: ' . ($applied['error'] ?? 'unknown error')];
-    }
+    $committed = mail_commit_state($previous, $state, 'the alias');
+    if (empty($committed['ok'])) return $committed;
     audit('mail.alias.add', $from . ' -> ' . $to);
     return ['ok' => true];
 }
@@ -548,15 +564,14 @@ function mail_alias_delete(string $from, string $to): array
     $from = strtolower(trim($from));
     $to   = strtolower(trim($to));
     $state = mail_state();
+    $previous = $state;
     $next = array_values(array_filter($state['aliases'], fn($a) => !(strcasecmp((string) ($a['from'] ?? ''), $from) === 0 && strcasecmp((string) ($a['to'] ?? ''), $to) === 0)));
     if (count($next) === count($state['aliases'])) {
         return ['ok' => false, 'error' => 'Alias not found.'];
     }
     $state['aliases'] = $next;
-    if (!mail_save($state)) {
-        return ['ok' => false, 'error' => 'Could not save mail state.'];
-    }
-    mail_apply();
+    $committed = mail_commit_state($previous, $state, 'mail state');
+    if (empty($committed['ok'])) return $committed;
     audit('mail.alias.delete', $from);
     return ['ok' => true];
 }
@@ -599,7 +614,8 @@ function mail_dns_records(string $domain): array
     // Pin the sending server's IP into SPF so mail is authorised even when the
     // MX host resolves elsewhere (or DNS hasn't propagated yet). Fall back to a
     // plain `mx` mechanism only when we can't determine the public IP.
-    $spf = $ip !== '' ? ('v=spf1 mx ip4:' . $ip . ' ~all') : 'v=spf1 mx ~all';
+    $mechanism = filter_var($ip,FILTER_VALIDATE_IP,FILTER_FLAG_IPV6) ? 'ip6:' : 'ip4:';
+    $spf = $ip !== '' ? ('v=spf1 mx ' . $mechanism . $ip . ' ~all') : 'v=spf1 mx ~all';
     $records = [
         ['type' => 'A',   'name' => 'mail', 'value' => $ip ?: 'YOUR.SERVER.IP', 'ttl' => 3600, 'priority' => null,
          'note' => 'Points the mail host at this server.'],

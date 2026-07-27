@@ -53,7 +53,7 @@ $apacheStatus = service_status('apache2');
         </div>
         <div>
           <label class="field-label">Document root</label>
-          <input class="input mono" id="wsDocroot" placeholder="/var/www/example.com">
+          <input class="input mono" value="Allocated automatically under /srv/nebula/sites" disabled>
         </div>
         <div>
           <label class="field-label">PHP</label>
@@ -74,7 +74,7 @@ $apacheStatus = service_status('apache2');
         <button class="btn btn-primary" id="wsCreate"><i data-lucide="plus"></i>Add Website</button>
       </div>
       <div style="font-size:12px;color:var(--text-tertiary);margin-top:10px">
-        Document root defaults to <span class="mono">/var/www/&lt;domain&gt;</span> when left blank.
+        Each website receives an immutable ID, a confined document root, and a dedicated PHP-FPM identity.
       </div>
     </div>
   </div>
@@ -186,11 +186,10 @@ $apacheStatus = service_status('apache2');
 
     document.getElementById('wsCreate')?.addEventListener('click', async () => {
       const domain = document.getElementById('wsDomain').value.trim();
-      const docroot = document.getElementById('wsDocroot').value.trim();
       const php = document.getElementById('wsPhp').value;
       if (!domain) { toast('Enter a domain', 'warning'); return; }
       if (!php) { toast('No PHP version available', 'warning'); return; }
-      const res = await apiPost('sites', { action: 'create', domain, docroot, php });
+      const res = await apiPost('sites', { action: 'create', domain, php });
       if (res.ok) { toast('Website added', 'success'); setTimeout(() => location.reload(), 500); }
       else toast(res.error || 'Failed', 'error');
     });

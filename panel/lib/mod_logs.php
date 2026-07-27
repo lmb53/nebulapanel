@@ -32,31 +32,33 @@ function log_sources(): array
 function log_read(string $id, int $lines): string
 {
     $lines = max(10, min(2000, $lines));
+    $allowed = array_column(log_sources(), 'id');
+    if (!in_array($id, $allowed, true)) {
+        audit('log.read.denied', $id);
+        return 'Source not allowed.';
+    }
 
     if (strpos($id, 'unit:') === 0) {
         $unit = substr($id, 5);
-        if (!preg_match('/^[A-Za-z0-9@._-]+$/', $unit)) {
-            return 'Invalid unit.';
-        }
-        [$code, $out] = run_cmd('journalctl -u ' . escapeshellarg($unit) . ' -n ' . $lines . ' --no-pager 2>&1');
-        if ($code !== 0) {
-            [$code, $out] = sudo_cmd('journalctl -u ' . escapeshellarg($unit) . ' -n ' . $lines . ' --no-pager');
-        }
-        return $out;
+        [$code, $out] = helper_cmd('log-read-unit ' . escapeshellarg($unit) . ' ' . $lines, 15);
+        audit('log.read', $id . ' exit=' . $code);
+        return log_redact(substr($out, 0, 1024 * 1024));
     }
 
     if (strpos($id, 'file:') === 0) {
         $path = substr($id, 5);
-        $real = realpath($path);
-        if ($real === false || !str_starts_with($real, '/var/log/')) {
-            return 'File not allowed.';
-        }
-        [$code, $out] = run_cmd('tail -n ' . $lines . ' ' . escapeshellarg($real) . ' 2>&1');
-        if ($code !== 0) {
-            [$code, $out] = sudo_cmd('tail -n ' . $lines . ' ' . escapeshellarg($real));
-        }
-        return $out;
+        [$code, $out] = helper_cmd('log-read-file ' . escapeshellarg($path) . ' ' . $lines, 15);
+        audit('log.read', $id . ' exit=' . $code);
+        return log_redact(substr($out, 0, 1024 * 1024));
     }
 
     return 'Unknown source.';
+}
+
+function log_redact(string $text): string
+{
+    $text = redact_secrets($text);
+    $text = preg_replace('/\b(Bearer|Basic)\s+[A-Za-z0-9._~+\/=-]+/i', '$1 [redacted]', $text) ?? $text;
+    $text = preg_replace('/\b(mysql|postgres(?:ql)?):\/\/[^@\s]+@/i', '$1://[redacted]@', $text) ?? $text;
+    return $text;
 }

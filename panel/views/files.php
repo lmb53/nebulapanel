@@ -13,8 +13,6 @@ $breadcrumbs = fm_breadcrumbs($rel);
 $fmState = fm_state();
 $pinnedEntries = fm_state_entries('pinned');
 $recentEntries = fm_state_entries('recent');
-$ownerOptions = fm_account_names('user');
-$groupOptions = fm_account_names('group');
 $currentPinned = in_array($rel, $fmState['pinned'], true);
 ?>
 <?php
@@ -376,13 +374,6 @@ if ($rel !== '') {
           </div>
           <button class="btn btn-secondary btn-sm" id="fmSavePerms" style="width:100%;justify-content:center;margin-top:8px"><i data-lucide="shield-check"></i>Apply permissions</button>
 
-          <div class="fm-section-title">Ownership</div>
-          <label class="field-label" for="fmOwnerSelect">Owner</label>
-          <select class="fm-select-mini" id="fmOwnerSelect" style="margin-bottom:8px"><?php foreach ($ownerOptions as $account): ?><option value="<?= e($account) ?>"><?= e($account) ?></option><?php endforeach; ?></select>
-          <label class="field-label" for="fmGroupSelect">Group</label>
-          <select class="fm-select-mini" id="fmGroupSelect"><?php foreach ($groupOptions as $account): ?><option value="<?= e($account) ?>"><?= e($account) ?></option><?php endforeach; ?></select>
-          <button class="btn btn-secondary btn-sm" id="fmSaveOwner" style="width:100%;justify-content:center;margin-top:8px"><i data-lucide="user-cog"></i>Change ownership</button>
-
           <div style="display:flex;flex-direction:column;gap:8px;margin-top:16px">
             <a class="btn btn-secondary" id="fmPropOpen" style="width:100%;justify-content:center"><i data-lucide="pencil-line"></i><span id="fmPropOpenLabel">Open</span></a>
             <a class="btn btn-secondary" id="fmPropDownload" style="width:100%;justify-content:center"><i data-lucide="download"></i>Download</a>
@@ -627,10 +618,6 @@ document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('fmPropPerms').textContent = d.perms;
     document.getElementById('fmPropModified').textContent = d.modified;
     fillPermissionGrid(d.perms);
-    const ownerSelect = document.getElementById('fmOwnerSelect');
-    const groupSelect = document.getElementById('fmGroupSelect');
-    if (ownerSelect && Array.from(ownerSelect.options).some((o) => o.value === d.owner)) ownerSelect.value = d.owner;
-    if (groupSelect && Array.from(groupSelect.options).some((o) => o.value === d.group)) groupSelect.value = d.group;
     const thumb = document.getElementById('fmPropThumb');
     if (thumb) {
       const ico = document.createElement('i');
@@ -676,15 +663,6 @@ document.addEventListener('DOMContentLoaded', () => {
     if (res.ok) { toast('Permissions changed', 'success'); reload(); }
     else toast(res.error || 'Permissions change failed', 'error');
   });
-  bindClick('fmSaveOwner', async () => {
-    if (!propsRow) return;
-    const owner = document.getElementById('fmOwnerSelect').value;
-    const group = document.getElementById('fmGroupSelect').value;
-    const res = await apiPost('file-owner', { path: propsRow.dataset.path, owner, group });
-    if (res.ok) { toast('Ownership changed', 'success'); reload(); }
-    else toast(res.error || 'Ownership change failed', 'error');
-  });
-
   function markSelected(row) {
     document.querySelectorAll('.fm-row').forEach((r) => r.classList.remove('fm-row-selected'));
     row.classList.add('fm-row-selected');

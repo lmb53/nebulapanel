@@ -37,9 +37,11 @@ foreach ($services as $s) {
     <div class="page-actions" data-svc="<?= e($name) ?>">
       <span class="badge <?= e($badge[0]) ?>" data-svc-badge style="align-self:center"><span class="bdot"></span><?= e($badge[1]) ?></span>
       <span class="badge <?= $enabled === true ? 'badge-blue' : 'badge-slate' ?>" data-svc-enabled><?= $enabled === true ? 'Boot enabled' : ($enabled === false ? 'Boot disabled' : 'Boot N/A') ?></span>
-      <button class="btn btn-secondary" data-action="start"><i data-lucide="play"></i>Start</button>
-      <button class="btn btn-secondary" data-action="restart"><i data-lucide="rotate-cw"></i>Restart</button>
-      <button class="btn btn-danger" data-action="stop"><i data-lucide="square"></i>Stop</button>
+      <?php if (role_can('services.control')): ?>
+        <button class="btn btn-secondary" data-action="start"><i data-lucide="play"></i>Start</button>
+        <button class="btn btn-secondary" data-action="restart"><i data-lucide="rotate-cw"></i>Restart</button>
+        <button class="btn btn-danger" data-action="stop"><i data-lucide="square"></i>Stop</button>
+      <?php endif; ?>
       <?php if ($enabled !== null): ?><button class="btn btn-secondary" data-action="<?= $enabled ? 'disable' : 'enable' ?>" data-enable-toggle><i data-lucide="power"></i><?= $enabled ? 'Disable at boot' : 'Enable at boot' ?></button><?php endif; ?>
     </div>
   </div>

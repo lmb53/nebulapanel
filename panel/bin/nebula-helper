@@ -2,7 +2,7 @@
 #
 # nebula-helper — the ONLY privileged surface of Nebula Panel.
 # Installed root-owned to /usr/local/bin/nebula-helper with a single sudoers
-# rule (www-data ALL=(root) NOPASSWD: /usr/local/bin/nebula-helper *).
+# rule (nebula-panel ALL=(root) NOPASSWD: /usr/local/bin/nebula-helper *).
 #
 # It performs a fixed, validated set of operations so the panel never needs a
 # broad `tee`/`ln`/`mkdir`/`certbot` sudo grant. Every argument is validated
@@ -14,6 +14,11 @@ NGINX_AV=/etc/nginx/sites-available
 NGINX_EN=/etc/nginx/sites-enabled
 FM_ROOT_FILE=/etc/nebula-panel/fm-root
 PANEL_ROOT_FILE=/etc/nebula-panel/panel-root
+PUBLIC_IP_FILE=/etc/nebula-panel/public-ip
+SITES_ROOT=/srv/nebula/sites
+SITES_STATE=/etc/nebula-panel/sites
+SITES_TRASH=/srv/nebula/trash
+FILE_TRASH=/var/lib/nebula-panel/file-trash
 BIND_ZONE_DIR=/etc/bind/nebula-zones
 BIND_ZONE_CONF=/etc/bind/nebula-zones.conf
 MODSEC_DIR=/etc/nginx/modsec
@@ -28,12 +33,101 @@ MAIL_VGID=5000
 DKIM_DIR="$MAIL_DIR/dkim"
 
 die() { echo "$*" >&2; exit 2; }
-valid_domain() { [[ "$1" =~ ^[a-zA-Z0-9]([a-zA-Z0-9.-]{0,251}[a-zA-Z0-9])?$ ]] || die "invalid domain"; }
+valid_domain() {
+  local domain="$1" label
+  local -a labels
+  [[ "$domain" == "${domain,,}" && ${#domain} -le 253 && "$domain" == *.* && "$domain" != *..* ]] || die "invalid domain"
+  IFS=. read -ra labels <<<"$domain"
+  for label in "${labels[@]}"; do
+    [[ ${#label} -ge 1 && ${#label} -le 63 && "$label" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]] || die "invalid domain"
+  done
+}
 valid_path()   { [[ "$1" =~ ^/[a-zA-Z0-9._/-]+$ && "$1" != *".."* ]] || die "invalid path"; }
 valid_php()    { [[ "$1" =~ ^[0-9]+\.[0-9]+$ ]] || die "invalid php version"; }
 valid_email()  { [[ -z "$1" || "$1" =~ ^[^@[:space:]]+@[^@[:space:]]+$ ]] || die "invalid email"; }
 valid_user()   { [[ "$1" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] || die "invalid user"; }
 valid_group()  { [[ "$1" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] || die "invalid group"; }
+valid_site_id(){ [[ "$1" =~ ^[a-f0-9]{32}$ ]] || die "invalid site id"; }
+valid_component(){ [[ "$1" != "." && "$1" != ".." && "$1" =~ ^[A-Za-z0-9._\ -]{1,255}$ ]] || die "invalid path component"; }
+valid_docker_id(){ [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,127}$ ]] || die "invalid Docker identifier"; }
+valid_docker_name(){ [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$ ]] || die "invalid Docker name"; }
+valid_pinned_image() {
+  local image="$1" tail
+  [[ ${#image} -le 255 && "$image" =~ ^[A-Za-z0-9][A-Za-z0-9._/@:-]+$ ]] || die "invalid Docker image"
+  if [[ "$image" =~ @sha256:[a-f0-9]{64}$ ]]; then return; fi
+  tail="${image##*/}"
+  [[ "$tail" == *:* && "${tail##*:}" != "latest" ]] || die "Docker image must use a non-latest tag or digest"
+}
+compose_policy_check() {
+  local file="$1" line value
+  [[ "$(stat -c %s "$file")" -le 262144 ]] || die "Compose file is too large"
+  grep -Eq '^[[:space:]]*services[[:space:]]*:' "$file" || die "Compose services are required"
+  if grep -Eiq \
+    '^[[:space:]]*(privileged[[:space:]]*:[[:space:]]*true|(network_mode|pid|ipc|uts|userns_mode)[[:space:]]*:[[:space:]]*host|devices[[:space:]]*:|cap_add[[:space:]]*:|type[[:space:]]*:[[:space:]]*bind|build[[:space:]]*:|env_file[[:space:]]*:|extends[[:space:]]*:|include[[:space:]]*:|configs[[:space:]]*:|secrets[[:space:]]*:|volumes_from[[:space:]]*:|published[[:space:]]*:|driver_opts[[:space:]]*:|cgroup[^:]*:|sysctls[[:space:]]*:)' "$file"; then
+    die "Compose policy rejected a host-integrated option"
+  fi
+  grep -Eiq '/var/run/docker\.sock|^[[:space:]]*-[[:space:]]*["'\'']?(/|\./|\.\./|~/)[^:]*:' "$file" \
+    && die "Compose policy rejected a host bind mount"
+  grep -Eq '\$\{' "$file" && die "Compose variable interpolation is not allowed"
+  grep -Eiq '^[[:space:]]*image[[:space:]]*:' "$file" || die "Compose services must use pinned images"
+  while IFS= read -r line; do
+    value="${line#*:}"; value="${value%%#*}"; value="${value//[[:space:]\"\']/}"
+    [[ -n "$value" ]] || die "invalid Compose image"
+    valid_pinned_image "$value"
+  done < <(grep -Ei '^[[:space:]]*image[[:space:]]*:' "$file")
+  while IFS= read -r line; do
+    value="${line#*-}"; value="${value//[[:space:]\"\']/}"
+    if [[ "$value" =~ ^([0-9.]+|\[[0-9a-fA-F:]+\]|::):[0-9]+:[0-9]+(/(tcp|udp))?$ ]]; then
+      [[ "$value" == 127.0.0.1:* || "$value" == \[::1\]:* ]] || die "published ports must bind to loopback"
+    elif [[ "$value" =~ ^[0-9]+:[0-9]+(/(tcp|udp))?$ ]]; then
+      die "published ports must bind to loopback"
+    fi
+  done < <(grep -E '^[[:space:]]*-[[:space:]]*["'\'']?[^[:space:]]+:[^[:space:]]+' "$file" || true)
+}
+compose_file_check() {
+  local name="$1" requested="$2" allow_staging="${3:-no}" panel_root stack_root target base
+  [[ "$name" =~ ^[a-z0-9][a-z0-9_-]{0,49}$ ]] || die "invalid Compose project"
+  [[ -r "$PANEL_ROOT_FILE" ]] || die "panel root is not configured"
+  panel_root="$(realpath "$(head -n 1 "$PANEL_ROOT_FILE")")"
+  stack_root="$panel_root/data/stacks/$name"
+  target="$(realpath "$requested" 2>/dev/null || true)"
+  [[ -n "$target" && -f "$target" && ! -L "$target" ]] || die "Compose file not found"
+  base="$(basename "$target")"
+  if [[ "$allow_staging" == yes ]]; then
+    [[ "$base" =~ ^\.validate-[a-f0-9]{12}\.yml$ ]] || die "invalid Compose validation file"
+  else
+    [[ "$base" == docker-compose.yml ]] || die "invalid Compose file"
+  fi
+  [[ "$target" == "$stack_root/$base" ]] || die "Compose file is outside its managed stack"
+  printf '%s\n' "$target"
+}
+
+site_paths() {
+  local id="$1"
+  valid_site_id "$id"
+  SITE_BASE="$SITES_ROOT/$id"
+  SITE_PUBLIC="$SITE_BASE/public"
+  SITE_USER="nebula-s-${id:0:12}"
+  SITE_STATE="$SITES_STATE/$id"
+}
+
+site_state_check() {
+  local id="$1" expected_domain="${2:-}"
+  site_paths "$id"
+  [[ -f "$SITE_STATE" && ! -L "$SITE_STATE" ]] || die "site registry entry not found"
+  local state_domain state_path state_dev state_ino actual
+  state_domain="$(sed -n 's/^domain=//p' "$SITE_STATE")"
+  state_path="$(sed -n 's/^path=//p' "$SITE_STATE")"
+  state_dev="$(sed -n 's/^device=//p' "$SITE_STATE")"
+  state_ino="$(sed -n 's/^inode=//p' "$SITE_STATE")"
+  [[ "$state_path" == "$SITE_PUBLIC" ]] || die "site registry path mismatch"
+  [[ -z "$expected_domain" || "$state_domain" == "$expected_domain" ]] || die "site registry domain mismatch"
+  [[ -d "$SITE_PUBLIC" && ! -L "$SITE_BASE" && ! -L "$SITE_PUBLIC" ]] || die "site path is missing or unsafe"
+  mountpoint -q "$SITE_BASE" && die "site path is a mount point"
+  mountpoint -q "$SITE_PUBLIC" && die "site public path is a mount point"
+  actual="$(stat -c '%d:%i' "$SITE_PUBLIC")"
+  [[ "$actual" == "$state_dev:$state_ino" ]] || die "site filesystem identity changed"
+}
 
 # Schedule PHP-FPM work after the current panel FastCGI response can finish.
 schedule_php_service() {
@@ -65,13 +159,14 @@ fm_confined_path() {
 
 # Resolve a not-yet-created path by validating its existing parent.
 fm_confined_new_path() {
-  local requested="$1" root parent target panel_root
+  local requested="$1" root parent target panel_root base
   [[ -r "$FM_ROOT_FILE" ]] || die "file manager root is not configured; re-run install.sh"
   root="$(realpath "$(head -n 1 "$FM_ROOT_FILE")" 2>/dev/null || true)"
   parent="$(realpath "$(dirname "$requested")" 2>/dev/null || true)"
   [[ -n "$root" && -n "$parent" ]] || die "destination parent not found"
   [[ "$parent" == "$root" || "$parent" == "$root"/* ]] || die "destination is outside file manager root"
-  target="$parent/$(basename "$requested")"
+  base="$(basename "$requested")"; valid_component "$base"
+  target="$parent/$base"
   panel_root="$(realpath "$(head -n 1 "$PANEL_ROOT_FILE" 2>/dev/null)" 2>/dev/null || true)"
   [[ -z "$panel_root" || ( "$target" != "$panel_root" && "$target" != "$panel_root"/* ) ]] || die "panel-private destination is not allowed"
   [[ ! -e "$target" ]] || die "destination already exists"
@@ -91,11 +186,225 @@ human_user_info() {
 
 CMD="${1:-}"; shift || true
 
+# Serialize every action that may invoke apt/dpkg. Resource-specific locks are
+# acquired separately inside the relevant action.
 case "$CMD" in
+  php-install|php-extension|composer-install|modsec-install|modsec-uninstall|compose-install|pma-install|pma-remove|mail-setup|roundcube-install|roundcube-remove|webmail-remove)
+    exec 7>/run/lock/nebula-panel-packages.lock
+    flock -w 120 7 || die "another package operation is running"
+    ;;
+esac
+
+case "$CMD" in
+
+  broker-command)
+    ENCODED="${1:-}"
+    [[ "$ENCODED" =~ ^[A-Za-z0-9+/=]+$ ]] || die "invalid broker payload"
+    REQUEST="$(printf '%s' "$ENCODED" | base64 -d 2>/dev/null)" || die "invalid broker payload"
+    REQUEST="${REQUEST% 2>&1}"
+    [[ "$REQUEST" != *$'\n'* && "$REQUEST" != *$'\r'* && "$REQUEST" != *$'\0'* ]] || die "invalid command"
+    if [[ "$REQUEST" =~ ^(DEBIAN_FRONTEND=noninteractive[[:space:]]+)?apt-get[[:space:]]+-o[[:space:]]+Dpkg::Use-Pty=0[[:space:]]+-o[[:space:]]+APT::Color=0[[:space:]]+(update|-y[[:space:]]+upgrade|install[[:space:]]+-y[[:space:]]+\'?[A-Za-z0-9+.-]+\'?|remove[[:space:]]+-y[[:space:]]+\'?[A-Za-z0-9+.-]+\'?|install[[:space:]]+--only-upgrade[[:space:]]+-y[[:space:]]+\'?[A-Za-z0-9+.-]+\'?)$ ]]; then
+      exec 9>/run/lock/nebula-panel-packages.lock
+      flock -w 120 9 || die "another package operation is running"
+      timeout 900s /bin/bash -c "$REQUEST"
+    elif [[ "$REQUEST" =~ ^ufw[[:space:]]+(status[[:space:]]+numbered|--force[[:space:]]+delete[[:space:]]+[1-9][0-9]*|--force[[:space:]]+enable|disable|(allow|deny|reject)[[:space:]]+\'?[A-Za-z0-9/-]{1,48}\'?)$ ]]; then
+      timeout 60s /bin/bash -c "$REQUEST"
+    else
+      die "command is not an allowed broker operation"
+    fi
+    ;;
+
+  db-query)
+    ENCODED="${1:-}"; [[ "$ENCODED" =~ ^[A-Za-z0-9+/=]+$ ]] || die "invalid SQL payload"
+    SQL="$(printf '%s' "$ENCODED" | base64 -d 2>/dev/null)" || die "invalid SQL payload"
+    [[ ${#SQL} -le 262144 && "$SQL" != *$'\0'* ]] || die "invalid SQL payload"
+    timeout 120s mysql -N -B -e "$SQL"
+    ;;
+
+  service-action)
+    ACTION="${1:-}"; UNIT="${2:-}"
+    [[ "$ACTION" == "start" || "$ACTION" == "stop" || "$ACTION" == "restart" || "$ACTION" == "enable" || "$ACTION" == "disable" ]] \
+      || die "invalid service action"
+    case "$UNIT" in
+      nginx|apache2|mariadb|mysql|redis-server|memcached|docker|fail2ban|ssh|cron|ufw|php[0-9].[0-9]-fpm) ;;
+      *) die "service is not allowed" ;;
+    esac
+    systemctl "$ACTION" "$UNIT"
+    case "$ACTION" in
+      start|restart)
+        systemctl is-active --quiet "$UNIT" || die "service did not reach the active state"
+        ;;
+      stop)
+        if systemctl is-active --quiet "$UNIT"; then die "service did not stop"; fi
+        ;;
+      enable)
+        systemctl is-enabled --quiet "$UNIT" || die "service was not enabled"
+        ;;
+      disable)
+        if systemctl is-enabled --quiet "$UNIT"; then die "service was not disabled"; fi
+        ;;
+    esac
+    ;;
+
+  # Typed Docker operations. Never accept a raw Docker command: access to the
+  # daemon is root-equivalent, so every option and resource is reconstructed.
+  docker-query)
+    QUERY="${1:-}"
+    case "$QUERY" in
+      containers) timeout 30s docker ps -a --format '{{json .}}' ;;
+      images) timeout 30s docker images --format '{{json .}}' ;;
+      volumes) timeout 30s docker volume ls --format '{{json .}}' ;;
+      networks) timeout 30s docker network ls --format '{{json .}}' ;;
+      version) timeout 20s docker version --format '{{.Server.Version}}' ;;
+      *) die "invalid Docker query" ;;
+    esac
+    ;;
+
+  docker-run)
+    NAME="${1:-}"; IMAGE="${2:-}"; RESTART="${3:-}"; PORTS64="${4:-}"; ENV64="${5:-}"; VOLUMES64="${6:-}"
+    valid_docker_name "$NAME"; valid_pinned_image "$IMAGE"
+    [[ "$RESTART" == no || "$RESTART" == always || "$RESTART" == unless-stopped || "$RESTART" == on-failure ]] || die "invalid restart policy"
+    PORTS="$(printf '%s' "$PORTS64" | base64 -d 2>/dev/null)" || die "invalid port payload"
+    ENVS="$(printf '%s' "$ENV64" | base64 -d 2>/dev/null)" || die "invalid environment payload"
+    VOLUMES="$(printf '%s' "$VOLUMES64" | base64 -d 2>/dev/null)" || die "invalid volume payload"
+    ARGS=(docker run -d --name "$NAME" --restart "$RESTART" --security-opt no-new-privileges
+      --pids-limit 256 --memory 1g --log-opt max-size=10m --log-opt max-file=3)
+    while IFS= read -r port; do
+      [[ -z "$port" ]] && continue
+      [[ "$port" =~ ^(127\.0\.0\.1|\[::1\]):([0-9]{1,5}):([0-9]{1,5})(/(tcp|udp))?$ ]] || die "invalid port mapping"
+      (( 10#${BASH_REMATCH[2]} >= 1 && 10#${BASH_REMATCH[2]} <= 65535
+        && 10#${BASH_REMATCH[3]} >= 1 && 10#${BASH_REMATCH[3]} <= 65535 )) || die "invalid port mapping"
+      ARGS+=(-p "$port")
+    done <<<"$PORTS"
+    while IFS= read -r env; do
+      [[ -z "$env" ]] && continue
+      [[ ${#env} -le 1153 && "$env" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]] || die "invalid environment entry"
+      ARGS+=(-e "$env")
+    done <<<"$ENVS"
+    while IFS= read -r volume; do
+      [[ -z "$volume" ]] && continue
+      [[ "$volume" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}:/[A-Za-z0-9_./-]+(:r[ow])?$ ]] || die "only named volumes are allowed"
+      ARGS+=(-v "$volume")
+    done <<<"$VOLUMES"
+    ARGS+=("$IMAGE")
+    timeout 180s "${ARGS[@]}"
+    ;;
+
+  docker-pull)
+    IMAGE="${1:-}"; valid_pinned_image "$IMAGE"; timeout 300s docker pull "$IMAGE"
+    ;;
+
+  docker-resource)
+    KIND="${1:-}"; OP="${2:-}"; NAME="${3:-}"; valid_docker_name "$NAME"
+    [[ "$KIND" == volume || "$KIND" == network ]] || die "invalid Docker resource"
+    [[ "$OP" == create || "$OP" == rm ]] || die "invalid Docker resource action"
+    [[ "$KIND:$OP:$NAME" != "network:rm:bridge" && "$KIND:$OP:$NAME" != "network:rm:host" && "$KIND:$OP:$NAME" != "network:rm:none" ]] \
+      || die "built-in networks cannot be removed"
+    timeout 60s docker "$KIND" "$OP" "$NAME"
+    ;;
+
+  docker-container)
+    ACTION="${1:-}"; ID="${2:-}"; valid_docker_id "$ID"
+    case "$ACTION" in
+      start|stop|restart) timeout 60s docker "$ACTION" "$ID" ;;
+      remove) timeout 60s docker rm -f "$ID" ;;
+      *) die "invalid container action" ;;
+    esac
+    ;;
+
+  docker-image-remove)
+    ID="${1:-}"; valid_docker_id "$ID"; timeout 60s docker rmi "$ID"
+    ;;
+
+  docker-image-prune)
+    [[ $# -eq 0 ]] || die "unexpected arguments"; timeout 120s docker image prune -f
+    ;;
+
+  docker-logs)
+    ID="${1:-}"; LINES="${2:-200}"; valid_docker_id "$ID"
+    [[ "$LINES" =~ ^[0-9]+$ && "$LINES" -ge 1 && "$LINES" -le 2000 ]] || die "invalid line limit"
+    timeout 60s docker logs --tail "$LINES" "$ID" 2>&1 | head -c 2097152
+    ;;
+
+  compose-version)
+    IMPL="${1:-}"
+    case "$IMPL" in
+      plugin) timeout 20s docker compose version ;;
+      standalone) timeout 20s docker-compose version ;;
+      *) die "invalid Compose implementation" ;;
+    esac
+    ;;
+
+  compose-list)
+    IMPL="${1:-}"
+    case "$IMPL" in
+      plugin) timeout 30s docker compose ls --all --format json ;;
+      standalone) timeout 30s docker-compose ls --all --format json ;;
+      *) die "invalid Compose implementation" ;;
+    esac
+    ;;
+
+  compose-run)
+    IMPL="${1:-}"; OP="${2:-}"; NAME="${3:-}"; FILE="${4:-}"; EXTRA="${5:-}"; SOURCE=""
+    case "$IMPL" in
+      plugin) COMPOSE=(docker compose) ;;
+      standalone) COMPOSE=(docker-compose) ;;
+      *) die "invalid Compose implementation" ;;
+    esac
+    if [[ "$OP" == validate ]]; then
+      SOURCE="$(compose_file_check "$NAME" "$FILE" yes)"
+      FILE="$(mktemp /run/nebula-compose.XXXXXX.yml)"
+      trap 'rm -f "$FILE"' EXIT
+      install -m 0600 -o root -g root "$SOURCE" "$FILE"
+      compose_policy_check "$FILE"
+      timeout 60s "${COMPOSE[@]}" -p "$NAME" -f "$FILE" config --quiet
+      exit
+    fi
+    SOURCE="$(compose_file_check "$NAME" "$FILE")"
+    FILE="$(mktemp /run/nebula-compose.XXXXXX.yml)"
+    trap 'rm -f "$FILE"' EXIT
+    install -m 0600 -o root -g root "$SOURCE" "$FILE"
+    compose_policy_check "$FILE"
+    case "$OP" in
+      up) timeout 600s "${COMPOSE[@]}" -p "$NAME" -f "$FILE" up -d --remove-orphans ;;
+      down) timeout 180s "${COMPOSE[@]}" -p "$NAME" -f "$FILE" down ;;
+      stop|start|restart|pull) timeout 600s "${COMPOSE[@]}" -p "$NAME" -f "$FILE" "$OP" ;;
+      destroy) timeout 180s "${COMPOSE[@]}" -p "$NAME" -f "$FILE" down -v --remove-orphans ;;
+      logs)
+        [[ "$EXTRA" =~ ^[0-9]+$ && "$EXTRA" -ge 1 && "$EXTRA" -le 2000 ]] || die "invalid line limit"
+        timeout 60s "${COMPOSE[@]}" -p "$NAME" -f "$FILE" logs --no-color --tail "$EXTRA" | head -c 2097152
+        ;;
+      *) die "invalid Compose action" ;;
+    esac
+    ;;
+
+  log-read-unit)
+    UNIT="${1:-}"; LINES="${2:-200}"
+    [[ "$LINES" =~ ^[0-9]+$ && "$LINES" -ge 10 && "$LINES" -le 2000 ]] || die "invalid line limit"
+    case "$UNIT" in
+      nginx|apache2|mariadb|mysql|php[0-9].[0-9]-fpm|redis-server|docker|ssh|cron|ufw) ;;
+      *) die "log unit is not allowed" ;;
+    esac
+    timeout 10s journalctl -u "$UNIT" -n "$LINES" --no-pager --output=short-iso \
+      | head -c 1048576
+    ;;
+
+  log-read-file)
+    LOG_PATH="${1:-}"; LINES="${2:-200}"
+    [[ "$LINES" =~ ^[0-9]+$ && "$LINES" -ge 10 && "$LINES" -le 2000 ]] || die "invalid line limit"
+    case "$LOG_PATH" in
+      /var/log/syslog|/var/log/auth.log|/var/log/kern.log|/var/log/dpkg.log|/var/log/nginx/*.log|/var/log/apache2/*.log) ;;
+      *) die "log file is not allowed" ;;
+    esac
+    [[ -f "$LOG_PATH" && ! -L "$LOG_PATH" ]] || die "log file not found"
+    timeout 10s tail -n "$LINES" -- "$LOG_PATH" | head -c 1048576
+    ;;
 
   # panel-update <staged-panel-source>
   # Source must be staged by Nebula beneath its private data/_update folder.
   panel-update)
+    exec 9>/run/lock/nebula-panel-update.lock
+    flock -n 9 || die "another panel update is already running"
     SOURCE="${1:-}"
     [[ -r "$PANEL_ROOT_FILE" ]] || die "panel root is not configured; re-run install.sh"
     PANEL_ROOT="$(realpath "$(head -n 1 "$PANEL_ROOT_FILE")")"
@@ -107,12 +416,33 @@ case "$CMD" in
     SNAP_DIR="$PANEL_ROOT/data/backups"; mkdir -p "$SNAP_DIR"
     SNAP="$SNAP_DIR/pre-update-$(date +%Y%m%d-%H%M%S).tar.gz"
     tar -czf "$SNAP" --exclude='data/backups' --exclude='data/_update' -C "$(dirname "$PANEL_ROOT")" "$(basename "$PANEL_ROOT")"
-    chown www-data:www-data "$SNAP"; chmod 0600 "$SNAP"
-    rsync -a --delete --exclude=data --exclude=config.php "$SOURCE/" "$PANEL_ROOT/"
-    chown -R root:root "$PANEL_ROOT"
-    find "$PANEL_ROOT" -type d -exec chmod 0755 {} +
-    find "$PANEL_ROOT" -type f -exec chmod 0644 {} +
-    chown -R www-data:www-data "$PANEL_ROOT/data"
+    PANEL_USER="$(stat -c %U "$PANEL_ROOT/data")"
+    chown "$PANEL_USER:$PANEL_USER" "$SNAP"; chmod 0600 "$SNAP"
+    find "$SNAP_DIR" -maxdepth 1 -type f -name 'pre-update-*.tar.gz' -printf '%T@ %p\n' \
+      | sort -nr | awk 'NR>5 {$1=""; sub(/^ /,""); print}' | xargs -r rm -f --
+    MAINTENANCE="$PANEL_ROOT/data/maintenance"
+    install -m 0600 -o "$PANEL_USER" -g "$PANEL_USER" /dev/null "$MAINTENANCE"
+    ROLLBACK_TMP="$(mktemp -d)"
+    cleanup_panel_update() { rm -f "$MAINTENANCE"; rm -rf "$ROLLBACK_TMP"; }
+    trap cleanup_panel_update EXIT
+    rollback_panel_update() {
+      tar -xzf "$SNAP" -C "$ROLLBACK_TMP"
+      PREVIOUS="$ROLLBACK_TMP/$(basename "$PANEL_ROOT")"
+      [[ -f "$PREVIOUS/index.php" ]] || die "automatic rollback snapshot is invalid"
+      rsync -a --delete --exclude=data --exclude=config.php "$PREVIOUS/" "$PANEL_ROOT/"
+    }
+    if ! rsync -a --delete --exclude=data --exclude=config.php "$SOURCE/" "$PANEL_ROOT/"; then
+      rollback_panel_update
+      die "update copy failed; previous release restored"
+    fi
+    if [[ ! -f "$PANEL_ROOT/index.php" || ! -f "$PANEL_ROOT/lib/bootstrap.php" ]] \
+      || ! php -l "$PANEL_ROOT/index.php" >/dev/null 2>&1; then
+      rollback_panel_update
+      die "post-deploy health check failed; previous release restored"
+    fi
+    find "$PANEL_ROOT" -path "$PANEL_ROOT/data" -prune -o -type d -exec chown root:root {} + -exec chmod 0755 {} +
+    find "$PANEL_ROOT" -path "$PANEL_ROOT/data" -prune -o -type f -exec chown root:root {} + -exec chmod 0644 {} +
+    chown -R "$PANEL_USER:$PANEL_USER" "$PANEL_ROOT/data"
     chmod 0700 "$PANEL_ROOT/data"
     # Refresh the privileged helper itself from the staged, hash-verified
     # release so panel self-updates deliver helper changes too. Without this,
@@ -127,19 +457,46 @@ case "$CMD" in
         echo "helper=skipped-invalid" >&2
       fi
     fi
+    if [[ -f "$SOURCE/bin/nebula-recovery" ]] && bash -n "$SOURCE/bin/nebula-recovery"; then
+      install -m 0755 -o root -g root "$SOURCE/bin/nebula-recovery" /usr/local/sbin/nebula-recovery
+    fi
+    cleanup_panel_update
+    trap - EXIT
     echo "snapshot=$(basename "$SNAP")"
     ;;
 
   # dns-zone-put <domain> <base64-zone-file>
   dns-zone-put)
     DOMAIN="${1:-}"; ZONE_B64="${2:-}"; valid_domain "$DOMAIN"
+    exec 8>/run/lock/nebula-panel-dns.lock
+    flock -w 30 8 || die "another DNS operation is running"
     [[ "$ZONE_B64" =~ ^[A-Za-z0-9+/=]+$ ]] || die "invalid zone encoding"
-    command -v named-checkzone >/dev/null || die "BIND 9 is not installed; re-run install.sh"
+    if ! command -v named-checkzone >/dev/null; then
+      exec 9>/run/lock/nebula-panel-packages.lock
+      flock -w 120 9 || die "another package operation is running"
+      DEBIAN_FRONTEND=noninteractive apt-get -o Dpkg::Use-Pty=0 -o APT::Color=0 update
+      DEBIAN_FRONTEND=noninteractive apt-get -o Dpkg::Use-Pty=0 -o APT::Color=0 install -y bind9 bind9-utils
+    fi
     TMP="$(mktemp)"; trap 'rm -f "$TMP"' EXIT
     printf '%s' "$ZONE_B64" | base64 -d > "$TMP" 2>/dev/null || die "invalid zone data"
     named-checkzone "$DOMAIN" "$TMP" >/dev/null || die "BIND rejected the zone"
     install -d -m 0755 -o root -g bind "$BIND_ZONE_DIR"
-    install -m 0644 -o root -g bind "$TMP" "$BIND_ZONE_DIR/db.$DOMAIN"
+    ROLLBACK="$(mktemp -d)"
+    ZONE_PATH="$BIND_ZONE_DIR/db.$DOMAIN"
+    for path in "$ZONE_PATH" "$BIND_ZONE_CONF" /etc/bind/named.conf.local; do
+      key="$(printf '%s' "$path" | sha256sum | awk '{print $1}')"
+      if [[ -e "$path" ]]; then cp -a "$path" "$ROLLBACK/$key"; else : > "$ROLLBACK/$key.missing"; fi
+    done
+    rollback_dns() {
+      local path key
+      for path in "$ZONE_PATH" "$BIND_ZONE_CONF" /etc/bind/named.conf.local; do
+        key="$(printf '%s' "$path" | sha256sum | awk '{print $1}')"
+        if [[ -f "$ROLLBACK/$key.missing" ]]; then rm -f "$path"; else cp -a "$ROLLBACK/$key" "$path"; fi
+      done
+      systemctl reload bind9 >/dev/null 2>&1 || true
+      rm -rf "$ROLLBACK"
+    }
+    install -m 0644 -o root -g bind "$TMP" "$ZONE_PATH"
     touch "$BIND_ZONE_CONF"; chown root:bind "$BIND_ZONE_CONF"; chmod 0644 "$BIND_ZONE_CONF"
     if ! grep -qF "zone \"$DOMAIN\"" "$BIND_ZONE_CONF"; then
       printf 'zone "%s" {\n  type primary;\n  file "%s/db.%s";\n};\n' "$DOMAIN" "$BIND_ZONE_DIR" "$DOMAIN" >> "$BIND_ZONE_CONF"
@@ -147,13 +504,26 @@ case "$CMD" in
     if ! grep -qF 'include "/etc/bind/nebula-zones.conf";' /etc/bind/named.conf.local; then
       printf '\ninclude "/etc/bind/nebula-zones.conf";\n' >> /etc/bind/named.conf.local
     fi
-    named-checkconf >/dev/null || die "BIND configuration validation failed"
-    systemctl reload bind9 2>/dev/null || systemctl restart bind9
+    if ! named-checkconf >/dev/null || ! (systemctl reload bind9 2>/dev/null || systemctl restart bind9); then
+      rollback_dns
+      die "BIND validation or reload failed; previous configuration restored"
+    fi
+    rm -rf "$ROLLBACK"
+    if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then
+      ufw allow 53/tcp >/dev/null
+      ufw allow 53/udp >/dev/null
+    fi
     echo "published authoritative zone $DOMAIN"
     ;;
 
   dns-zone-delete)
     DOMAIN="${1:-}"; valid_domain "$DOMAIN"
+    exec 8>/run/lock/nebula-panel-dns.lock
+    flock -w 30 8 || die "another DNS operation is running"
+    ROLLBACK="$(mktemp -d)"
+    ZONE_PATH="$BIND_ZONE_DIR/db.$DOMAIN"
+    [[ -e "$ZONE_PATH" ]] && cp -a "$ZONE_PATH" "$ROLLBACK/zone" || : > "$ROLLBACK/zone.missing"
+    [[ -e "$BIND_ZONE_CONF" ]] && cp -a "$BIND_ZONE_CONF" "$ROLLBACK/conf" || : > "$ROLLBACK/conf.missing"
     if [[ -f "$BIND_ZONE_CONF" ]]; then
       TMP="$(mktemp)"; trap 'rm -f "$TMP"' EXIT
       awk -v target="zone \"$DOMAIN\"" '
@@ -163,39 +533,98 @@ case "$CMD" in
       ' "$BIND_ZONE_CONF" > "$TMP"
       install -m 0644 -o root -g bind "$TMP" "$BIND_ZONE_CONF"
     fi
-    rm -f "$BIND_ZONE_DIR/db.$DOMAIN"
-    named-checkconf >/dev/null || die "BIND configuration validation failed"
-    systemctl reload bind9 2>/dev/null || systemctl restart bind9
+    rm -f "$ZONE_PATH"
+    if ! named-checkconf >/dev/null || ! (systemctl reload bind9 2>/dev/null || systemctl restart bind9); then
+      [[ -f "$ROLLBACK/zone.missing" ]] || cp -a "$ROLLBACK/zone" "$ZONE_PATH"
+      if [[ -f "$ROLLBACK/conf.missing" ]]; then rm -f "$BIND_ZONE_CONF"; else cp -a "$ROLLBACK/conf" "$BIND_ZONE_CONF"; fi
+      systemctl reload bind9 >/dev/null 2>&1 || true
+      rm -rf "$ROLLBACK"
+      die "BIND rejected zone removal; previous configuration restored"
+    fi
+    rm -rf "$ROLLBACK"
     echo "removed authoritative zone $DOMAIN"
     ;;
 
   # File metadata operations are confined by /etc/nebula-panel/fm-root.
   file-chmod)
     TARGET="$(fm_confined_path "${1:-}")"; MODE="${2:-}"
-    [[ "$MODE" =~ ^[0-7]{3,4}$ ]] || die "invalid mode"
+    [[ "$MODE" =~ ^[0-7]{3}$ ]] || die "invalid mode"
     chmod "$MODE" "$TARGET"
     echo "permissions updated"
     ;;
 
-  file-chown)
-    TARGET="$(fm_confined_path "${1:-}")"; OWNER="${2:-}"; GROUP="${3:-}"
-    valid_user "$OWNER"; valid_group "$GROUP"
-    getent passwd "$OWNER" >/dev/null || die "owner not found"
-    getent group "$GROUP" >/dev/null || die "group not found"
-    chown "$OWNER:$GROUP" "$TARGET"
-    echo "ownership updated"
+  file-mkdir)
+    TARGET="$(fm_confined_new_path "${1:-}")"
+    PARENT="$(dirname "$TARGET")"; OWNER="$(stat -c %U "$PARENT")"; GROUP="$(stat -c %G "$PARENT")"
+    install -d -m 0750 -o "$OWNER" -g "$GROUP" "$TARGET"
+    PANEL_USER="$(stat -c %U "$(realpath "$(head -n 1 "$PANEL_ROOT_FILE")")/data")"
+    setfacl -m "u:${PANEL_USER}:rX,d:u:${PANEL_USER}:rX" "$TARGET"
     ;;
 
-  # file-delete <path>  — recursively remove a file or directory, confined to
-  # the File Manager root. Runs as root so it can clear docroots whose files
-  # are owned by other users (e.g. root-owned git-deployed content) and
-  # non-empty directories the web user cannot remove itself.
+  file-mkfile)
+    TARGET="$(fm_confined_new_path "${1:-}")"
+    PARENT="$(dirname "$TARGET")"; OWNER="$(stat -c %U "$PARENT")"; GROUP="$(stat -c %G "$PARENT")"
+    install -m 0640 -o "$OWNER" -g "$GROUP" /dev/null "$TARGET"
+    PANEL_USER="$(stat -c %U "$(realpath "$(head -n 1 "$PANEL_ROOT_FILE")")/data")"
+    setfacl -m "u:${PANEL_USER}:r" "$TARGET"
+    ;;
+
+  file-rename)
+    RAW_SOURCE="${1:-}"; RAW_TARGET="${2:-}"
+    [[ ! -L "$RAW_SOURCE" ]] || die "symlink operations are not allowed"
+    SOURCE="$(fm_confined_path "$RAW_SOURCE")"
+    TARGET="$(fm_confined_new_path "$RAW_TARGET")"
+    [[ "$(dirname "$SOURCE")" == "$(dirname "$TARGET")" ]] || die "rename must stay in the same directory"
+    mv -- "$SOURCE" "$TARGET"
+    ;;
+
+  file-op)
+    OP="${1:-}"; RAW_SOURCE="${2:-}"; RAW_TARGET="${3:-}"
+    [[ "$OP" == "copy" || "$OP" == "move" ]] || die "invalid file operation"
+    [[ ! -L "$RAW_SOURCE" ]] || die "symlink operations are not allowed"
+    SOURCE="$(fm_confined_path "$RAW_SOURCE")"
+    TARGET="$(fm_confined_new_path "$RAW_TARGET")"
+    if [[ -d "$SOURCE" && "$TARGET" == "$SOURCE"/* ]]; then die "cannot place a directory inside itself"; fi
+    if [[ "$OP" == "copy" ]]; then cp -a --no-dereference -- "$SOURCE" "$TARGET"; else mv -- "$SOURCE" "$TARGET"; fi
+    ;;
+
+  # Install a panel-staged file at an existing or new confined path while
+  # preserving/deriving the site owner's identity. The panel process itself
+  # never receives write access to site source.
+  file-install)
+    STAGED="${1:-}"; RAW_TARGET="${2:-}"; OVERWRITE="${3:-no}"
+    [[ -r "$PANEL_ROOT_FILE" ]] || die "panel root is not configured"
+    PANEL_ROOT="$(realpath "$(head -n 1 "$PANEL_ROOT_FILE")")"
+    STAGE_ROOT="$PANEL_ROOT/data/file-staging"
+    STAGED="$(realpath "$STAGED" 2>/dev/null || true)"
+    [[ -n "$STAGED" && "$STAGED" == "$STAGE_ROOT/"* && -f "$STAGED" && ! -L "$STAGED" ]] || die "invalid staged file"
+    [[ "$(stat -c %s "$STAGED")" -le 52428800 ]] || die "staged file exceeds 50 MB"
+    if [[ -e "$RAW_TARGET" ]]; then
+      [[ "$OVERWRITE" == yes && -f "$RAW_TARGET" && ! -L "$RAW_TARGET" ]] || die "target exists"
+      TARGET="$(fm_confined_path "$RAW_TARGET")"
+      OWNER="$(stat -c %U "$TARGET")"; GROUP="$(stat -c %G "$TARGET")"; MODE="$(stat -c %a "$TARGET")"
+    else
+      TARGET="$(fm_confined_new_path "$RAW_TARGET")"
+      OWNER="$(stat -c %U "$(dirname "$TARGET")")"; GROUP="$(stat -c %G "$(dirname "$TARGET")")"; MODE=0640
+    fi
+    TEMP="$(dirname "$TARGET")/.nebula-install-$(od -An -N6 -tx1 /dev/urandom | tr -d '[:space:]')"
+    install -m "$MODE" -o "$OWNER" -g "$GROUP" "$STAGED" "$TEMP"
+    mv -f -- "$TEMP" "$TARGET"
+    rm -f "$STAGED"
+    PANEL_USER="$(stat -c %U "$PANEL_ROOT/data")"
+    setfacl -m "u:${PANEL_USER}:r" "$TARGET"
+    ;;
+
+  # file-delete <path> — move an entry to root-owned recovery trash.
   file-delete)
     TARGET="$(fm_confined_path "${1:-}")"
     ROOT="$(realpath "$(head -n 1 "$FM_ROOT_FILE")")"
     [[ -n "$ROOT" && "$TARGET" != "$ROOT" ]] || die "refusing to delete the file manager root"
-    rm -rf -- "$TARGET"
-    echo "deleted $TARGET"
+    install -d -m 0700 -o root -g root "$FILE_TRASH"
+    TRASH_NAME="$(date +%Y%m%d-%H%M%S)-$(basename "$TARGET")-$(od -An -N4 -tx1 /dev/urandom | tr -d '[:space:]')"
+    mv -- "$TARGET" "$FILE_TRASH/$TRASH_NAME"
+    chown -R root:root "$FILE_TRASH/$TRASH_NAME"
+    echo "archived=$FILE_TRASH/$TRASH_NAME"
     ;;
 
   # file-compress <zip|tar.gz> <absolute-target> <absolute-source> [...]
@@ -272,27 +701,62 @@ case "$CMD" in
       | sed -E 's/php([0-9.]+)-fpm\.sock/\1/' | sort -uV
     ;;
 
-  # site-create <domain> <docroot> <phpversion>
+  # site-create <site-id> <domain> <phpversion>
   site-create)
-    DOMAIN="${1:-}"; DOCROOT="${2:-}"; PHPVER="${3:-}"
-    valid_domain "$DOMAIN"; valid_path "$DOCROOT"; valid_php "$PHPVER"
-    SOCK="/run/php/php${PHPVER}-fpm.sock"
-    [[ -S "$SOCK" ]] || die "PHP-FPM $PHPVER not installed ($SOCK missing)"
+    SITE_ID="${1:-}"; DOMAIN="${2:-}"; PHPVER="${3:-}"
+    valid_site_id "$SITE_ID"; valid_domain "$DOMAIN"; valid_php "$PHPVER"
+    exec 8>"/run/lock/nebula-site-${SITE_ID}.lock"
+    flock -w 30 8 || die "another operation is running for this site"
+    site_paths "$SITE_ID"
+    FPM_DIR="/etc/php/${PHPVER}/fpm/pool.d"
+    [[ -d "$FPM_DIR" ]] || die "PHP-FPM $PHPVER is not installed"
+    SOCK="/run/php/nebula-site-${SITE_ID}.sock"
     [[ -e "$NGINX_AV/$DOMAIN" ]] && die "site already exists"
-    mkdir -p "$DOCROOT"
-    if [[ -z "$(ls -A "$DOCROOT" 2>/dev/null)" ]]; then
-      printf '<!doctype html><html><body style="font-family:sans-serif"><h1>%s</h1><p>Provisioned by Nebula Panel. PHP %s.</p></body></html>\n' \
-        "$DOMAIN" "$PHPVER" > "$DOCROOT/index.html"
-    fi
-    chown -R www-data:www-data "$DOCROOT"
+    [[ ! -e "$SITE_BASE" && ! -e "$SITE_STATE" ]] || die "site id already exists"
+    install -d -m 0711 -o root -g root "$SITES_ROOT"
+    mkdir -m 0750 "$SITE_BASE"
+    getent passwd "$SITE_USER" >/dev/null 2>&1 \
+      || useradd --system --home-dir "$SITE_BASE" --shell /usr/sbin/nologin "$SITE_USER"
+    chown "$SITE_USER:$SITE_USER" "$SITE_BASE"
+    install -d -m 0750 -o "$SITE_USER" -g "$SITE_USER" "$SITE_PUBLIC"
+    printf '<!doctype html><html><body><h1>%s</h1><p>Provisioned by Nebula Panel. PHP %s.</p></body></html>\n' \
+      "$DOMAIN" "$PHPVER" > "$SITE_PUBLIC/index.html"
+    chown "$SITE_USER:$SITE_USER" "$SITE_PUBLIC/index.html"
+    cat > "$FPM_DIR/nebula-site-${SITE_ID}.conf" <<EOF
+[nebula-site-${SITE_ID}]
+user = $SITE_USER
+group = $SITE_USER
+listen = $SOCK
+listen.owner = www-data
+listen.group = www-data
+listen.mode = 0660
+pm = ondemand
+pm.max_children = 5
+pm.process_idle_timeout = 20s
+pm.max_requests = 500
+clear_env = yes
+security.limit_extensions = .php
+chdir = $SITE_PUBLIC
+php_admin_value[open_basedir] = $SITE_BASE:/tmp
+php_admin_value[upload_tmp_dir] = $SITE_BASE/tmp
+php_admin_value[session.save_path] = $SITE_BASE/sessions
+php_admin_value[disable_functions] = exec,passthru,shell_exec,system,proc_open,popen
+EOF
+    install -d -m 0700 -o "$SITE_USER" -g "$SITE_USER" "$SITE_BASE/tmp" "$SITE_BASE/sessions"
+    PANEL_USER="$(stat -c %U "$(realpath "$(head -n 1 "$PANEL_ROOT_FILE")")/data")"
+    setfacl -m "u:${PANEL_USER}:rx" "$SITES_ROOT"
+    setfacl -m "u:${PANEL_USER}:rx" "$SITE_BASE"
+    setfacl -R -m "u:${PANEL_USER}:rX" "$SITE_PUBLIC"
+    find "$SITE_PUBLIC" -type d -exec setfacl -m "d:u:${PANEL_USER}:rX" {} +
     cat > "$NGINX_AV/$DOMAIN" <<EOF
+# Managed by Nebula Panel. Site ID: $SITE_ID
 server {
     listen 80;
     listen [::]:80;
     # Only configure the hostname the user entered. In particular, a site such
     # as app.example.com must not silently gain www.app.example.com.
     server_name $DOMAIN;
-    root $DOCROOT;
+    root $SITE_PUBLIC;
     index index.php index.html index.htm;
     access_log /var/log/nginx/${DOMAIN}.access.log;
     error_log  /var/log/nginx/${DOMAIN}.error.log;
@@ -304,14 +768,25 @@ server {
     location ~ /\.(?!well-known).* { deny all; }
 }
 EOF
+    install -d -m 0700 -o root -g root "$SITES_STATE" "$SITES_TRASH"
+    printf 'domain=%s\npath=%s\nuser=%s\ndevice=%s\ninode=%s\n' \
+      "$DOMAIN" "$SITE_PUBLIC" "$SITE_USER" "$(stat -c %d "$SITE_PUBLIC")" "$(stat -c %i "$SITE_PUBLIC")" \
+      > "$SITE_STATE"
+    chmod 0600 "$SITE_STATE"
     ln -sf "$NGINX_AV/$DOMAIN" "$NGINX_EN/$DOMAIN"
-    nginx -t || { rm -f "$NGINX_EN/$DOMAIN" "$NGINX_AV/$DOMAIN"; die "nginx config test failed"; }
+    nginx -t || {
+      rm -f "$NGINX_EN/$DOMAIN" "$NGINX_AV/$DOMAIN" "$FPM_DIR/nebula-site-${SITE_ID}.conf" "$SITE_STATE"
+      userdel "$SITE_USER" >/dev/null 2>&1 || true
+      rmdir "$SITE_PUBLIC" "$SITE_BASE" >/dev/null 2>&1 || true
+      die "nginx config test failed"
+    }
+    systemctl restart "php${PHPVER}-fpm"
     systemctl reload nginx
-    echo "created $DOMAIN -> $DOCROOT (PHP $PHPVER)"
+    echo "created $SITE_ID $DOMAIN -> $SITE_PUBLIC (PHP $PHPVER)"
     ;;
 
   # Discover simple per-domain Nginx vhosts managed in the same layout Nebula
-  # creates. Output: domain<TAB>docroot<TAB>php-version<TAB>ssl-state.
+  # creates. Output: id<TAB>domain<TAB>docroot<TAB>php-version<TAB>ssl-state.
   site-list)
     shopt -s nullglob
     for CONF in "$NGINX_AV"/*; do
@@ -321,56 +796,153 @@ EOF
       [[ "$DOMAIN" =~ ^[a-zA-Z0-9]([a-zA-Z0-9.-]{0,251}[a-zA-Z0-9])?$ ]] || continue
       SERVER_NAME="$(awk '/^[[:space:]]*server_name[[:space:]]+/ {gsub(/;/, "", $2); print $2; exit}' "$CONF")"
       [[ "$SERVER_NAME" == "$DOMAIN" ]] || continue
+      SITE_ID="$(sed -nE 's/^# Managed by Nebula Panel\. Site ID: ([a-f0-9]{32})$/\1/p' "$CONF" | head -1)"
+      [[ "$SITE_ID" =~ ^[a-f0-9]{32}$ ]] || continue
       DOCROOT="$(awk '/^[[:space:]]*root[[:space:]]+/ {gsub(/;/, "", $2); print $2; exit}' "$CONF")"
-      [[ "$DOCROOT" =~ ^/[a-zA-Z0-9._/-]+$ && "$DOCROOT" != *".."* ]] || continue
-      PHPVER="$(grep -m1 -E 'fastcgi_pass[[:space:]]+unix:/run/php/php[0-9]+\.[0-9]+-fpm\.sock;' "$CONF" 2>/dev/null \
-        | sed -E 's#.*fastcgi_pass[[:space:]]+unix:/run/php/php([0-9]+\.[0-9]+)-fpm\.sock;.*#\1#' || true)"
+      [[ "$DOCROOT" == "$SITES_ROOT/$SITE_ID/public" ]] || continue
+      PHPVER="$(grep -l "listen = /run/php/nebula-site-${SITE_ID}.sock" /etc/php/*/fpm/pool.d/nebula-site-"${SITE_ID}".conf 2>/dev/null \
+        | awk -F/ 'NR==1 {print $4}')"
       [[ -n "$PHPVER" ]] || PHPVER=""
       SSL=no; grep -qE '^[[:space:]]*ssl_certificate[[:space:]]' "$CONF" && SSL=yes
-      printf '%s\t%s\t%s\t%s\n' "$DOMAIN" "$DOCROOT" "$PHPVER" "$SSL"
+      printf '%s\t%s\t%s\t%s\t%s\n' "$SITE_ID" "$DOMAIN" "$DOCROOT" "$PHPVER" "$SSL"
     done
     ;;
 
   # Change the PHP-FPM socket used by an existing Nebula Nginx vhost.
   site-php)
-    DOMAIN="${1:-}"; PHPVER="${2:-}"
-    valid_domain "$DOMAIN"; valid_php "$PHPVER"
-    CONF="$NGINX_AV/$DOMAIN"; SOCK="/run/php/php${PHPVER}-fpm.sock"
+    SITE_ID="${1:-}"; DOMAIN="${2:-}"; PHPVER="${3:-}"
+    valid_site_id "$SITE_ID"; valid_domain "$DOMAIN"; valid_php "$PHPVER"
+    exec 8>"/run/lock/nebula-site-${SITE_ID}.lock"
+    flock -w 30 8 || die "another operation is running for this site"
+    site_state_check "$SITE_ID" "$DOMAIN"
+    CONF="$NGINX_AV/$DOMAIN"; SOCK="/run/php/nebula-site-${SITE_ID}.sock"
     [[ -f "$CONF" ]] || die "website config not found"
-    [[ -S "$SOCK" ]] || die "PHP-FPM $PHPVER is not running"
-    grep -qE 'fastcgi_pass[[:space:]]+unix:/run/php/php[0-9.]+-fpm\.sock;' "$CONF" || die "website has no managed PHP-FPM socket"
-    TMP="$(mktemp)"; trap 'rm -f "$TMP"' EXIT; cp "$CONF" "$TMP"
-    sed -i -E "s#fastcgi_pass[[:space:]]+unix:/run/php/php[0-9.]+-fpm\.sock;#fastcgi_pass unix:$SOCK;#" "$CONF"
-    nginx -t >/dev/null 2>&1 || { cp "$TMP" "$CONF"; die "nginx config test failed"; }
-    systemctl reload nginx
+    TARGET_DIR="/etc/php/${PHPVER}/fpm/pool.d"; [[ -d "$TARGET_DIR" ]] || die "PHP-FPM $PHPVER not installed"
+    OLD_POOL="$(grep -l "listen = $SOCK" /etc/php/*/fpm/pool.d/nebula-site-"${SITE_ID}".conf 2>/dev/null | head -1)"
+    [[ -n "$OLD_POOL" ]] || die "managed site pool not found"
+    OLD_VER="$(awk -F/ '{print $4}' <<<"$OLD_POOL")"
+    cp "$OLD_POOL" "$TARGET_DIR/nebula-site-${SITE_ID}.conf"
+    if [[ "$OLD_POOL" != "$TARGET_DIR/nebula-site-${SITE_ID}.conf" ]]; then rm -f "$OLD_POOL"; fi
+    systemctl restart "php${PHPVER}-fpm"
+    [[ "$OLD_VER" == "$PHPVER" ]] || systemctl reload "php${OLD_VER}-fpm" >/dev/null 2>&1 || true
     echo "updated $DOMAIN to PHP $PHPVER"
     ;;
 
-  # site-stats <docroot> -> bytes<TAB>files. Read-only but privileged so
+  # site-stats <site-id> -> bytes<TAB>files.
   # sites with restrictive ownership are still measured accurately.
   site-stats)
-    DOCROOT="${1:-}"; valid_path "$DOCROOT"; [[ -d "$DOCROOT" ]] || die "document root not found"
-    BYTES="$(du -sb -- "$DOCROOT" 2>/dev/null | awk '{print $1}')"
-    FILES="$(find "$DOCROOT" -xdev -type f 2>/dev/null | wc -l | tr -d ' ')"
+    SITE_ID="${1:-}"; site_state_check "$SITE_ID"
+    BYTES="$(du -sb -- "$SITE_PUBLIC" 2>/dev/null | awk '{print $1}')"
+    FILES="$(find "$SITE_PUBLIC" -xdev -type f 2>/dev/null | wc -l | tr -d ' ')"
     printf '%s\t%s\n' "${BYTES:-0}" "${FILES:-0}"
     ;;
 
-  # site-delete <domain> [purge] [docroot]
+  # site-backup <site-id> <archive-name>
+  site-backup)
+    SITE_ID="${1:-}"; ARCHIVE_NAME="${2:-}"
+    valid_site_id "$SITE_ID"
+    exec 8>"/run/lock/nebula-site-${SITE_ID}.lock"
+    flock -w 30 8 || die "another operation is running for this site"
+    site_state_check "$SITE_ID"
+    [[ "$ARCHIVE_NAME" =~ ^[A-Za-z0-9_.-]{1,100}-[0-9]{8}-[0-9]{6}\.tar\.gz$ ]] || die "invalid archive name"
+    [[ -r "$PANEL_ROOT_FILE" ]] || die "panel root is not configured"
+    PANEL_ROOT="$(realpath "$(head -n 1 "$PANEL_ROOT_FILE")")"
+    BACKUP_DIR="$PANEL_ROOT/data/backups"
+    [[ "$BACKUP_DIR" == "$PANEL_ROOT/data/backups" ]] || die "invalid backup directory"
+    install -d -m 0700 "$BACKUP_DIR"
+    DEST="$BACKUP_DIR/$ARCHIVE_NAME"; [[ ! -e "$DEST" ]] || die "backup already exists"
+    FREE="$(df -P "$BACKUP_DIR" | awk 'NR==2 {print $4 * 1024}')"
+    USED="$(du -sb "$SITE_BASE" | awk '{print $1}')"
+    [[ "${FREE:-0}" -gt $(( ${USED:-0} + 16777216 )) ]] || die "insufficient free disk space"
+    TMP="$BACKUP_DIR/.${ARCHIVE_NAME}.tmp"
+    trap 'rm -f "$TMP"' EXIT
+    tar --one-file-system --numeric-owner -czf "$TMP" -C "$SITE_BASE" public
+    gzip -t "$TMP"
+    mv "$TMP" "$DEST"
+    PANEL_USER="$(stat -c %U "$PANEL_ROOT/data")"
+    chown "$PANEL_USER:$PANEL_USER" "$DEST"; chmod 0600 "$DEST"
+    echo "sha256=$(sha256sum "$DEST" | awk '{print $1}')"
+    echo "bytes=$(stat -c %s "$DEST")"
+    echo "entries=$(tar -tzf "$DEST" | wc -l | tr -d ' ')"
+    ;;
+
+  site-git-status)
+    SITE_ID="${1:-}"; site_state_check "$SITE_ID"
+    [[ -d "$SITE_PUBLIC/.git" ]] || { echo "connected=no"; exit 0; }
+    echo "connected=yes"
+    printf 'branch='; runuser -u "$SITE_USER" -- git -C "$SITE_PUBLIC" rev-parse --abbrev-ref HEAD 2>/dev/null || true
+    printf 'remote='; runuser -u "$SITE_USER" -- git -C "$SITE_PUBLIC" config --get remote.origin.url 2>/dev/null || true
+    printf 'commit='; runuser -u "$SITE_USER" -- git -C "$SITE_PUBLIC" rev-parse --short HEAD 2>/dev/null || true
+    if [[ -n "$(runuser -u "$SITE_USER" -- git -C "$SITE_PUBLIC" status --porcelain 2>/dev/null)" ]]; then echo "dirty=yes"; else echo "dirty=no"; fi
+    ;;
+
+  site-git-connect)
+    SITE_ID="${1:-}"; URL="${2:-}"; BRANCH="${3:-}"
+    valid_site_id "$SITE_ID"
+    exec 8>"/run/lock/nebula-site-${SITE_ID}.lock"
+    flock -w 30 8 || die "another operation is running for this site"
+    site_state_check "$SITE_ID"
+    [[ "$URL" =~ ^https://[A-Za-z0-9._-]+(:[0-9]+)?/[A-Za-z0-9._~/-]+(\.git)?$ ]] \
+      || die "only credential-free HTTPS repository URLs are allowed"
+    [[ "$BRANCH" =~ ^[A-Za-z0-9._/-]+$ && "$BRANCH" != *".."* && "$BRANCH" != -* ]] || die "invalid branch"
+    runuser -u "$SITE_USER" -- git -C "$SITE_PUBLIC" init -q
+    runuser -u "$SITE_USER" -- git -C "$SITE_PUBLIC" remote remove origin >/dev/null 2>&1 || true
+    runuser -u "$SITE_USER" -- git -C "$SITE_PUBLIC" remote add origin "$URL"
+    runuser -u "$SITE_USER" -- env GIT_TERMINAL_PROMPT=0 git -C "$SITE_PUBLIC" fetch --depth 1 origin "$BRANCH"
+    runuser -u "$SITE_USER" -- git -C "$SITE_PUBLIC" checkout -f -B "$BRANCH" "origin/$BRANCH"
+    ;;
+
+  site-git-pull)
+    SITE_ID="${1:-}"; BRANCH="${2:-}"
+    valid_site_id "$SITE_ID"
+    exec 8>"/run/lock/nebula-site-${SITE_ID}.lock"
+    flock -w 30 8 || die "another operation is running for this site"
+    site_state_check "$SITE_ID"
+    [[ "$BRANCH" =~ ^[A-Za-z0-9._/-]+$ && "$BRANCH" != *".."* && "$BRANCH" != -* ]] || die "invalid branch"
+    [[ -d "$SITE_PUBLIC/.git" && ! -L "$SITE_PUBLIC/.git" ]] || die "repository is not connected"
+    runuser -u "$SITE_USER" -- env GIT_TERMINAL_PROMPT=0 git -C "$SITE_PUBLIC" fetch --depth 1 origin "$BRANCH"
+    runuser -u "$SITE_USER" -- git -C "$SITE_PUBLIC" reset --hard "origin/$BRANCH"
+    ;;
+
+  site-git-disconnect)
+    SITE_ID="${1:-}"
+    valid_site_id "$SITE_ID"
+    exec 8>"/run/lock/nebula-site-${SITE_ID}.lock"
+    flock -w 30 8 || die "another operation is running for this site"
+    site_state_check "$SITE_ID"
+    [[ -d "$SITE_PUBLIC/.git" && ! -L "$SITE_PUBLIC/.git" ]] && rm -rf --one-file-system "$SITE_PUBLIC/.git"
+    ;;
+
+  # site-delete <site-id> <domain> [archive]
   site-delete)
-    DOMAIN="${1:-}"; PURGE="${2:-no}"; DOCROOT="${3:-}"
-    valid_domain "$DOMAIN"
+    SITE_ID="${1:-}"; DOMAIN="${2:-}"; PURGE="${3:-no}"
+    valid_site_id "$SITE_ID"; valid_domain "$DOMAIN"
+    exec 8>"/run/lock/nebula-site-${SITE_ID}.lock"
+    flock -w 30 8 || die "another operation is running for this site"
+    site_state_check "$SITE_ID" "$DOMAIN"
+    CONF_BACKUP="$(mktemp)"; trap 'rm -f "$CONF_BACKUP"' EXIT
+    cp "$NGINX_AV/$DOMAIN" "$CONF_BACKUP"
     rm -f "$NGINX_EN/$DOMAIN" "$NGINX_AV/$DOMAIN"
-    nginx -t && systemctl reload nginx || true
-    if [[ "$PURGE" == "purge" ]]; then
-      if [[ -n "$DOCROOT" ]]; then
-        valid_path "$DOCROOT"
-        [[ "$DOCROOT" == "/" || "$DOCROOT" == "/var/www" || "$DOCROOT" == "/etc" ]] && die "refusing to delete $DOCROOT"
-        rm -rf "$DOCROOT"
-      fi
+    if ! nginx -t || ! systemctl reload nginx; then
+      install -m 0644 -o root -g root "$CONF_BACKUP" "$NGINX_AV/$DOMAIN"
+      ln -sf "$NGINX_AV/$DOMAIN" "$NGINX_EN/$DOMAIN"
+      systemctl reload nginx >/dev/null 2>&1 || true
+      die "nginx rejected site removal; previous configuration restored"
+    fi
+    for POOL in /etc/php/*/fpm/pool.d/nebula-site-"${SITE_ID}".conf; do
+      [[ -f "$POOL" ]] || continue
+      VER="$(awk -F/ '{print $4}' <<<"$POOL")"; rm -f "$POOL"; systemctl reload "php${VER}-fpm" >/dev/null 2>&1 || true
+    done
+    if [[ "$PURGE" == "archive" ]]; then
+      ARCHIVE="$SITES_TRASH/${SITE_ID}-$(date +%Y%m%d-%H%M%S)"
+      mv -- "$SITE_BASE" "$ARCHIVE"
+      chown -R root:root "$ARCHIVE"
       # Remove other server-side traces of the site so nothing is left behind.
       rm -rf "/etc/nebula-panel/certs/$DOMAIN"
       rm -f "/var/log/nginx/${DOMAIN}.access.log" "/var/log/nginx/${DOMAIN}.error.log" \
             /var/log/nginx/${DOMAIN}.access.log.* /var/log/nginx/${DOMAIN}.error.log.* 2>/dev/null || true
+      rm -f "$SITE_STATE"
+      userdel "$SITE_USER" >/dev/null 2>&1 || true
     fi
     echo "deleted $DOMAIN"
     ;;
@@ -771,23 +1343,20 @@ EOF
   pma-install)
     TARGET="${1:-}"
     valid_path "$TARGET"
-    command -v curl >/dev/null || die "curl not installed"
-    TMP="$(mktemp -d)"
-    trap 'rm -rf "$TMP"' EXIT
-      curl -fL --show-error --progress-bar -o "$TMP/pma.tar.gz" \
-      "https://www.phpmyadmin.net/downloads/phpMyAdmin-latest-all-languages.tar.gz" || die "download failed"
-    tar -xzf "$TMP/pma.tar.gz" -C "$TMP" || die "extract failed"
-    SRC="$(find "$TMP" -maxdepth 1 -type d -name 'phpMyAdmin-*' | head -1)"
-    [[ -n "$SRC" ]] || die "archive layout unexpected"
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get -o Dpkg::Use-Pty=0 -o APT::Color=0 install -y phpmyadmin \
+      || die "distribution-verified phpMyAdmin package install failed"
+    SRC=/usr/share/phpmyadmin
+    [[ -f "$SRC/index.php" ]] || die "phpMyAdmin package layout unexpected"
     mkdir -p "$TARGET"
-    cp -a "$SRC"/. "$TARGET"/
+    cp -aL "$SRC"/. "$TARGET"/
     # Avoid an infinite producer piped into head: with pipefail, head closing
     # the pipe makes tr exit on SIGPIPE and aborts an otherwise good install.
     SECRET="$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')"
     sed "s|\$cfg\['blowfish_secret'\] = '';|\$cfg['blowfish_secret'] = '${SECRET}';|" \
       "$TARGET/config.sample.inc.php" > "$TARGET/config.inc.php"
     mkdir -p "$TARGET/tmp"
-    chown -R www-data:www-data "$TARGET"
+    chown -R nebula-webapps:nebula-webapps "$TARGET"
     chmod 700 "$TARGET/tmp"
     echo "phpMyAdmin installed at $TARGET"
     ;;
@@ -966,6 +1535,8 @@ EOF
   # panel owns, so there is never drift between the panel and the running MTA.
   # ==========================================================================
   mail-setup)
+    exec 8>/run/lock/nebula-panel-mail.lock
+    flock -w 30 8 || die "another mail operation is running"
     export DEBIAN_FRONTEND=noninteractive
     HOSTFQDN="$(hostname -f 2>/dev/null || hostname)"
     echo "Installing mail packages (Postfix, Dovecot, OpenDKIM)…"
@@ -996,7 +1567,7 @@ EOF
     if getent group dovecot >/dev/null 2>&1; then
       chown root:dovecot "$MAIL_DIR/dovecot-users"; chmod 0640 "$MAIL_DIR/dovecot-users"
     else
-      chmod 0644 "$MAIL_DIR/dovecot-users"
+      die "dovecot group is missing; refusing to expose the password database"
     fi
     postmap "$MAIL_DIR/vdomains" "$MAIL_DIR/vmailbox" "$MAIL_DIR/valias"
 
@@ -1016,8 +1587,14 @@ EOF
     postconf -e "smtpd_sasl_type = dovecot"
     postconf -e "smtpd_sasl_path = private/auth"
     postconf -e "smtpd_tls_security_level = may"
-    postconf -e "smtpd_tls_cert_file = /etc/ssl/certs/ssl-cert-snakeoil.pem"
-    postconf -e "smtpd_tls_key_file = /etc/ssl/private/ssl-cert-snakeoil.key"
+    MAIL_CERT="/etc/letsencrypt/live/${HOSTFQDN}/fullchain.pem"
+    MAIL_KEY="/etc/letsencrypt/live/${HOSTFQDN}/privkey.pem"
+    [[ -r "$MAIL_CERT" && -r "$MAIL_KEY" ]] \
+      || die "a valid Let's Encrypt certificate for ${HOSTFQDN} is required before enabling mail authentication"
+    postconf -e "smtpd_tls_cert_file = $MAIL_CERT"
+    postconf -e "smtpd_tls_key_file = $MAIL_KEY"
+    postconf -e "smtpd_tls_protocols = >=TLSv1.2"
+    postconf -e "smtpd_tls_mandatory_protocols = >=TLSv1.2"
     postconf -e "smtp_tls_security_level = may"
     postconf -e "milter_default_action = accept"
     postconf -e "milter_protocol = 6"
@@ -1029,7 +1606,7 @@ EOF
     # Submission (587) with SASL for authenticated mail clients.
     postconf -M submission/inet="submission inet n - y - - smtpd"
     postconf -P "submission/inet/syslog_name=postfix/submission"
-    postconf -P "submission/inet/smtpd_tls_security_level=may"
+    postconf -P "submission/inet/smtpd_tls_security_level=encrypt"
     postconf -P "submission/inet/smtpd_sasl_auth_enable=yes"
     postconf -P "submission/inet/smtpd_sasl_type=dovecot"
     postconf -P "submission/inet/smtpd_sasl_path=private/auth"
@@ -1038,11 +1615,6 @@ EOF
     postconf -P "submission/inet/milter_macro_daemon_name=ORIGINATING"
 
     echo "Configuring Dovecot…"
-    # Make sure the self-signed cert Dovecot references actually exists, or
-    # `ssl = yes` prevents the daemon from starting (and every login then fails).
-    if [[ ! -f /etc/ssl/certs/ssl-cert-snakeoil.pem ]] && command -v make-ssl-cert >/dev/null 2>&1; then
-      make-ssl-cert generate-default-snakeoil --force-overwrite || true
-    fi
     # Disable the distro's *system* auth (PAM/passwd) so our virtual passwd-file
     # is the sole, authoritative source. Leaving system auth enabled adds a
     # competing passdb/userdb that can shadow virtual mailboxes and break login.
@@ -1058,7 +1630,7 @@ mail_uid = vmail
 mail_gid = vmail
 first_valid_uid = $MAIL_VUID
 last_valid_uid = $MAIL_VUID
-disable_plaintext_auth = no
+disable_plaintext_auth = yes
 auth_mechanisms = plain login
 passdb {
   driver = passwd-file
@@ -1086,9 +1658,10 @@ service auth {
     user = vmail
   }
 }
-ssl = yes
-ssl_cert = </etc/ssl/certs/ssl-cert-snakeoil.pem
-ssl_key = </etc/ssl/private/ssl-cert-snakeoil.key
+ssl = required
+ssl_min_protocol = TLSv1.2
+ssl_cert = <$MAIL_CERT
+ssl_key = <$MAIL_KEY
 EOF
 
     echo "Configuring OpenDKIM…"
@@ -1126,7 +1699,7 @@ EOF
 
     # Open the standard mail ports when UFW is active so delivery works.
     if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then
-      for P in 25 587 465 143 993 110 995; do ufw allow "${P}/tcp" >/dev/null 2>&1 || true; done
+      for P in 25 587 993 995; do ufw allow "${P}/tcp" >/dev/null 2>&1 || true; done
       echo "opened mail ports in UFW"
     fi
     echo "mail stack ready"
@@ -1137,7 +1710,7 @@ EOF
     svc() { systemctl is-active "$1" 2>/dev/null || echo inactive; }
     INSTALLED=no
     [[ -d "$MAIL_DIR" ]] && command -v postfix >/dev/null 2>&1 && command -v dovecot >/dev/null 2>&1 && INSTALLED=yes
-    IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
+    IP="$([[ -r "$PUBLIC_IP_FILE" ]] && head -n 1 "$PUBLIC_IP_FILE" || true)"
     echo "installed=$INSTALLED"
     echo "postfix=$(svc postfix)"
     echo "dovecot=$(svc dovecot)"
@@ -1200,7 +1773,7 @@ EOF
     fi
     echo
     echo "-- DNS for mail domains (needed to RECEIVE)"
-    IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
+    IP="$([[ -r "$PUBLIC_IP_FILE" ]] && head -n 1 "$PUBLIC_IP_FILE" || true)"
     echo "this server public IP: ${IP:-unknown}"
     if [[ -f "$MAIL_DIR/vdomains" ]] && command -v dig >/dev/null 2>&1; then
       while read -r d _ || [[ -n "$d" ]]; do
@@ -1277,14 +1850,16 @@ EOF
   # Rebuilds every map from scratch, ensures DKIM keys + maildirs, reloads.
   mail-apply)
     [[ -d "$MAIL_DIR" ]] || die "mail stack is not installed; run mail-setup first"
+    exec 8>/run/lock/nebula-panel-mail.lock
+    flock -w 30 8 || die "another mail operation is running"
     DOMAINS_B64="${1:-}"; ACCOUNTS_B64="${2:-}"; ALIASES_B64="${3:-}"
     for v in "$DOMAINS_B64" "$ACCOUNTS_B64" "$ALIASES_B64"; do
       [[ -z "$v" || "$v" =~ ^[A-Za-z0-9+/=]+$ ]] || die "invalid input encoding"
     done
     TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
-    printf '%s' "$DOMAINS_B64"  | base64 -d > "$TMP/domains"  2>/dev/null || : > "$TMP/domains"
-    printf '%s' "$ACCOUNTS_B64" | base64 -d > "$TMP/accounts" 2>/dev/null || : > "$TMP/accounts"
-    printf '%s' "$ALIASES_B64"  | base64 -d > "$TMP/aliases"  2>/dev/null || : > "$TMP/aliases"
+    printf '%s' "$DOMAINS_B64"  | base64 -d > "$TMP/domains"  2>/dev/null || die "invalid domain-map encoding"
+    printf '%s' "$ACCOUNTS_B64" | base64 -d > "$TMP/accounts" 2>/dev/null || die "invalid account-map encoding"
+    printf '%s' "$ALIASES_B64"  | base64 -d > "$TMP/aliases"  2>/dev/null || die "invalid alias-map encoding"
 
     : > "$TMP/vdomains"; : > "$TMP/vmailbox"; : > "$TMP/valias"; : > "$TMP/dovecot-users"
     # Skip malformed rows rather than aborting: a single bad entry must never
@@ -1334,17 +1909,48 @@ EOF
       printf '%s %s\n' "$from" "$to" >> "$TMP/valias"
     done < "$TMP/aliases"
 
-    # Install the regenerated maps atomically, then rebuild the hash databases.
+    # Build hashed maps while everything is still staged.
+    postmap "$TMP/vdomains" "$TMP/vmailbox" "$TMP/valias" \
+      || die "Postfix rejected the staged maps"
+
+    # Keep a restorable copy of the last known-good live maps. This turns a
+    # failed validation/reload into a real rollback instead of state drift.
+    LIVE_FILES=(
+      "$MAIL_DIR/vdomains" "$MAIL_DIR/vdomains.db"
+      "$MAIL_DIR/vmailbox" "$MAIL_DIR/vmailbox.db"
+      "$MAIL_DIR/valias" "$MAIL_DIR/valias.db"
+      "$MAIL_DIR/dovecot-users" "$DKIM_DIR/KeyTable" "$DKIM_DIR/SigningTable"
+    )
+    install -d -m 0700 "$TMP/previous"
+    for i in "${!LIVE_FILES[@]}"; do
+      path="${LIVE_FILES[$i]}"
+      if [[ -e "$path" ]]; then cp -a "$path" "$TMP/previous/$i"; else : > "$TMP/previous/$i.missing"; fi
+    done
+    rollback_mail_maps() {
+      local j path
+      for j in "${!LIVE_FILES[@]}"; do
+        path="${LIVE_FILES[$j]}"
+        if [[ -f "$TMP/previous/$j.missing" ]]; then rm -f -- "$path"; else cp -a "$TMP/previous/$j" "$path"; fi
+      done
+      systemctl reload opendkim >/dev/null 2>&1 || true
+      systemctl reload postfix >/dev/null 2>&1 || true
+      systemctl reload dovecot >/dev/null 2>&1 || true
+    }
+
+    # Install the regenerated maps atomically.
     install -m 0644 -o root -g root "$TMP/vdomains" "$MAIL_DIR/vdomains"
+    install -m 0644 -o root -g root "$TMP/vdomains.db" "$MAIL_DIR/vdomains.db"
     install -m 0644 -o root -g root "$TMP/vmailbox" "$MAIL_DIR/vmailbox"
+    install -m 0644 -o root -g root "$TMP/vmailbox.db" "$MAIL_DIR/vmailbox.db"
     install -m 0644 -o root -g root "$TMP/valias"   "$MAIL_DIR/valias"
+    install -m 0644 -o root -g root "$TMP/valias.db" "$MAIL_DIR/valias.db"
     # Readable by the 'dovecot' user (auth-worker) — see mail-setup note.
     if getent group dovecot >/dev/null 2>&1; then
       install -m 0640 -o root -g dovecot "$TMP/dovecot-users" "$MAIL_DIR/dovecot-users"
     else
-      install -m 0644 -o root -g root "$TMP/dovecot-users" "$MAIL_DIR/dovecot-users"
+      rollback_mail_maps
+      die "dovecot group is missing; refusing to expose mailbox hashes"
     fi
-    postmap "$MAIL_DIR/vdomains" "$MAIL_DIR/vmailbox" "$MAIL_DIR/valias"
 
     # Ensure a Maildir exists for every mailbox (Dovecot also autocreates).
     while IFS= read -r line; do
@@ -1378,9 +1984,16 @@ EOF
     install -m 0644 "$TMP/SigningTable" "$DKIM_DIR/SigningTable"
     chown -R opendkim:opendkim "$DKIM_DIR" 2>/dev/null || true
 
-    systemctl reload opendkim 2>/dev/null || systemctl restart opendkim 2>/dev/null || true
-    systemctl reload postfix 2>/dev/null || systemctl restart postfix 2>/dev/null || true
-    systemctl reload dovecot 2>/dev/null || true
+    if ! postfix check || ! doveconf -n >/dev/null; then
+      rollback_mail_maps
+      die "mail configuration validation failed; previous maps restored"
+    fi
+    if ! (systemctl reload opendkim 2>/dev/null || systemctl restart opendkim 2>/dev/null) \
+      || ! (systemctl reload postfix 2>/dev/null || systemctl restart postfix 2>/dev/null) \
+      || ! (systemctl reload dovecot 2>/dev/null || systemctl restart dovecot 2>/dev/null); then
+      rollback_mail_maps
+      die "mail service reload failed; previous maps restored"
+    fi
     echo "mail configuration applied"
     ;;
 
@@ -1412,8 +2025,9 @@ EOF
   # roundcube-install <targetdir>
   roundcube-install)
     TARGET="${1:-}"; valid_path "$TARGET"
-    command -v curl >/dev/null || die "curl not installed"
-    RC_VER=1.6.9
+    HOSTFQDN="$(hostname -f 2>/dev/null || hostname)"
+    [[ -r "/etc/letsencrypt/live/${HOSTFQDN}/fullchain.pem" ]] \
+      || die "mail hostname certificate is missing"
     export DEBIAN_FRONTEND=noninteractive
     # Roundcube's runtime dependencies (SQLite backend keeps setup zero-config).
     PHP_VER="$(ls -d /etc/php/*/fpm 2>/dev/null | sort -V | tail -1 | awk -F/ '{print $4}')"
@@ -1423,28 +2037,25 @@ EOF
         "php${PHP_VER}-mbstring" "php${PHP_VER}-zip" "php${PHP_VER}-gd" \
         "php${PHP_VER}-curl" "php${PHP_VER}-imagick" >/dev/null 2>&1 || true
     fi
-    TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
-    curl -fL --show-error --progress-bar -o "$TMP/rc.tar.gz" \
-      "https://github.com/roundcube/roundcubemail/releases/download/${RC_VER}/roundcubemail-${RC_VER}-complete.tar.gz" \
-      || die "roundcube download failed"
-    tar -xzf "$TMP/rc.tar.gz" -C "$TMP" || die "extract failed"
-    SRC="$(find "$TMP" -maxdepth 1 -type d -name 'roundcubemail-*' | head -1)"
-    [[ -n "$SRC" ]] || die "archive layout unexpected"
-    mkdir -p "$TARGET"; cp -a "$SRC"/. "$TARGET"/
+    apt-get -o Dpkg::Use-Pty=0 -o APT::Color=0 install -y roundcube-core roundcube-sqlite3 \
+      || die "distribution-verified Roundcube package install failed"
+    SRC=/usr/share/roundcube
+    [[ -f "$SRC/index.php" ]] || die "Roundcube package layout unexpected"
+    mkdir -p "$TARGET"; cp -aL "$SRC"/. "$TARGET"/
     rm -rf "$TARGET/installer"
-    install -d -m 0750 -o www-data -g www-data /var/lib/nebula-mail
+    install -d -m 0750 -o nebula-webapps -g nebula-webapps /var/lib/nebula-mail
     DESKEY="$(od -An -N24 -tx1 /dev/urandom | tr -d ' \n')"
     cat > "$TARGET/config/config.inc.php" <<EOF
 <?php
 /* Managed by Nebula Panel. */
 \$config = [];
 \$config['db_dsnw'] = 'sqlite:////var/lib/nebula-mail/roundcube.db?mode=0640';
-\$config['imap_host'] = 'localhost:143';
-\$config['smtp_host'] = 'localhost:587';
+    \$config['imap_host'] = 'ssl://${HOSTFQDN}:993';
+    \$config['smtp_host'] = 'tls://${HOSTFQDN}:587';
 \$config['smtp_user'] = '%u';
 \$config['smtp_pass'] = '%p';
-\$config['imap_conn_options'] = ['ssl' => ['verify_peer' => false, 'verify_peer_name' => false]];
-\$config['smtp_conn_options'] = ['ssl' => ['verify_peer' => false, 'verify_peer_name' => false]];
+    \$config['imap_conn_options'] = ['ssl' => ['verify_peer' => true, 'verify_peer_name' => true]];
+    \$config['smtp_conn_options'] = ['ssl' => ['verify_peer' => true, 'verify_peer_name' => true]];
 \$config['support_url'] = '';
 \$config['product_name'] = 'Nebula Webmail';
 \$config['des_key'] = '${DESKEY:0:24}';
@@ -1454,8 +2065,8 @@ EOF
 \$config['log_dir'] = '/var/lib/nebula-mail/rc-logs/';
 \$config['temp_dir'] = '/var/lib/nebula-mail/rc-temp/';
 EOF
-    install -d -m 0750 -o www-data -g www-data /var/lib/nebula-mail/rc-logs /var/lib/nebula-mail/rc-temp
-    chown -R www-data:www-data "$TARGET"
+    install -d -m 0750 -o nebula-webapps -g nebula-webapps /var/lib/nebula-mail/rc-logs /var/lib/nebula-mail/rc-temp
+    chown -R nebula-webapps:nebula-webapps "$TARGET"
     echo "roundcube installed at $TARGET"
     ;;
 
