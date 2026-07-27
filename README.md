@@ -2,12 +2,13 @@
 
 A pre-production, self-hosted server control panel. The repository's application source
 lives in the clearly named `panel/` directory. Installation copies those files
-to a random URL prefix on first install. Without a domain, Nginx binds the panel
-to loopback only; use an SSH port-forward for bootstrap.
+to a random URL prefix on first install. Without a domain, the quick installer
+uses the server IP over HTTP; set `LOCAL_ONLY=1` to require an SSH port-forward.
 
-> The random directory name is not a security boundary. HTTPS is required away
-> from loopback. Do not host untrusted applications until the documented VM
-> integration tests have passed for your OS and service combination.
+> The random directory name is not a security boundary. Domainless HTTP mode is
+> intended only for initial setup; add `DOMAIN` for HTTPS, restrict `ADMIN_IP`,
+> or set `LOCAL_ONLY=1`. Do not host untrusted applications until the documented
+> VM integration tests have passed for your OS and service combination.
 
 ## Quick install
 
@@ -51,7 +52,7 @@ bootstrap token. Use that token to create the administrator account and run the
 provisioning wizard. An unset `PANEL_PREFIX` reuses an existing active install and generates a
 random one only on the first run. Set `PANEL_PREFIX=random` to deliberately rotate
 the URL (runtime state is migrated), or use a fixed name. Options (env vars):
-`PANEL_PREFIX`, `WEBROOT`, `ADMIN_IP`, `DOMAIN`, `FM_ROOT`, `REPO`, `REPO_REF`
+`PANEL_PREFIX`, `WEBROOT`, `ADMIN_IP`, `DOMAIN`, `LOCAL_ONLY`, `FM_ROOT`, `REPO`, `REPO_REF`
 (see [install.sh](install.sh)).
 
 > The `main` one-liner is intentionally convenient and follows the current

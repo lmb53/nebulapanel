@@ -25,6 +25,7 @@
 #   DOMAIN=panel.example.com Provision HTTPS via certbot for this domain
 #   ADMIN_IP=203.0.113.7     Restrict panel access to this IP (recommended)
 #   PUBLIC_IP=203.0.113.8    Explicit public address for mail/DNS guidance
+#   LOCAL_ONLY=1             Bind domainless installs to loopback instead of server IP
 #   WEBROOT=/var/www/html    Nginx document root
 #   PANEL_SRC=/path/to/src   Explicit path to the panel source dir (skips download)
 #
@@ -47,6 +48,7 @@ PANEL_PREFIX="${PANEL_PREFIX:-}"
 DOMAIN="${DOMAIN:-}"
 ADMIN_IP="${ADMIN_IP:-}"
 PUBLIC_IP="${PUBLIC_IP:-}"
+LOCAL_ONLY="${LOCAL_ONLY:-0}"
 PANEL_USER="${PANEL_USER:-nebula-panel}"
 WEBAPPS_USER="${WEBAPPS_USER:-nebula-webapps}"
 SITES_ROOT="${SITES_ROOT:-/srv/nebula/sites}"
@@ -58,6 +60,10 @@ BOOTSTRAP_TOKEN=""
 }
 [[ "$REPO_REF" =~ ^[A-Za-z0-9._/-]{1,200}$ && "$REPO_REF" != *..* ]] || {
   echo "REPO_REF contains unsupported characters." >&2
+  exit 1
+}
+[[ "$LOCAL_ONLY" == 0 || "$LOCAL_ONLY" == 1 ]] || {
+  echo "LOCAL_ONLY must be 0 or 1." >&2
   exit 1
 }
 
@@ -432,6 +438,8 @@ fi
 log "Writing Nginx configuration…"
 PANEL_FPM_SOCK="/run/php/nebula-panel.sock"
 WEBAPPS_FPM_SOCK="/run/php/nebula-webapps.sock"
+PANEL_FORCE_HTTPS=0
+[[ -n "$DOMAIN" ]] && PANEL_FORCE_HTTPS=1
 cat > "/etc/php/${PHP_VER}/fpm/pool.d/nebula-panel.conf" <<EOF
 [nebula-panel]
 user = ${PANEL_USER}
@@ -445,6 +453,7 @@ pm.max_children = 10
 pm.process_idle_timeout = 20s
 pm.max_requests = 500
 clear_env = yes
+env[NEBULA_FORCE_HTTPS] = ${PANEL_FORCE_HTTPS}
 catch_workers_output = yes
 security.limit_extensions = .php
 rlimit_files = 4096
@@ -477,7 +486,7 @@ if [[ -n "$ADMIN_IP" ]]; then
   ACCESS_RULES=$'        allow '"$ADMIN_IP"$';\n        deny all;'
 fi
 
-if [[ -n "$DOMAIN" ]]; then
+if [[ -n "$DOMAIN" || "$LOCAL_ONLY" == 0 ]]; then
   PANEL_LISTEN=$'    listen 80 default_server;\n    listen [::]:80 default_server;'
 else
   PANEL_LISTEN=$'    listen 127.0.0.1:80 default_server;\n    listen [::1]:80 default_server;'
@@ -507,6 +516,7 @@ ${ACCESS_RULES}
     }
 
     location ~ ^/${PANEL_PREFIX}/.*\.php\$ {
+${ACCESS_RULES}
         include snippets/fastcgi-php.conf;
         fastcgi_pass unix:${PANEL_FPM_SOCK};
     }
@@ -591,8 +601,10 @@ fi
 # --------------------------------------------------------------------------
 # 9. Summary
 # --------------------------------------------------------------------------
-IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
-SCHEME="http"; HOST="127.0.0.1"
+IP="$(ip -4 route get 1.1.1.1 2>/dev/null | sed -nE 's/.*[[:space:]]src[[:space:]]+([^[:space:]]+).*/\1/p' | head -1)"
+[[ -n "$IP" ]] || IP="$(hostname -I 2>/dev/null | tr ' ' '\n' | grep -m1 -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' || true)"
+SCHEME="http"; HOST="${PUBLIC_IP:-${IP:-server-ip}}"
+[[ "$LOCAL_ONLY" == 1 ]] && HOST="127.0.0.1"
 [[ -n "$DOMAIN" ]] && { SCHEME="https"; HOST="$DOMAIN"; }
 
 echo
@@ -607,7 +619,8 @@ echo "  FM root:    ${FM_ROOT}"
 echo "  PHP-FPM:    ${FPM_SVC}"
 [[ -n "$ADMIN_IP" ]] && echo "  Access:     restricted to ${ADMIN_IP}"
 [[ -n "$BOOTSTRAP_TOKEN" ]] && echo "  Bootstrap:  $BOOTSTRAP_TOKEN  (single-use; expires in 1 hour)"
-[[ -z "$DOMAIN"  ]] && echo "  (No domain: loopback only. Use an SSH port-forward for setup.)"
+[[ -z "$DOMAIN" && "$LOCAL_ONLY" == 0 ]] && echo "  WARNING: domainless setup uses HTTP. Add DOMAIN for HTTPS after bootstrap."
+[[ -z "$DOMAIN" && "$LOCAL_ONLY" == 1 ]] && echo "  (Local-only mode: use an SSH port-forward for setup.)"
 echo "------------------------------------------------------------"
 echo "  NEXT: open the URL and enter the single-use bootstrap token."
 echo "============================================================"
