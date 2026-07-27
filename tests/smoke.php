@@ -81,6 +81,19 @@ $check(is_file(APP_ROOT . '/api/php.php'), 'PHP API endpoint is missing');
 $check(is_file(APP_ROOT . '/api/file-state.php') && is_file(APP_ROOT . '/api/file-compress.php'), 'extended File Manager endpoints are missing');
 $check(!is_file(APP_ROOT . '/api/file-owner.php'), 'arbitrary File Manager ownership changes are still exposed');
 $check(is_file(APP_ROOT . '/api/file-tree.php') && is_file(APP_ROOT . '/api/dns.php') && is_file(APP_ROOT . '/api/users.php'), 'tree, DNS, or panel-user API endpoint is missing');
+$sessionApiCommand = escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg(__DIR__ . '/session-api.php');
+[$sessionApiCode, $sessionApiOutput, $sessionApiError] = run_cmd($sessionApiCommand, 30);
+$sessionApiResult = json_decode($sessionApiOutput, true);
+$check(
+    $sessionApiCode === 0
+        && is_array($sessionApiResult)
+        && !empty($sessionApiResult['ok'])
+        && array_key_exists('mem', $sessionApiResult)
+        && array_key_exists('disk', $sessionApiResult),
+    'normal browser-session API routing failed (code=' . $sessionApiCode
+        . ', output=' . json_encode($sessionApiOutput)
+        . ', error=' . json_encode($sessionApiError) . ')'
+);
 
 // Email module: registration, RBAC and the mail helpers.
 $check(is_page_route('mail') && ($modules['mail'][2] ?? '') === 'Hosting', 'Email module is not registered under Hosting');
