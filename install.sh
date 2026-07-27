@@ -389,7 +389,7 @@ ok "Files copied"
 for _required in index.php lib/bootstrap.php lib/sys.php \
                  api/apps.php api/updates.php api/provision.php \
                  api/notifications.php api/sshkeys.php api/file-state.php \
-                 api/file-owner.php api/file-compress.php assets/app.js assets/style.css \
+                 api/file-chmod.php api/file-compress.php assets/app.js assets/style.css \
                  bin/nebula-helper bin/nebula-recovery bin/recovery.php; do
   [[ -f "$DEST/$_required" ]] || die "Deployed source is incomplete: missing $_required"
 done

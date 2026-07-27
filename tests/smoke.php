@@ -214,6 +214,9 @@ $check(strpos($helperSource, 'cert-upload)') !== false && strpos($helperSource, 
 $check(strpos($helperSource, 'dns-zone-put)') !== false && strpos($helperSource, 'named-checkzone') !== false, 'authoritative DNS helper support is missing');
 $check(!is_page_route('file-view'), 'obsolete file viewer route is still enabled');
 $installerSource = (string) file_get_contents(dirname(__DIR__) . '/install.sh');
+$check(strpos($installerSource, 'api/file-owner.php') === false
+    && strpos($installerSource, 'api/file-chmod.php') !== false,
+    'installer release validation still requires the removed ownership endpoint');
 $check(strpos($installerSource, 'repair_legacy_modsecurity_loader') !== false
     && strpos($helperSource, 'repair_legacy_modsecurity_loader') !== false,
     'updates and later package installs do not repair the legacy broken ModSecurity loader');
