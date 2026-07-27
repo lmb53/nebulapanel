@@ -110,7 +110,6 @@ $apacheStatus = service_status('apache2');
               <div style="font-weight:700;font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
                 <a href="<?= e($url) ?>" target="_blank" rel="noopener"><?= e($domain) ?></a>
               </div>
-              <div class="mono" style="font-size:11.5px;color:var(--text-tertiary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap"><?= e($docroot) ?></div>
             </div>
           </div>
           <div class="flex gap-2" style="margin-bottom:14px;flex-wrap:wrap">
@@ -157,7 +156,7 @@ $apacheStatus = service_status('apache2');
 
   <script>
   document.addEventListener('DOMContentLoaded', () => {
-    const { apiPost, toast } = window.Nebula;
+    const { apiPost, streamPost, toast } = window.Nebula;
 
     const form = document.getElementById('wsForm');
     document.getElementById('wsToggle')?.addEventListener('click', () => {
@@ -195,7 +194,17 @@ $apacheStatus = service_status('apache2');
         const domain = btn.getAttribute('data-ws-ssl');
         if (!confirm('Issue a Let’s Encrypt certificate for ' + domain + '?')) return;
         const email = document.getElementById('wsEmail').value.trim();
-        const res = await apiPost('sites', { action: 'ssl', domain, email });
+        const original = btn.innerHTML;
+        btn.disabled = true;
+        btn.classList.add('btn-loading');
+        btn.innerHTML = '<i data-lucide="loader-circle"></i>';
+        if (window.lucide) lucide.createIcons();
+        toast('Requesting certificate for ' + domain + '…', 'info');
+        const res = await streamPost('sites', { action: 'ssl', domain, email });
+        btn.classList.remove('btn-loading');
+        btn.disabled = false;
+        btn.innerHTML = original;
+        if (window.lucide) lucide.createIcons();
         if (res.ok) { toast('SSL issued', 'success'); setTimeout(() => location.reload(), 500); }
         else toast(res.error || 'Failed', 'error');
       });

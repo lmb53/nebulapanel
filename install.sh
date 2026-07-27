@@ -94,9 +94,52 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# Repair the exact ModSecurity loader written by older Nebula releases before
+# apt runs package hooks. Debian's owasp-crs.load is for Apache and its
+# IncludeOptional directives are not valid in Nginx/libmodsecurity.
+repair_legacy_modsecurity_loader() {
+  local main=/etc/nginx/modsec/main.conf
+  local conf=/etc/nginx/modsec/modsecurity.conf
+  local rules=/usr/share/modsecurity-crs/rules
+  local setup="" candidate tmp backup
+  [[ -f "$main" ]] || return 0
+  grep -Fq 'Include /usr/share/modsecurity-crs/owasp-crs.load' "$main" || return 0
+  for candidate in /etc/modsecurity/crs/crs-setup.conf \
+                   /usr/share/modsecurity-crs/crs-setup.conf; do
+    [[ -f "$candidate" ]] && { setup="$candidate"; break; }
+  done
+  if [[ -z "$setup" || ! -d "$rules" || ! -f "$conf" ]]; then
+    warn "Found a legacy ModSecurity loader, but the installed OWASP CRS files are incomplete."
+    return 0
+  fi
+  tmp="$(mktemp)"
+  backup="${main}.nebula-installer-bak"
+  cp "$main" "$backup"
+  {
+    echo "# Managed by Nebula Panel - ModSecurity rule entrypoint."
+    echo "Include $conf"
+    echo "Include $setup"
+    [[ -f /etc/modsecurity/crs/REQUEST-900-EXCLUSION-RULES-BEFORE-CRS.conf ]] \
+      && echo "Include /etc/modsecurity/crs/REQUEST-900-EXCLUSION-RULES-BEFORE-CRS.conf"
+    echo "Include $rules/*.conf"
+    [[ -f /etc/modsecurity/crs/RESPONSE-999-EXCLUSION-RULES-AFTER-CRS.conf ]] \
+      && echo "Include /etc/modsecurity/crs/RESPONSE-999-EXCLUSION-RULES-AFTER-CRS.conf"
+  } > "$tmp"
+  install -m 0644 -o root -g root "$tmp" "$main"
+  rm -f "$tmp"
+  if command -v nginx >/dev/null 2>&1 && ! nginx -t >/dev/null 2>&1; then
+    mv "$backup" "$main"
+    warn "The legacy ModSecurity loader could not be repaired automatically; its previous file was restored."
+    return 0
+  fi
+  rm -f "$backup"
+  ok "Repaired legacy ModSecurity OWASP CRS loader"
+}
+
 # --------------------------------------------------------------------------
 # 1. Install packages (needed for download + serving)
 # --------------------------------------------------------------------------
+repair_legacy_modsecurity_loader
 log "Installing packages (Nginx, PHP-FPM, tooling)…"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
@@ -408,10 +451,10 @@ install -d -m 0700 -o root -g root /srv/nebula/trash /etc/nebula-panel/sites
 setfacl -m "u:${PANEL_USER}:rx" "$SITES_ROOT"
 for _site_base in "$SITES_ROOT"/*; do
   [[ -d "$_site_base" && ! -L "$_site_base" && "$(basename "$_site_base")" =~ ^[a-f0-9]{32}$ ]] || continue
-  setfacl -m "u:${PANEL_USER}:rx" "$_site_base"
+  setfacl -m "u:${PANEL_USER}:rx,u:www-data:rx" "$_site_base"
   if [[ -d "$_site_base/public" && ! -L "$_site_base/public" ]]; then
-    setfacl -R -m "u:${PANEL_USER}:rX" "$_site_base/public"
-    find "$_site_base/public" -type d -exec setfacl -m "d:u:${PANEL_USER}:rX" {} +
+    setfacl -R -m "u:${PANEL_USER}:rX,u:www-data:rX" "$_site_base/public"
+    find "$_site_base/public" -type d -exec setfacl -m "d:u:${PANEL_USER}:rX,d:u:www-data:rX" {} +
   fi
 done
 chown -R root:root "$DEST"

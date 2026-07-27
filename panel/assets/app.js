@@ -22,7 +22,17 @@
 
   async function apiGet(endpoint) {
     const r = await fetch(api(endpoint), { headers: { Accept: 'application/json' } });
-    const data = await r.json().catch(() => ({ ok: false, error: `Invalid server response (HTTP ${r.status})` }));
+    const type = (r.headers.get('content-type') || '').toLowerCase();
+    const text = await r.text();
+    let data;
+    try { data = JSON.parse(text); }
+    catch (e) {
+      const detail = text.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 2000);
+      data = { ok: false, error: detail || `Invalid server response (HTTP ${r.status})` };
+    }
+    if (!type.includes('application/json') && r.ok) {
+      throw new Error(data.error || `Unexpected response type (HTTP ${r.status})`);
+    }
     if (!r.ok) throw new Error(data.error || 'HTTP ' + r.status);
     return data;
   }
@@ -36,7 +46,8 @@
       const type = (r.headers.get('content-type') || '').toLowerCase();
       const text = await r.text();
       if (!type.includes('application/json')) {
-        return { ok: false, error: `Unexpected response type (HTTP ${r.status})` };
+        const detail = text.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 2000);
+        return { ok: false, error: detail || `Unexpected response type (HTTP ${r.status})` };
       }
       try {
         const data = JSON.parse(text);

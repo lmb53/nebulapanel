@@ -101,6 +101,12 @@ $check(is_file(APP_ROOT . '/api/mail.php') && is_file(APP_ROOT . '/lib/mod_mail.
 $check(!role_can('mail.manage', 'operator') && !role_route_allowed('mail', 'operator') && !role_route_allowed('mail', 'auditor') && !role_route_allowed('mail', 'developer'), 'Email RBAC policy failed');
 require APP_ROOT . '/lib/mod_mail.php';
 $check(mail_valid_email('user@example.com') && !mail_valid_email('nope') && !mail_valid_email('user@localhost'), 'mail address validation failed');
+$badMailHost = mail_setup('ubuntu');
+$badCertEmail = mail_setup('mail.example.com', 'not-an-email');
+$check(empty($badMailHost['ok']) && stripos((string) ($badMailHost['error'] ?? ''), 'hostname') !== false,
+    'mail setup accepted a non-public hostname');
+$check(empty($badCertEmail['ok']) && stripos((string) ($badCertEmail['error'] ?? ''), 'email') !== false,
+    'mail setup accepted an invalid certificate email');
 $mailHash = mail_hash_password('a decent mailbox password');
 $check(strpos($mailHash, '{SHA512-CRYPT}$6$') === 0 && crypt('a decent mailbox password', substr($mailHash, 14)) === substr($mailHash, 14), 'mail password hashing failed');
 require APP_ROOT . '/lib/mod_dns.php';
@@ -160,6 +166,13 @@ foreach (compose_catalog() as $storeKey => $storeEntry) {
 }
 
 $helperSource = (string) file_get_contents(APP_ROOT . '/bin/nebula-helper');
+$check(strpos($helperSource, "!= *\$'\\0'*") === false
+    && strpos($helperSource, 'decode_payload_file "$ENCODED" "$PAYLOAD"') !== false,
+    'binary payload validation can still reject every broker/SQL request');
+$check(strpos($helperSource, 'mysql -N -B < "$PAYLOAD"') !== false,
+    'database SQL is not passed to mysql through a private payload file');
+$check(strpos($helperSource, 'u:www-data:rX') !== false,
+    'new website document roots do not grant Nginx read access');
 $check(strpos($helperSource, 'server_name $DOMAIN;') !== false, 'site vhost still adds an implicit hostname');
 $check(strpos($helperSource, '-d "www.$DOMAIN"') === false, 'SSL issuance still requests an implicit www hostname');
 $check(strpos($helperSource, "tr -dc 'a-zA-Z0-9' </dev/urandom | head") === false, 'phpMyAdmin secret generation still has the pipefail/SIGPIPE bug');
@@ -181,6 +194,10 @@ $check(strpos($helperSource, 'docker(-compose|[[:space:]]+compose)?') === false,
     'the generic root Docker command broker is still enabled');
 $check(strpos($helperSource, 'f2b-status)') !== false && strpos($helperSource, 'f2b-unban|f2b-ban)') !== false, 'Fail2Ban helper actions are missing');
 $check(strpos($helperSource, 'mail-stats)') !== false, 'mail statistics helper action is missing');
+$check(strpos($helperSource, 'HOSTFQDN="${1:-}"') !== false
+    && strpos($helperSource, 'certbot "${CERTBOT_ARGS[@]}"') !== false
+    && strpos($helperSource, 'useradd --system -g vmail') !== false,
+    'mail setup does not preflight an explicit hostname/certificate or create a portable system user');
 $check(strpos($helperSource, 'read -r email hash || [[ -n "$email" ]]') !== false && strpos($helperSource, 'read -r d || [[ -n "$d" ]]') !== false, 'mail-apply drops the final line without a trailing newline (single-mailbox login bug)');
 $check(function_exists('mail_webmail_install') && function_exists('mail_webmail_remove') && function_exists('mail_webmail_installed'), 'webmail functions are missing');
 $snappy = mail_webmail_install('snappymail');
@@ -197,6 +214,9 @@ $check(strpos($helperSource, 'cert-upload)') !== false && strpos($helperSource, 
 $check(strpos($helperSource, 'dns-zone-put)') !== false && strpos($helperSource, 'named-checkzone') !== false, 'authoritative DNS helper support is missing');
 $check(!is_page_route('file-view'), 'obsolete file viewer route is still enabled');
 $installerSource = (string) file_get_contents(dirname(__DIR__) . '/install.sh');
+$check(strpos($installerSource, 'repair_legacy_modsecurity_loader') !== false
+    && strpos($helperSource, 'repair_legacy_modsecurity_loader') !== false,
+    'updates and later package installs do not repair the legacy broken ModSecurity loader');
 $check(strpos($installerSource, 'Reusing active panel prefix') !== false && strpos($installerSource, 'Migrated runtime state') !== false, 'reinstall state preservation is missing');
 $check(strpos($installerSource, 'bind9 bind9-utils') === false
     && strpos($installerSource, 'ufw allow 53/udp') === false
@@ -217,6 +237,11 @@ $websitesSource = (string) file_get_contents(APP_ROOT . '/views/websites.php');
 $check(strpos($websitesSource, 'id="wsRoot"') === false
     && strpos($websitesSource, '<label class="field-label">Document root</label>') === false,
     'the website creation form still exposes the automatically allocated document root');
+$check(strpos($websitesSource, '<?= e($docroot) ?>') === false,
+    'the website list still renders its internal document-root identifier');
+$check(strpos($websitesSource, "streamPost('sites'") !== false
+    && strpos($websitesSource, "classList.add('btn-loading')") !== false,
+    'website SSL issuance has no streaming/loading state');
 $dashboardSource = (string) file_get_contents(APP_ROOT . '/views/dashboard.php');
 $check(strpos($dashboardSource, '$initialMem = mem_info();') !== false
     && strpos($dashboardSource, '$initialDisk = disk_info') !== false,
@@ -266,6 +291,10 @@ foreach (['modsec-status', 'modsec-install', 'modsec-uninstall', 'modsec-mode', 
     $check(strpos($helperSource, "\n  $cmd)") !== false || strpos($helperSource, "$cmd)") !== false,
         "nebula-helper is missing the $cmd command");
 }
+$check(strpos($helperSource, 'Include $CRS_RULES/*.conf') !== false
+    && strpos($helperSource, 'echo "Include /usr/share/modsecurity-crs/owasp-crs.load"') === false
+    && strpos($helperSource, '$MODSEC_ENABLE.nebula-bak') !== false,
+    'ModSecurity still uses the Apache CRS loader or lacks rollback protection');
 $check(is_file(APP_ROOT . '/api/modsecurity.php') && strpos((string) file_get_contents(APP_ROOT . '/lib/auth.php'), "'modsecurity'=>'firewall'") !== false,
     'the ModSecurity API is not mapped to the firewall route');
 

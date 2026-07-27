@@ -10,6 +10,8 @@ $domains   = array_keys($state['domains']);
 $wmInstalled = mail_webmail_installed();
 $wmUrl       = mail_webmail()['url'] ?? null;
 $wmLabel     = mail_webmail_label();
+$statusHostname = strtolower(rtrim(trim((string) ($status['hostname'] ?? '')), '.'));
+$mailHostDefault = domain_name_ok($statusHostname) ? $statusHostname : '';
 
 $selected = (string) ($_GET['domain'] ?? ($domains[0] ?? ''));
 if (!in_array($selected, $domains, true)) {
@@ -73,6 +75,18 @@ $totalMb = count($state['accounts']);
         Mailboxes are virtual and file-backed, so there's no database to configure. This installs packages and may
         take a few minutes.
       </p>
+      <div class="grid grid-2" style="max-width:720px;margin-bottom:16px">
+        <label class="field">
+          <span class="field-label">Public mail hostname</span>
+          <input class="input mono" id="mailHost" value="<?= e($mailHostDefault) ?>" placeholder="mail.example.com" autocomplete="off" required>
+          <span class="field-help">This hostname must already point to this server. A valid Let's Encrypt certificate is obtained before any mail packages are changed.</span>
+        </label>
+        <label class="field">
+          <span class="field-label">Certificate email <span class="muted">(optional)</span></span>
+          <input class="input" id="mailCertEmail" type="email" placeholder="admin@example.com" autocomplete="email">
+          <span class="field-help">Used by Let's Encrypt for expiry and account notices.</span>
+        </label>
+      </div>
       <button class="btn btn-primary" id="mailSetup"<?= $helper ? '' : ' disabled' ?>><i data-lucide="download"></i>Install &amp; configure mail server</button>
       <div class="card hidden" id="mailSetupLogCard" style="margin-top:16px">
         <div class="card-header"><h3>Setup output</h3></div>
@@ -121,7 +135,17 @@ $totalMb = count($state['accounts']);
           Mail host <span class="mono"><?= e((string) $status['hostname']) ?></span><?php if (!empty($status['ip'])): ?> · IP <span class="mono"><?= e((string) $status['ip']) ?></span><?php endif; ?><br>
           Clients: IMAP <span class="mono">143 (STARTTLS)</span> · POP3 <span class="mono">110</span> · SMTP submission <span class="mono">587</span> · users log in with their full email address.
         </div>
-        <div style="margin-top:18px;padding-top:16px;border-top:1px solid var(--border-subtle);display:flex;gap:10px;flex-wrap:wrap">
+        <div class="grid grid-2" style="max-width:720px;margin-top:18px;padding-top:16px;border-top:1px solid var(--border-subtle)">
+          <label class="field">
+            <span class="field-label">Public mail hostname</span>
+            <input class="input mono" id="mailHost" value="<?= e($mailHostDefault) ?>" placeholder="mail.example.com" autocomplete="off" required>
+          </label>
+          <label class="field">
+            <span class="field-label">Certificate email <span class="muted">(optional)</span></span>
+            <input class="input" id="mailCertEmail" type="email" placeholder="admin@example.com" autocomplete="email">
+          </label>
+        </div>
+        <div style="margin-top:10px;display:flex;gap:10px;flex-wrap:wrap">
           <button class="btn btn-secondary" id="mailReconfigure"><i data-lucide="refresh-cw"></i>Reconfigure / repair server</button>
           <button class="btn btn-secondary" id="mailReapply"><i data-lucide="upload"></i>Re-sync mailboxes to server</button>
           <button class="btn btn-secondary" id="mailDiag"><i data-lucide="stethoscope"></i>Diagnose login failures</button>
@@ -311,22 +335,48 @@ document.addEventListener('DOMContentLoaded', () => {
     if (savedTab && savedTab !== 'mail-overview') document.querySelector('[data-tab-target="' + savedTab + '"]')?.click();
   }, 0);
 
-  async function runStream(btn, action, logId, cardId, okMsg, restoreHtml) {
+  async function runStream(btn, body, logId, cardId, okMsg, restoreHtml) {
     btn.disabled = true; const orig = btn.innerHTML; btn.textContent = 'Working…';
     const card = document.getElementById(cardId), log = document.getElementById(logId);
     card?.classList.remove('hidden'); if (log) log.textContent = '';
-    const res = await streamPost('mail', { action }, (ev) => {
+    const res = await streamPost('mail', body, (ev) => {
       if (ev.type === 'output' && ev.text && log) { log.textContent += ev.text; log.scrollTop = log.scrollHeight; }
     });
     if (res.ok) { toast(okMsg, 'success'); reload(800); }
     else { toast(res.error || 'Failed', 'error'); if (log && res.error) log.textContent += '\n' + res.error + '\n'; btn.disabled = false; btn.innerHTML = restoreHtml || orig; if (window.lucide) lucide.createIcons(); }
   }
 
-  document.getElementById('mailSetup')?.addEventListener('click', (e) =>
-    runStream(e.currentTarget, 'setup', 'mailSetupLog', 'mailSetupLogCard', 'Mail server installed', '<i data-lucide="download"></i>Install &amp; configure mail server'));
+  function mailSetupBody() {
+    const hostInput = document.getElementById('mailHost');
+    const emailInput = document.getElementById('mailCertEmail');
+    const hostname = (hostInput?.value || '').trim().toLowerCase().replace(/\.$/, '');
+    const labels = hostname.split('.');
+    const validHost = hostname.length <= 253 && labels.length > 1
+      && labels.every(label => label.length > 0 && label.length <= 63
+        && /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(label));
+    if (!validHost) {
+      toast('Enter a valid public mail hostname such as mail.example.com', 'warning');
+      hostInput?.focus();
+      return null;
+    }
+    const certEmail = (emailInput?.value || '').trim();
+    if (certEmail && emailInput && !emailInput.checkValidity()) {
+      toast('Enter a valid certificate notification email', 'warning');
+      emailInput.focus();
+      return null;
+    }
+    if (hostInput) hostInput.value = hostname;
+    return { action: 'setup', hostname, cert_email: certEmail };
+  }
+
+  document.getElementById('mailSetup')?.addEventListener('click', (e) => {
+    const body = mailSetupBody();
+    if (body) runStream(e.currentTarget, body, 'mailSetupLog', 'mailSetupLogCard', 'Mail server installed', '<i data-lucide="download"></i>Install &amp; configure mail server');
+  });
   document.getElementById('mailReconfigure')?.addEventListener('click', (e) => {
     if (!confirm('Re-apply the mail server configuration now?')) return;
-    runStream(e.currentTarget, 'setup', 'mailSetupLog', 'mailSetupLogCard', 'Mail server reconfigured', '<i data-lucide="refresh-cw"></i>Reconfigure / repair server');
+    const body = mailSetupBody();
+    if (body) runStream(e.currentTarget, body, 'mailSetupLog', 'mailSetupLogCard', 'Mail server reconfigured', '<i data-lucide="refresh-cw"></i>Reconfigure / repair server');
   });
 
   document.getElementById('mailReapply')?.addEventListener('click', async (e) => {
@@ -347,7 +397,7 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   document.getElementById('rcInstall')?.addEventListener('click', (e) =>
-    runStream(e.currentTarget, 'roundcube-install', 'wmLog', 'wmLogCard', 'Roundcube installed', '<i data-lucide="download"></i>Install Roundcube'));
+    runStream(e.currentTarget, { action: 'roundcube-install' }, 'wmLog', 'wmLogCard', 'Roundcube installed', '<i data-lucide="download"></i>Install Roundcube'));
   document.getElementById('wmRemove')?.addEventListener('click', async () => {
     if (!confirm('Remove the installed webmail client? Its files will be deleted.')) return;
     const res = await apiPost('mail', { action: 'webmail-remove' });

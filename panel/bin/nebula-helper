@@ -28,11 +28,81 @@ MODSEC_ENABLE=/etc/nginx/conf.d/nebula-modsecurity.conf
 MODSEC_AUDIT=/var/log/nginx/modsec_audit.log
 MAIL_DIR=/etc/nebula-mail
 MAIL_STORE=/var/mail/nebula
-MAIL_VUID=5000
-MAIL_VGID=5000
+MAIL_VUID="$(id -u vmail 2>/dev/null || printf '5000')"
+MAIL_VGID="$(id -g vmail 2>/dev/null || printf '5000')"
 DKIM_DIR="$MAIL_DIR/dkim"
 
 die() { echo "$*" >&2; exit 2; }
+
+# Decode a Base64 argument without ever storing untrusted binary data in a
+# Bash variable. Command substitution silently removes NUL bytes, so checking
+# a variable against $'\0' rejects every payload while still failing to detect
+# the original byte reliably. Decode to a file, cap it, and compare it with a
+# NUL-stripped copy instead.
+decode_payload_file() {
+  local encoded="$1" target="$2" max_bytes="$3" stripped
+  [[ "$encoded" =~ ^[A-Za-z0-9+/=]+$ ]] || return 1
+  printf '%s' "$encoded" | base64 -d > "$target" 2>/dev/null || return 1
+  [[ "$(stat -c %s "$target" 2>/dev/null || printf '%s' 999999999)" -le "$max_bytes" ]] || return 1
+  stripped="$(mktemp)"
+  tr -d '\000' < "$target" > "$stripped"
+  if ! cmp -s "$target" "$stripped"; then
+    rm -f "$stripped"
+    return 1
+  fi
+  rm -f "$stripped"
+}
+
+broker_request_allowed() {
+  local request="$1"
+  if [[ "$request" =~ ^(DEBIAN_FRONTEND=noninteractive[[:space:]]+)?apt-get[[:space:]]+-o[[:space:]]+Dpkg::Use-Pty=0[[:space:]]+-o[[:space:]]+APT::Color=0[[:space:]]+(update|-y[[:space:]]+upgrade|install[[:space:]]+-y[[:space:]]+\'?[A-Za-z0-9+.-]+\'?|remove[[:space:]]+-y[[:space:]]+\'?[A-Za-z0-9+.-]+\'?|install[[:space:]]+--only-upgrade[[:space:]]+-y[[:space:]]+\'?[A-Za-z0-9+.-]+\'?)$ ]]; then
+    printf '%s\n' apt
+    return 0
+  fi
+  if [[ "$request" =~ ^ufw[[:space:]]+(status[[:space:]]+numbered|--force[[:space:]]+delete[[:space:]]+[1-9][0-9]*|--force[[:space:]]+enable|disable|(allow|deny|reject)[[:space:]]+\'?[A-Za-z0-9/-]{1,48}\'?)$ ]]; then
+    printf '%s\n' ufw
+    return 0
+  fi
+  return 1
+}
+
+# Older Nebula releases included Debian's Apache-only owasp-crs.load file from
+# Nginx. Its IncludeOptional directives make every later package operation
+# noisy and can stop Nginx reloads. Repair only that exact legacy signature.
+repair_legacy_modsecurity_loader() {
+  local setup="" candidate tmp backup
+  [[ -f "$MODSEC_MAIN" ]] || return 0
+  grep -Fq 'Include /usr/share/modsecurity-crs/owasp-crs.load' "$MODSEC_MAIN" || return 0
+  for candidate in /etc/modsecurity/crs/crs-setup.conf \
+                   /usr/share/modsecurity-crs/crs-setup.conf; do
+    [[ -f "$candidate" ]] && { setup="$candidate"; break; }
+  done
+  [[ -n "$setup" && -d /usr/share/modsecurity-crs/rules && -f "$MODSEC_CONF" ]] \
+    || { echo "cannot repair the legacy ModSecurity loader: OWASP CRS files are incomplete" >&2; return 1; }
+  tmp="$(mktemp)"
+  backup="$MODSEC_MAIN.nebula-legacy-bak"
+  cp "$MODSEC_MAIN" "$backup"
+  {
+    echo "# Managed by Nebula Panel - ModSecurity rule entrypoint."
+    echo "Include $MODSEC_CONF"
+    echo "Include $setup"
+    [[ -f /etc/modsecurity/crs/REQUEST-900-EXCLUSION-RULES-BEFORE-CRS.conf ]] \
+      && echo "Include /etc/modsecurity/crs/REQUEST-900-EXCLUSION-RULES-BEFORE-CRS.conf"
+    echo "Include /usr/share/modsecurity-crs/rules/*.conf"
+    [[ -f /etc/modsecurity/crs/RESPONSE-999-EXCLUSION-RULES-AFTER-CRS.conf ]] \
+      && echo "Include /etc/modsecurity/crs/RESPONSE-999-EXCLUSION-RULES-AFTER-CRS.conf"
+  } > "$tmp"
+  install -m 0644 -o root -g root "$tmp" "$MODSEC_MAIN"
+  rm -f "$tmp"
+  if command -v nginx >/dev/null 2>&1 && ! nginx -t >/dev/null 2>&1; then
+    mv "$backup" "$MODSEC_MAIN"
+    echo "the legacy ModSecurity loader repair failed Nginx validation and was rolled back" >&2
+    return 1
+  fi
+  rm -f "$backup"
+  systemctl reload nginx >/dev/null 2>&1 || true
+  echo "repaired legacy ModSecurity OWASP CRS loader"
+}
 valid_domain() {
   local domain="$1" label
   local -a labels
@@ -192,22 +262,46 @@ case "$CMD" in
   php-install|php-extension|composer-install|modsec-install|modsec-uninstall|compose-install|pma-install|pma-remove|mail-setup|roundcube-install|roundcube-remove|webmail-remove)
     exec 7>/run/lock/nebula-panel-packages.lock
     flock -w 120 7 || die "another package operation is running"
+    repair_legacy_modsecurity_loader \
+      || die "repair the ModSecurity configuration before installing packages"
     ;;
 esac
 
 case "$CMD" in
 
+  helper-self-test)
+    TEST_FILE="$(mktemp)"; trap 'rm -f "$TEST_FILE"' EXIT
+    TEST_SQL="CREATE DATABASE \`nebula_contract_test\`;"
+    TEST_ENCODED="$(printf '%s' "$TEST_SQL" | base64 | tr -d '\n')"
+    decode_payload_file "$TEST_ENCODED" "$TEST_FILE" 262144 || die "Base64 contract failed"
+    [[ "$(<"$TEST_FILE")" == "$TEST_SQL" ]] || die "decoded SQL changed"
+    NULL_ENCODED="$(printf 'safe\000unsafe' | base64 | tr -d '\n')"
+    if decode_payload_file "$NULL_ENCODED" "$TEST_FILE" 262144; then
+      die "NUL payload was accepted"
+    fi
+    [[ "$(broker_request_allowed "DEBIAN_FRONTEND=noninteractive apt-get -o Dpkg::Use-Pty=0 -o APT::Color=0 install -y 'docker.io'")" == apt ]] \
+      || die "valid package request was rejected"
+    if broker_request_allowed "apt-get install -y docker.io; id" >/dev/null; then
+      die "unsafe package request was accepted"
+    fi
+    echo "helper payload and broker contracts passed"
+    ;;
+
   broker-command)
     ENCODED="${1:-}"
-    [[ "$ENCODED" =~ ^[A-Za-z0-9+/=]+$ ]] || die "invalid broker payload"
-    REQUEST="$(printf '%s' "$ENCODED" | base64 -d 2>/dev/null)" || die "invalid broker payload"
+    PAYLOAD="$(mktemp)"; trap 'rm -f "$PAYLOAD"' EXIT
+    decode_payload_file "$ENCODED" "$PAYLOAD" 4096 || die "invalid broker payload"
+    REQUEST="$(<"$PAYLOAD")"
     REQUEST="${REQUEST% 2>&1}"
-    [[ "$REQUEST" != *$'\n'* && "$REQUEST" != *$'\r'* && "$REQUEST" != *$'\0'* ]] || die "invalid command"
-    if [[ "$REQUEST" =~ ^(DEBIAN_FRONTEND=noninteractive[[:space:]]+)?apt-get[[:space:]]+-o[[:space:]]+Dpkg::Use-Pty=0[[:space:]]+-o[[:space:]]+APT::Color=0[[:space:]]+(update|-y[[:space:]]+upgrade|install[[:space:]]+-y[[:space:]]+\'?[A-Za-z0-9+.-]+\'?|remove[[:space:]]+-y[[:space:]]+\'?[A-Za-z0-9+.-]+\'?|install[[:space:]]+--only-upgrade[[:space:]]+-y[[:space:]]+\'?[A-Za-z0-9+.-]+\'?)$ ]]; then
+    [[ "$REQUEST" != *$'\n'* && "$REQUEST" != *$'\r'* ]] || die "invalid command"
+    REQUEST_KIND="$(broker_request_allowed "$REQUEST" || true)"
+    if [[ "$REQUEST_KIND" == apt ]]; then
       exec 9>/run/lock/nebula-panel-packages.lock
       flock -w 120 9 || die "another package operation is running"
+      repair_legacy_modsecurity_loader \
+        || die "repair the ModSecurity configuration before installing packages"
       timeout 900s /bin/bash -c "$REQUEST"
-    elif [[ "$REQUEST" =~ ^ufw[[:space:]]+(status[[:space:]]+numbered|--force[[:space:]]+delete[[:space:]]+[1-9][0-9]*|--force[[:space:]]+enable|disable|(allow|deny|reject)[[:space:]]+\'?[A-Za-z0-9/-]{1,48}\'?)$ ]]; then
+    elif [[ "$REQUEST_KIND" == ufw ]]; then
       timeout 60s /bin/bash -c "$REQUEST"
     else
       die "command is not an allowed broker operation"
@@ -215,10 +309,9 @@ case "$CMD" in
     ;;
 
   db-query)
-    ENCODED="${1:-}"; [[ "$ENCODED" =~ ^[A-Za-z0-9+/=]+$ ]] || die "invalid SQL payload"
-    SQL="$(printf '%s' "$ENCODED" | base64 -d 2>/dev/null)" || die "invalid SQL payload"
-    [[ ${#SQL} -le 262144 && "$SQL" != *$'\0'* ]] || die "invalid SQL payload"
-    timeout 120s mysql -N -B -e "$SQL"
+    ENCODED="${1:-}"; PAYLOAD="$(mktemp)"; trap 'rm -f "$PAYLOAD"' EXIT
+    decode_payload_file "$ENCODED" "$PAYLOAD" 262144 || die "invalid SQL payload"
+    timeout 120s mysql -N -B < "$PAYLOAD"
     ;;
 
   service-action)
@@ -745,9 +838,9 @@ EOF
     install -d -m 0700 -o "$SITE_USER" -g "$SITE_USER" "$SITE_BASE/tmp" "$SITE_BASE/sessions"
     PANEL_USER="$(stat -c %U "$(realpath "$(head -n 1 "$PANEL_ROOT_FILE")")/data")"
     setfacl -m "u:${PANEL_USER}:rx" "$SITES_ROOT"
-    setfacl -m "u:${PANEL_USER}:rx" "$SITE_BASE"
-    setfacl -R -m "u:${PANEL_USER}:rX" "$SITE_PUBLIC"
-    find "$SITE_PUBLIC" -type d -exec setfacl -m "d:u:${PANEL_USER}:rX" {} +
+    setfacl -m "u:${PANEL_USER}:rx,u:www-data:rx" "$SITE_BASE"
+    setfacl -R -m "u:${PANEL_USER}:rX,u:www-data:rX" "$SITE_PUBLIC"
+    find "$SITE_PUBLIC" -type d -exec setfacl -m "d:u:${PANEL_USER}:rX,d:u:www-data:rX" {} +
     cat > "$NGINX_AV/$DOMAIN" <<EOF
 # Managed by Nebula Panel. Site ID: $SITE_ID
 server {
@@ -774,12 +867,12 @@ EOF
       > "$SITE_STATE"
     chmod 0600 "$SITE_STATE"
     ln -sf "$NGINX_AV/$DOMAIN" "$NGINX_EN/$DOMAIN"
-    nginx -t || {
+    if ! "/usr/sbin/php-fpm${PHPVER}" -t >/dev/null 2>&1 || ! nginx -t; then
       rm -f "$NGINX_EN/$DOMAIN" "$NGINX_AV/$DOMAIN" "$FPM_DIR/nebula-site-${SITE_ID}.conf" "$SITE_STATE"
       userdel "$SITE_USER" >/dev/null 2>&1 || true
       rmdir "$SITE_PUBLIC" "$SITE_BASE" >/dev/null 2>&1 || true
-      die "nginx config test failed"
-    }
+      die "PHP-FPM or nginx rejected the website configuration"
+    fi
     systemctl reload nginx
     # The panel request may itself be running on this PHP version. Defer the
     # FPM reload until after its JSON response has reached the browser.
@@ -1186,6 +1279,10 @@ PINEOF
 
     mkdir -p "$MODSEC_DIR"
     chmod 0755 "$MODSEC_DIR"
+    CONF_WAS_PRESENT=no
+    [[ -f "$MODSEC_CONF" ]] && CONF_WAS_PRESENT=yes
+    [[ -f "$MODSEC_MAIN" ]] && cp "$MODSEC_MAIN" "$MODSEC_MAIN.nebula-bak"
+    [[ -f "$MODSEC_ENABLE" ]] && cp "$MODSEC_ENABLE" "$MODSEC_ENABLE.nebula-bak"
     if [[ ! -f "$MODSEC_CONF" ]]; then
       RECOMMENDED=""
       for CANDIDATE in /etc/nginx/modsecurity.conf-recommended \
@@ -1225,19 +1322,32 @@ MSEOF
       chmod 0644 "$MODSEC_CONF"
     fi
 
+    # owasp-crs.load belongs to Apache and contains IncludeOptional directives
+    # that the Nginx libmodsecurity parser does not understand.
+    CRS_SETUP=""
+    for CANDIDATE in /etc/modsecurity/crs/crs-setup.conf \
+                     /usr/share/modsecurity-crs/crs-setup.conf; do
+      [[ -f "$CANDIDATE" ]] && { CRS_SETUP="$CANDIDATE"; break; }
+    done
+    CRS_RULES=/usr/share/modsecurity-crs/rules
+    if [[ -z "$CRS_SETUP" || ! -d "$CRS_RULES" ]]; then
+      [[ -f "$MODSEC_MAIN.nebula-bak" ]] && mv "$MODSEC_MAIN.nebula-bak" "$MODSEC_MAIN"
+      [[ "$CONF_WAS_PRESENT" == yes ]] || rm -f "$MODSEC_CONF"
+      die "the installed OWASP CRS package has no usable setup or rules directory"
+    fi
+
     # Rule entrypoint: our base config, then the OWASP Core Rule Set. Package
     # layouts differ between releases, so probe for whichever one is present.
     {
       echo "# Managed by Nebula Panel — ModSecurity rule entrypoint."
       echo "Include $MODSEC_CONF"
-      if [[ -f /usr/share/modsecurity-crs/owasp-crs.load ]]; then
-        echo "Include /usr/share/modsecurity-crs/owasp-crs.load"
-      elif [[ -f /etc/modsecurity/crs/crs-setup.conf ]]; then
-        echo "Include /etc/modsecurity/crs/crs-setup.conf"
-        echo "Include /usr/share/modsecurity-crs/rules/*.conf"
-      elif [[ -f /usr/share/modsecurity-crs/crs-setup.conf ]]; then
-        echo "Include /usr/share/modsecurity-crs/crs-setup.conf"
-        echo "Include /usr/share/modsecurity-crs/rules/*.conf"
+      if [[ -n "$CRS_SETUP" && -d "$CRS_RULES" ]]; then
+        echo "Include $CRS_SETUP"
+        [[ -f /etc/modsecurity/crs/REQUEST-900-EXCLUSION-RULES-BEFORE-CRS.conf ]] \
+          && echo "Include /etc/modsecurity/crs/REQUEST-900-EXCLUSION-RULES-BEFORE-CRS.conf"
+        echo "Include $CRS_RULES/*.conf"
+        [[ -f /etc/modsecurity/crs/RESPONSE-999-EXCLUSION-RULES-AFTER-CRS.conf ]] \
+          && echo "Include /etc/modsecurity/crs/RESPONSE-999-EXCLUSION-RULES-AFTER-CRS.conf"
       else
         echo "# OWASP CRS not found — base rules only."
       fi
@@ -1252,11 +1362,19 @@ EOF
     chmod 0644 "$MODSEC_ENABLE"
 
     if ! NGINX_TEST="$(nginx -t 2>&1)"; then
-      rm -f "$MODSEC_ENABLE"
+      if [[ -f "$MODSEC_ENABLE.nebula-bak" ]]; then
+        mv "$MODSEC_ENABLE.nebula-bak" "$MODSEC_ENABLE"
+      else
+        rm -f "$MODSEC_ENABLE"
+      fi
+      [[ -f "$MODSEC_MAIN.nebula-bak" ]] && mv "$MODSEC_MAIN.nebula-bak" "$MODSEC_MAIN"
+      [[ "$CONF_WAS_PRESENT" == yes ]] || rm -f "$MODSEC_CONF"
       echo "$NGINX_TEST" >&2
-      die "nginx rejected the ModSecurity configuration — it has been left disabled"
+      die "nginx rejected the ModSecurity configuration; the previous configuration was restored"
     fi
-    systemctl reload nginx 2>/dev/null || systemctl restart nginx 2>/dev/null || true
+    rm -f "$MODSEC_ENABLE.nebula-bak" "$MODSEC_MAIN.nebula-bak"
+    systemctl reload nginx 2>/dev/null || systemctl restart nginx 2>/dev/null \
+      || die "nginx configuration is valid, but nginx could not be reloaded"
     echo "ModSecurity enabled in DetectionOnly mode (logging, not blocking)"
     ;;
 
@@ -1540,7 +1658,33 @@ EOF
     exec 8>/run/lock/nebula-panel-mail.lock
     flock -w 30 8 || die "another mail operation is running"
     export DEBIAN_FRONTEND=noninteractive
-    HOSTFQDN="$(hostname -f 2>/dev/null || hostname)"
+    HOSTFQDN="${1:-}"
+    CERT_EMAIL="${2:-}"
+    valid_domain "$HOSTFQDN"
+    valid_email "$CERT_EMAIL"
+    command -v certbot >/dev/null 2>&1 || die "certbot is not installed; re-run install.sh first"
+    command -v openssl >/dev/null 2>&1 || die "openssl is not installed"
+    MAIL_CERT="/etc/letsencrypt/live/${HOSTFQDN}/fullchain.pem"
+    MAIL_KEY="/etc/letsencrypt/live/${HOSTFQDN}/privkey.pem"
+    mail_certificate_valid() {
+      [[ -r "$MAIL_CERT" && -r "$MAIL_KEY" ]] \
+        && openssl x509 -in "$MAIL_CERT" -noout -checkend 86400 >/dev/null 2>&1 \
+        && openssl x509 -in "$MAIL_CERT" -noout -checkhost "$HOSTFQDN" >/dev/null 2>&1
+    }
+    if ! mail_certificate_valid; then
+      echo "Requesting a Let's Encrypt certificate for ${HOSTFQDN}..."
+      CERTBOT_ARGS=(certonly --nginx -d "$HOSTFQDN" --non-interactive --agree-tos)
+      if [[ -n "$CERT_EMAIL" ]]; then
+        CERTBOT_ARGS+=(-m "$CERT_EMAIL")
+      else
+        CERTBOT_ARGS+=(--register-unsafely-without-email)
+      fi
+      if ! certbot "${CERTBOT_ARGS[@]}"; then
+        die "certificate request failed; point ${HOSTFQDN} DNS at this server and make ports 80 and 443 reachable, then retry"
+      fi
+      mail_certificate_valid \
+        || die "Let's Encrypt did not produce a current certificate valid for ${HOSTFQDN}"
+    fi
     echo "Installing mail packages (Postfix, Dovecot, OpenDKIM)…"
     echo "postfix postfix/main_mailer_type select Internet Site" | debconf-set-selections
     echo "postfix postfix/mailname string ${HOSTFQDN}" | debconf-set-selections
@@ -1550,9 +1694,11 @@ EOF
       opendkim opendkim-tools ssl-cert || die "mail package installation failed"
 
     echo "Creating virtual mail user and directories…"
-    getent group vmail >/dev/null 2>&1 || groupadd -g "$MAIL_VGID" vmail
+    getent group vmail >/dev/null 2>&1 || groupadd --system vmail
     getent passwd vmail >/dev/null 2>&1 || \
-      useradd -r -g vmail -u "$MAIL_VUID" -d "$MAIL_STORE" -s /usr/sbin/nologin vmail
+      useradd --system -g vmail -d "$MAIL_STORE" -s /usr/sbin/nologin vmail
+    MAIL_VUID="$(id -u vmail)"
+    MAIL_VGID="$(id -g vmail)"
     install -d -m 0700 -o vmail -g vmail "$MAIL_STORE"
     # 0755 so the dovecot user (auth-worker) and opendkim can TRAVERSE into the
     # directory to reach their files. The sensitive files inside keep their own
@@ -1589,10 +1735,6 @@ EOF
     postconf -e "smtpd_sasl_type = dovecot"
     postconf -e "smtpd_sasl_path = private/auth"
     postconf -e "smtpd_tls_security_level = may"
-    MAIL_CERT="/etc/letsencrypt/live/${HOSTFQDN}/fullchain.pem"
-    MAIL_KEY="/etc/letsencrypt/live/${HOSTFQDN}/privkey.pem"
-    [[ -r "$MAIL_CERT" && -r "$MAIL_KEY" ]] \
-      || die "a valid Let's Encrypt certificate for ${HOSTFQDN} is required before enabling mail authentication"
     postconf -e "smtpd_tls_cert_file = $MAIL_CERT"
     postconf -e "smtpd_tls_key_file = $MAIL_KEY"
     postconf -e "smtpd_tls_protocols = >=TLSv1.2"
@@ -1717,7 +1859,9 @@ EOF
     echo "postfix=$(svc postfix)"
     echo "dovecot=$(svc dovecot)"
     echo "opendkim=$(svc opendkim)"
-    echo "hostname=$(hostname -f 2>/dev/null || hostname)"
+    HOSTFQDN="$(postconf -h myhostname 2>/dev/null || true)"
+    [[ -n "$HOSTFQDN" ]] || HOSTFQDN="$(hostname -f 2>/dev/null || hostname)"
+    echo "hostname=$HOSTFQDN"
     echo "ip=${IP:-}"
     ;;
 
@@ -2027,7 +2171,8 @@ EOF
   # roundcube-install <targetdir>
   roundcube-install)
     TARGET="${1:-}"; valid_path "$TARGET"
-    HOSTFQDN="$(hostname -f 2>/dev/null || hostname)"
+    HOSTFQDN="$(postconf -h myhostname 2>/dev/null || true)"
+    [[ -n "$HOSTFQDN" ]] || die "mail hostname is not configured; install or repair the mail stack first"
     [[ -r "/etc/letsencrypt/live/${HOSTFQDN}/fullchain.pem" ]] \
       || die "mail hostname certificate is missing"
     export DEBIAN_FRONTEND=noninteractive

@@ -4,8 +4,10 @@
  *
  * SECURITY: identifiers (db / user names) are validated against a strict
  * whitelist regex before ever touching SQL; host strings likewise. String
- * values (passwords) are SQL-escaped via db_sql_str(). The entire SQL string
- * is passed through escapeshellarg() before reaching the shell.
+ * values (passwords) are SQL-escaped via db_sql_str(). SQL is Base64-wrapped
+ * for transport to the typed helper, decoded to a private temporary file, and
+ * supplied to mysql on stdin so statements and passwords never appear in the
+ * process list.
  */
 
 const SYSTEM_DBS = ['mysql', 'information_schema', 'performance_schema', 'sys'];
@@ -154,7 +156,11 @@ function db_create_bundle(string $name, string $user, string $host, string $pass
     }
     if ($website !== '') {
         $linked = db_link_website($name, $website);
-        if (empty($linked['ok'])) { return $linked; }
+        if (empty($linked['ok'])) {
+            if ($user !== '') { db_drop_user($user, $host ?: 'localhost'); }
+            db_drop($name);
+            return $linked;
+        }
     }
     return ['ok' => true];
 }

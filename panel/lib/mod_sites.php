@@ -244,7 +244,7 @@ function site_delete(string $domain, bool $purge = false): array
 }
 
 /** Issue a Let's Encrypt certificate for a site (certbot --nginx via helper). */
-function site_ssl(string $domain, string $email = ''): array
+function site_ssl(string $domain, string $email = '', ?callable $onOutput = null): array
 {
     $domain = strtolower(rtrim(trim($domain), '.'));
     if (!sv_domain_ok($domain)) {
@@ -257,7 +257,9 @@ function site_ssl(string $domain, string $email = ''): array
     if ($email !== '') {
         $args .= ' ' . escapeshellarg($email);
     }
-    [$c, $o] = helper_cmd($args, 300);
+    [$c, $o] = $onOutput
+        ? helper_cmd_stream($args, $onOutput, 300)
+        : helper_cmd($args, 300);
     if ($c !== 0) {
         return ['ok' => false, 'error' => trim($o) ?: 'site-ssl failed'];
     }

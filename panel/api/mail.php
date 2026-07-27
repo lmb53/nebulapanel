@@ -25,7 +25,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     switch ($action) {
         case 'setup':
-            $res = mail_setup($emit);
+            $res = mail_setup(
+                (string) ($body['hostname'] ?? ''),
+                (string) ($body['cert_email'] ?? ''),
+                $emit
+            );
             break;
         case 'diag':
             $res = mail_diag();

@@ -1,0 +1,17 @@
+name: CI
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  syntax-and-smoke:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: PHP syntax
+        run: find panel tests -name '*.php' -print0 | xargs -0 -n1 php -l
+      - name: Shell syntax
+        run: bash -n install.sh panel/bin/nebula-helper
+      - name: Smoke and security regressions
+        run: php tests/smoke.php && php tests/security.php && bash tests/helper-contracts.sh

@@ -318,15 +318,29 @@ function mail_log_reason(string $line): string
     return mb_substr(trim(substr($line, strpos($line, ']:') !== false ? strpos($line, ']:') + 2 : 0)), 0, 180);
 }
 
-/** Install the mail stack (streamed). */
-function mail_setup(?callable $onOutput = null): array
+/**
+ * Install or repair the mail stack for an explicit public hostname.
+ *
+ * The helper verifies or obtains the certificate before installing packages,
+ * avoiding a half-configured mail stack when DNS is not ready yet.
+ */
+function mail_setup(string $hostname, string $certEmail = '', ?callable $onOutput = null): array
 {
+    $hostname = strtolower(rtrim(trim($hostname), '.'));
+    $certEmail = trim($certEmail);
+    if (!domain_name_ok($hostname)) {
+        return ['ok' => false, 'error' => 'Enter a valid public mail hostname such as mail.example.com.'];
+    }
+    if ($certEmail !== '' && !filter_var($certEmail, FILTER_VALIDATE_EMAIL)) {
+        return ['ok' => false, 'error' => 'Enter a valid certificate notification email address.'];
+    }
     if (!helper_available()) {
         return ['ok' => false, 'error' => 'Privileged helper not installed. Re-run install.sh.'];
     }
+    $args = 'mail-setup ' . escapeshellarg($hostname) . ' ' . escapeshellarg($certEmail);
     [$code, $out] = $onOutput
-        ? helper_cmd_stream('mail-setup', $onOutput, 900)
-        : helper_cmd('mail-setup', 900);
+        ? helper_cmd_stream($args, $onOutput, 900)
+        : helper_cmd($args, 900);
     if ($code !== 0) {
         return ['ok' => false, 'error' => sudo_error($out, $code)];
     }
