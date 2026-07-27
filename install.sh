@@ -52,6 +52,14 @@ WEBAPPS_USER="${WEBAPPS_USER:-nebula-webapps}"
 SITES_ROOT="${SITES_ROOT:-/srv/nebula/sites}"
 RESOLVED_SHA=""
 BOOTSTRAP_TOKEN=""
+[[ "$REPO" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || {
+  echo "REPO must use the form owner/name." >&2
+  exit 1
+}
+[[ "$REPO_REF" =~ ^[A-Za-z0-9._/-]{1,200}$ && "$REPO_REF" != *..* ]] || {
+  echo "REPO_REF contains unsupported characters." >&2
+  exit 1
+}
 
 # Resolve the script's own directory.
 if [[ -n "${BASH_SOURCE[0]:-}" && -f "${BASH_SOURCE[0]}" ]]; then
@@ -171,18 +179,42 @@ detect_panel_dir() {
   return 1
 }
 
+resolve_remote_sha() {
+  local remote="https://github.com/${REPO}.git" sha=""
+  if [[ "$REPO_REF" =~ ^[a-f0-9]{40}$ ]]; then
+    printf '%s\n' "$REPO_REF"
+    return
+  fi
+  sha="$(git ls-remote "$remote" "refs/heads/$REPO_REF" 2>/dev/null | awk 'NR==1 {print $1}')"
+  if [[ -z "$sha" ]]; then
+    sha="$(git ls-remote "$remote" "refs/tags/$REPO_REF^{}" 2>/dev/null | awk 'NR==1 {print $1}')"
+  fi
+  if [[ -z "$sha" ]]; then
+    sha="$(git ls-remote "$remote" "refs/tags/$REPO_REF" 2>/dev/null | awk 'NR==1 {print $1}')"
+  fi
+  [[ "$sha" =~ ^[a-f0-9]{40}$ ]] || die "Could not resolve ${REPO}@${REPO_REF} through GitHub."
+  printf '%s\n' "$sha"
+}
+
 download_source() {
-  local meta url top
-  meta="$(curl -fsSL -H 'User-Agent: NebulaPanel' \
-    "https://api.github.com/repos/${REPO}/commits/${REPO_REF}")" \
-    || die "Could not resolve ${REPO}@${REPO_REF}."
-  RESOLVED_SHA="$(printf '%s' "$meta" | grep -m1 '"sha"' | sed -E 's/.*"sha": ?"([a-f0-9]{40})".*/\1/')"
-  [[ "$RESOLVED_SHA" =~ ^[a-f0-9]{40}$ ]] || die "GitHub returned an invalid commit for ${REPO}@${REPO_REF}."
+  local url top retry_sha
+  RESOLVED_SHA="$(resolve_remote_sha)"
   url="https://codeload.github.com/${REPO}/tar.gz/${RESOLVED_SHA}"
   TMP_DL="$(mktemp -d)"
   log "Downloading ${REPO}@${REPO_REF} from GitHub…"
   if ! curl -fsSL "$url" -o "$TMP_DL/src.tar.gz"; then
-    die "Download failed: $url  (check REPO/REPO_REF and that the repo is public)"
+    # A force-push can move a branch between resolution and codeload. Resolve
+    # once more through Git rather than relying on cached API metadata.
+    retry_sha="$(resolve_remote_sha)"
+    if [[ "$retry_sha" != "$RESOLVED_SHA" ]]; then
+      warn "${REPO_REF} moved during install; retrying the newly advertised commit."
+      RESOLVED_SHA="$retry_sha"
+      url="https://codeload.github.com/${REPO}/tar.gz/${RESOLVED_SHA}"
+      curl -fsSL "$url" -o "$TMP_DL/src.tar.gz" \
+        || die "Download failed after ref refresh: $url"
+    else
+      die "Download failed: $url  (check REPO/REPO_REF and that the repo is public)"
+    fi
   fi
   top="$(tar -tzf "$TMP_DL/src.tar.gz" | awk -F/ 'NF {print $1}' | sort -u)"
   [[ -n "$top" && "$top" != *$'\n'* ]] || die "Archive must contain exactly one top-level directory."
