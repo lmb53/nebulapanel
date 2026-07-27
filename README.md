@@ -18,6 +18,28 @@ firewall). The first run creates a random directory at
 retain its private runtime state:
 
 ```bash
+curl -fsSL https://raw.githubusercontent.com/lmb53/nebulapanel/main/install.sh | sudo env SOURCE=remote bash
+```
+
+With a panel domain and an administrator IP allowlist:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/lmb53/nebulapanel/main/install.sh | sudo env SOURCE=remote DOMAIN=panel.example.com ADMIN_IP=203.0.113.7 bash
+```
+
+The downloaded bootstrap resolves `REPO_REF` through GitHub and installs the
+archive for that exact commit. For a reproducible or audited deployment, pin
+both URLs to the same reviewed commit:
+
+```bash
+REVIEWED_COMMIT=<40-character-commit-sha>
+curl -fsSL "https://raw.githubusercontent.com/lmb53/nebulapanel/${REVIEWED_COMMIT}/install.sh" |
+  sudo env SOURCE=remote REPO_REF="${REVIEWED_COMMIT}" bash
+```
+
+Alternatively, install from a checked-out copy:
+
+```bash
 git clone https://github.com/lmb53/nebulapanel.git
 cd nebulapanel
 git checkout <reviewed-tag-or-commit>
@@ -32,8 +54,9 @@ the URL (runtime state is migrated), or use a fixed name. Options (env vars):
 `PANEL_PREFIX`, `WEBROOT`, `ADMIN_IP`, `DOMAIN`, `FM_ROOT`, `REPO`, `REPO_REF`
 (see [install.sh](install.sh)).
 
-> Review the installer and pin `REPO_REF` to a tag or commit for reproducible
-> installs. Remote refs are resolved before the immutable archive is fetched.
+> The `main` one-liner is intentionally convenient and follows the current
+> branch. Pin a reviewed commit when reproducibility or supply-chain assurance
+> matters. Remote refs are resolved before the immutable archive is fetched.
 
 ## What works
 

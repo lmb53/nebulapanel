@@ -11,6 +11,11 @@
 #   cd nebulapanel && git checkout <reviewed-tag-or-commit>
 #   sudo DOMAIN=panel.example.com ADMIN_IP=203.0.113.7 ./install.sh
 #
+# QUICK REMOTE INSTALL:
+#
+#   curl -fsSL https://raw.githubusercontent.com/lmb53/nebulapanel/main/install.sh |
+#     sudo env SOURCE=remote bash
+#
 # Optional overrides (environment variables):
 #   REPO=lmb53/nebulapanel   GitHub repo to pull from
 #   REPO_REF=main            Branch, tag, or commit to install
