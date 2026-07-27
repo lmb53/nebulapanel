@@ -34,6 +34,19 @@ function csp_nonce(): string
     return defined('CSP_NONCE') ? CSP_NONCE : '';
 }
 
+/**
+ * Blocking <head> snippet that applies the stored light/dark preference before
+ * the browser paints. Without it the dark defaults in :root render first and
+ * light-mode users see a dark flash until app.js runs at the end of <body>.
+ * Must be emitted before the stylesheet link so the class is on <html> for the
+ * first style resolution.
+ */
+function theme_boot_script(): string
+{
+    return '<script>(function(){try{if(localStorage.getItem("nebula-theme")==="light")'
+        . '{document.documentElement.classList.add("light");}}catch(e){}})();</script>';
+}
+
 /** HTML-escape. */
 function e($s): string
 {

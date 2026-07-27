@@ -40,6 +40,7 @@ foreach (app_catalog() as $key => $c) {
         'label'     => $c['label'],
         'desc'      => $c['desc'],
         'icon'      => $c['icon'],
+        'logo'      => !empty($c['logo']) ? asset($c['logo']) : '',
         'installed' => app_installed($key),
     ];
 }

@@ -28,6 +28,7 @@ function nav_link(string $route, string $icon, string $label, string $active): s
 <?php if ($active === 'dashboard'): ?>
 <script src="<?= e(asset('vendor/chart-4.4.9.umd.min.js')) ?>"></script>
 <?php endif; ?>
+<?= theme_boot_script() ?>
 <link rel="stylesheet" href="<?= e(asset('style.css')) ?>">
 <meta name="csrf-token" content="<?= e(csrf_token()) ?>">
 <meta name="base-url" content="<?= e(base_url()) ?>">

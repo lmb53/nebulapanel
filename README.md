@@ -45,12 +45,12 @@ the URL (runtime state is migrated), or use a fixed name. Options (env vars):
 | Session auth, idle timeout, POST-only logout, CSRF, login throttling, audit log | ✅ |
 | **Dashboard** — live charts, load/CPU, services, top processes and actionable health alerts | ✅ |
 | **Services** — tabbed per-instance manager, virtual hosts, logs, start / stop / restart + boot state | ✅ sudo |
-| **Install Apps** — install apache2/redis/mariadb/fail2ban + extra PHP versions with live output | ✅ sudo/helper |
+| **Install Apps** — install apache2/redis/mariadb/fail2ban/ModSecurity + extra PHP versions with live output, each shown with its official brand logo | ✅ sudo/helper |
 | **Updates** — list upgradable, update one/all, with persistent streaming apt output | ✅ sudo |
 | **Users & RBAC** — panel accounts with administrator/operator/developer/auditor roles, plus system-account inventory | ✅ |
 | **SSH Keys** — list/add/revoke authorized keys for interactive users | ✅ helper |
 | **Cron** — full CRUD on the web user's crontab | ✅ |
-| **Security** — UFW status, enable/disable, add/delete rules, plus a **Fail2Ban** tab showing every jail's counters, the live banned-IP list with one-click unban, manual ban, and recent ban activity | ✅ sudo/helper |
+| **Security** — UFW status, enable/disable, add/delete rules, plus a **Fail2Ban** tab showing every jail's counters, the live banned-IP list with one-click unban, manual ban, and recent ban activity, and a **ModSecurity** tab (OWASP Core Rule Set WAF for nginx: blocking / detection-only / off, with nginx-validated switching and recent findings) | ✅ sudo/helper |
 | **Logs** — journalctl per-unit + `/var/log` file tails | ✅ |
 | **Websites** — create Nginx vhosts, PHP version, service health, docroot disk/file usage, Let's Encrypt, **Git deploy (connect a repo & pull into the docroot)**; deleting a site also removes its document root, DNS zone and certificates | ✅ helper |
 | **Domains + DNS** — authoritative BIND zones and record CRUD for panel-managed domains | ✅ helper |
@@ -59,7 +59,7 @@ the URL (runtime state is migrated), or use a fixed name. Options (env vars):
 | **Databases** — website-owned MariaDB/MySQL DB/user CRUD, metadata and per-database quick access | ✅ sudo |
 | **phpMyAdmin** — one-click install + password-free, short-lived signed per-database signon | ✅ helper |
 | **Email** — one-click Postfix + Dovecot + OpenDKIM mail server, virtual mailboxes & aliases, per-domain **DKIM** keys, copy-ready **MX / SPF / DKIM / DMARC** records (auto-publish to panel DNS zones), a **statistics dashboard** (sent/received/bounced/rejected, per-day chart, top senders & recipients, mailbox storage) and one-click **Roundcube** webmail | ✅ helper |
-| **Docker** — create/control containers, view container logs, pull/remove/prune images, manage volumes and networks, **Compose stacks (editable docker-compose.yml, deploy/pull/restart/logs, one-click Compose install when the CLI plugin is missing)** and a one-click **App Store** of popular self-hosted apps with official brand logos | ✅ sudo |
+| **Docker** — create/control containers with their published ports, view container logs, pull/remove/prune images, manage volumes and networks, **Compose stacks (editable docker-compose.yml, deploy/pull/restart/logs, one-click Compose install when the CLI plugin is missing)** and a one-click **App Store** of popular self-hosted apps with official brand logos | ✅ sudo |
 | **File Manager** — expandable tree previews, browse/pinned/recent, archives, popup multi-tab editor, ownership, permissions and drag-drop upload | ✅ helper |
 | **Diagnostics** — environment + per-privilege sudo checks with fix hints | ✅ |
 | **Backups** — create / verify / list / download / delete `.tar.gz` | ✅ |

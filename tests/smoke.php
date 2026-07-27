@@ -191,6 +191,36 @@ $check(strpos($layoutSource, "\$active === 'dashboard'") !== false && strpos($la
 $check(strpos($layoutSource, 'cdn.jsdelivr.net') === false && strpos($layoutSource, 'fonts.googleapis.com') === false, 'layout still requires third-party browser assets');
 $check(strpos($bootstrapSource, "frame-ancestors 'none'") !== false && strpos($bootstrapSource, "script-src 'self' 'nonce-") !== false, 'restrictive CSP is missing');
 $check(is_file(APP_ROOT . '/assets/vendor/lucide-1.8.0.min.js') && is_file(APP_ROOT . '/assets/vendor/codemirror-5.65.16.min.js'), 'local browser dependencies are missing');
+$check(strpos($layoutSource, 'theme_boot_script()') !== false
+    && strpos($layoutSource, 'theme_boot_script()') < strpos($layoutSource, "asset('style.css')"),
+    'the theme boot script must run before the stylesheet to avoid a dark flash');
+foreach (['login', 'setup', 'setup-wizard'] as $standalone) {
+    $check(strpos((string) file_get_contents(APP_ROOT . "/views/$standalone.php"), 'theme_boot_script()') !== false,
+        "views/$standalone.php does not apply the stored theme before paint");
+}
+
+require_once APP_ROOT . '/lib/mod_docker.php';
+$parsedPorts = dk_parse_ports('0.0.0.0:8080->80/tcp, :::8080->80/tcp, 9000/tcp');
+$check(count($parsedPorts) === 2, 'dual-stack port mappings should collapse to one entry');
+$check($parsedPorts[0]['host'] === '8080' && $parsedPorts[0]['container'] === '80/tcp' && $parsedPorts[0]['published'],
+    'published container ports are not parsed as host -> container');
+$check($parsedPorts[1]['host'] === '' && !$parsedPorts[1]['published'], 'exposed-only ports should not be marked published');
+$check(dk_parse_ports('') === [], 'a container with no ports should parse to an empty list');
+
+$appsSource = (string) file_get_contents(APP_ROOT . '/lib/mod_apps.php');
+foreach (['apache', 'mariadb', 'certbot', 'git', 'modsecurity'] as $logo) {
+    $check(is_file(APP_ROOT . "/assets/logos/$logo.svg"), "assets/logos/$logo.svg is missing");
+}
+$check(strpos($appsSource, "'logo' => 'logos/apache.svg'") !== false, 'the app catalog does not use official brand logos');
+$check(strpos($appsSource, "'helper' => 'modsec'") !== false, 'ModSecurity is missing from the app catalog');
+$helperSource = (string) file_get_contents(dirname(APP_ROOT) . '/panel/bin/nebula-helper');
+foreach (['modsec-status', 'modsec-install', 'modsec-uninstall', 'modsec-mode', 'modsec-log'] as $cmd) {
+    $check(strpos($helperSource, "\n  $cmd)") !== false || strpos($helperSource, "$cmd)") !== false,
+        "nebula-helper is missing the $cmd command");
+}
+$check(is_file(APP_ROOT . '/api/modsecurity.php') && strpos((string) file_get_contents(APP_ROOT . '/lib/auth.php'), "'modsecurity'=>'firewall'") !== false,
+    'the ModSecurity API is not mapped to the firewall route');
+
 $updaterSource = (string) file_get_contents(APP_ROOT . '/lib/mod_selfupdate.php');
 $check(strpos($updaterSource, "preg_match('/^[a-f0-9]{40}$/") !== false && strpos($updaterSource, 'panel-update') !== false, 'self-update is not pinned and delegated to the confined helper');
 

@@ -5,18 +5,26 @@
  * through the privileged helper (needs the ondrej PPA on Ubuntu).
  */
 
-/** Installable server software. unit '' = no systemd service. */
+/**
+ * Installable server software. unit '' = no systemd service.
+ *
+ * 'logo' is an official brand mark under assets/ (the lucide 'icon' stays as
+ * the fallback for the marks we don't ship). 'helper' routes install/uninstall
+ * through a privileged helper command instead of a plain apt-get, for packages
+ * that also need configuration wiring.
+ */
 function app_catalog(): array
 {
     return [
-        'apache2'   => ['label' => 'Apache',    'pkg' => 'apache2',        'unit' => 'apache2',       'icon' => 'server',        'desc' => 'Apache HTTP server'],
-        'mariadb'   => ['label' => 'MariaDB',   'pkg' => 'mariadb-server', 'unit' => 'mariadb',       'icon' => 'database-zap',  'desc' => 'MariaDB database server'],
-        'redis'     => ['label' => 'Redis',     'pkg' => 'redis-server',   'unit' => 'redis-server',  'icon' => 'zap',           'desc' => 'In-memory data store & cache'],
-        'memcached' => ['label' => 'Memcached', 'pkg' => 'memcached',      'unit' => 'memcached',     'icon' => 'zap',           'desc' => 'Distributed memory cache'],
-        'docker'    => ['label' => 'Docker',    'pkg' => 'docker.io',      'unit' => 'docker',        'icon' => 'container',     'desc' => 'Container runtime'],
-        'fail2ban'  => ['label' => 'Fail2Ban',  'pkg' => 'fail2ban',       'unit' => 'fail2ban',      'icon' => 'shield-ban',    'desc' => 'Brute-force / intrusion prevention'],
-        'certbot'   => ['label' => 'Certbot',   'pkg' => 'certbot',        'unit' => '',              'icon' => 'shield-check',  'desc' => "Let's Encrypt SSL client"],
-        'git'       => ['label' => 'Git',       'pkg' => 'git',            'unit' => '',              'icon' => 'git-branch',    'desc' => 'Distributed version control'],
+        'apache2'     => ['label' => 'Apache',      'pkg' => 'apache2',        'unit' => 'apache2',      'icon' => 'server',       'logo' => 'logos/apache.svg',      'desc' => 'Apache HTTP server'],
+        'mariadb'     => ['label' => 'MariaDB',     'pkg' => 'mariadb-server', 'unit' => 'mariadb',      'icon' => 'database-zap', 'logo' => 'logos/mariadb.svg',     'desc' => 'MariaDB database server'],
+        'redis'       => ['label' => 'Redis',       'pkg' => 'redis-server',   'unit' => 'redis-server', 'icon' => 'zap',          'logo' => 'logos/redis.svg',       'desc' => 'In-memory data store & cache'],
+        'memcached'   => ['label' => 'Memcached',   'pkg' => 'memcached',      'unit' => 'memcached',    'icon' => 'zap',          'logo' => '',                      'desc' => 'Distributed memory cache'],
+        'docker'      => ['label' => 'Docker',      'pkg' => 'docker.io',      'unit' => 'docker',       'icon' => 'container',    'logo' => 'logos/docker.svg',      'desc' => 'Container runtime'],
+        'fail2ban'    => ['label' => 'Fail2Ban',    'pkg' => 'fail2ban',       'unit' => 'fail2ban',     'icon' => 'shield-ban',   'logo' => '',                      'desc' => 'Brute-force / intrusion prevention'],
+        'modsecurity' => ['label' => 'ModSecurity', 'pkg' => 'libnginx-mod-http-modsecurity', 'unit' => '', 'icon' => 'shield-alert', 'logo' => 'logos/modsecurity.svg', 'desc' => 'Nginx web application firewall (OWASP CRS)', 'helper' => 'modsec'],
+        'certbot'     => ['label' => 'Certbot',     'pkg' => 'certbot',        'unit' => '',             'icon' => 'shield-check', 'logo' => 'logos/certbot.svg',     'desc' => "Let's Encrypt SSL client"],
+        'git'         => ['label' => 'Git',         'pkg' => 'git',            'unit' => '',             'icon' => 'git-branch',   'logo' => 'logos/git.svg',         'desc' => 'Distributed version control'],
     ];
 }
 
@@ -48,6 +56,9 @@ function app_install(string $key, ?callable $onOutput = null): array
     if (!$c) {
         return ['ok' => false, 'error' => 'Unknown app.'];
     }
+    if (!empty($c['helper'])) {
+        return app_helper_run($c['helper'] . '-install', 'app.install', $c['pkg'], $onOutput);
+    }
     $cmd = 'DEBIAN_FRONTEND=noninteractive apt-get -o Dpkg::Use-Pty=0 -o APT::Color=0 install -y ' . escapeshellarg($c['pkg']);
     [$code, $out] = $onOutput ? sudo_cmd_stream($cmd, $onOutput, 600) : sudo_cmd($cmd, 600);
     audit('app.install', $c['pkg'] . ' (exit ' . $code . ')');
@@ -66,10 +77,33 @@ function app_uninstall(string $key, ?callable $onOutput = null): array
     if (!$c) {
         return ['ok' => false, 'error' => 'Unknown app.'];
     }
+    if (!empty($c['helper'])) {
+        return app_helper_run($c['helper'] . '-uninstall', 'app.uninstall', $c['pkg'], $onOutput);
+    }
     $cmd = 'DEBIAN_FRONTEND=noninteractive apt-get -o Dpkg::Use-Pty=0 -o APT::Color=0 remove -y ' . escapeshellarg($c['pkg']);
     [$code, $out] = $onOutput ? sudo_cmd_stream($cmd, $onOutput, 600) : sudo_cmd($cmd, 600);
     audit('app.uninstall', $c['pkg'] . ' (exit ' . $code . ')');
     return $code === 0 ? ['ok' => true, 'output' => $out] : ['ok' => false, 'error' => sudo_error($out, $code)];
+}
+
+/** Run a helper-backed catalog action (install/uninstall) with the same shape. */
+function app_helper_run(string $command, string $event, string $pkg, ?callable $onOutput): array
+{
+    if (!helper_available()) {
+        return ['ok' => false, 'error' => 'Privileged helper not installed — re-run install.sh.'];
+    }
+    [$code, $out] = $onOutput
+        ? helper_cmd_stream($command, $onOutput, 900)
+        : helper_cmd($command, 900);
+    audit($event, $pkg . ' (exit ' . $code . ')');
+    if ($code !== 0) {
+        $err = trim($out);
+        if (stripos($err, 'unknown command') !== false || stripos($err, 'usage') !== false) {
+            $err = 'The privileged helper on this server is out of date. Update the panel (Panel Updates) or re-run install.sh.';
+        }
+        return ['ok' => false, 'error' => $err ?: 'Command failed (exit ' . $code . ').'];
+    }
+    return ['ok' => true, 'output' => $out];
 }
 
 // --- PHP versions ---------------------------------------------------------

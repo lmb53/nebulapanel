@@ -37,9 +37,36 @@ function dk_containers(): array
             'image'  => $j['Image'] ?? '',
             'status' => $j['Status'] ?? '',
             'state'  => $j['State'] ?? '',
+            'ports'  => dk_parse_ports((string) ($j['Ports'] ?? '')),
         ];
     }
     return ['ok' => true, 'containers' => $containers];
+}
+
+/**
+ * Turn docker's Ports column into a compact, de-duplicated list.
+ *
+ * Docker prints one entry per published address, so a single mapping shows up
+ * twice on dual-stack hosts ("0.0.0.0:8080->80/tcp, :::8080->80/tcp"); both
+ * collapse to one "8080 → 80/tcp". Entries without an arrow are exposed-only
+ * ports, which are kept (flagged) so a container with no published port still
+ * says what it listens on.
+ */
+function dk_parse_ports(string $raw): array
+{
+    $out = [];
+    foreach (preg_split('/\s*,\s*/', trim($raw), -1, PREG_SPLIT_NO_EMPTY) as $entry) {
+        if (strpos($entry, '->') !== false) {
+            [$host, $container] = explode('->', $entry, 2);
+            $colon = strrpos($host, ':');
+            $hostPort = $colon === false ? trim($host) : trim(substr($host, $colon + 1));
+            $key = $hostPort . '->' . $container;
+            $out[$key] = ['host' => $hostPort, 'container' => trim($container), 'published' => true];
+        } else {
+            $out[$entry] = ['host' => '', 'container' => trim($entry), 'published' => false];
+        }
+    }
+    return array_values($out);
 }
 
 /** List images. */

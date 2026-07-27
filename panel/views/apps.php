@@ -18,7 +18,14 @@ $helper = helper_available();
     <div class="grid grid-3" style="gap:14px">
       <?php foreach ($catalog as $key => $c): $installed = app_installed($key); ?>
         <div class="service-row" style="align-items:flex-start">
-          <div class="svc-icon"><i data-lucide="<?= e($c['icon']) ?>" style="color:var(--blue-400)"></i></div>
+          <?php // Official brand mark where we ship one; the lucide glyph is the fallback. ?>
+          <div class="svc-icon<?= !empty($c['logo']) ? ' svc-icon-logo' : '' ?>">
+            <?php if (!empty($c['logo'])): ?>
+              <img src="<?= e(asset($c['logo'])) ?>" alt="" loading="lazy" data-logo-fallback="<?= e($c['icon']) ?>">
+            <?php else: ?>
+              <i data-lucide="<?= e($c['icon']) ?>" style="color:var(--blue-400)"></i>
+            <?php endif; ?>
+          </div>
           <div style="flex:1;min-width:0">
             <div style="font-weight:600;font-size:13px"><?= e($c['label']) ?></div>
             <div style="font-size:11.5px;color:var(--text-tertiary);margin-bottom:8px"><?= e($c['desc']) ?></div>
@@ -70,6 +77,15 @@ $helper = helper_available();
 <script>
 document.addEventListener('DOMContentLoaded', () => {
   const { streamPost, toast } = window.Nebula;
+  // A missing brand file must not leave an empty tile — fall back to the glyph.
+  document.querySelectorAll('img[data-logo-fallback]').forEach((img) => {
+    img.addEventListener('error', () => {
+      const host = img.parentElement;
+      host.classList.remove('svc-icon-logo');
+      host.innerHTML = `<i data-lucide="${img.dataset.logoFallback}" style="color:var(--blue-400)"></i>`;
+      if (window.lucide) lucide.createIcons();
+    });
+  });
   const logCard = document.getElementById('appLogCard');
   const logEl = document.getElementById('appLog');
   function resetLog() { logCard.classList.remove('hidden'); logEl.textContent = ''; }

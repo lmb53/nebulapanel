@@ -6,6 +6,7 @@
 <title>Sign in · <?= e($config['panel_name']) ?></title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <script src="<?= e(asset('vendor/lucide-1.8.0.min.js')) ?>"></script>
+<?= theme_boot_script() ?>
 <link rel="stylesheet" href="<?= e(asset('style.css')) ?>">
 </head>
 <body>

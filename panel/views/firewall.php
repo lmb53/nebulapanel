@@ -1,8 +1,8 @@
-<?php require_once APP_ROOT.'/lib/mod_firewall.php';require_once APP_ROOT.'/lib/mod_fail2ban.php';$available=fw_available();$status=$available?fw_status():['ok'=>false,'active'=>false,'rules'=>[]];$f2b=f2b_status();$f2bActive=$f2b['installed']&&$f2b['active']==='active';$score=$status['active']?min(96,78+count($status['rules'])*2):35;if($f2bActive)$score=min(99,$score+4);$audit=is_readable(DATA_DIR.'/audit.log')?array_slice(array_reverse(file(DATA_DIR.'/audit.log',FILE_IGNORE_NEW_LINES|FILE_SKIP_EMPTY_LINES)),0,80):[]; ?>
+<?php require_once APP_ROOT.'/lib/mod_firewall.php';require_once APP_ROOT.'/lib/mod_fail2ban.php';require_once APP_ROOT.'/lib/mod_modsecurity.php';$modsec=modsec_status();$modsecOn=$modsec['installed']&&$modsec['enabled']&&$modsec['mode']==='On';$available=fw_available();$status=$available?fw_status():['ok'=>false,'active'=>false,'rules'=>[]];$f2b=f2b_status();$f2bActive=$f2b['installed']&&$f2b['active']==='active';$score=$status['active']?min(96,78+count($status['rules'])*2):35;if($f2bActive)$score=min(99,$score+4);if($modsecOn)$score=min(99,$score+3);$audit=is_readable(DATA_DIR.'/audit.log')?array_slice(array_reverse(file(DATA_DIR.'/audit.log',FILE_IGNORE_NEW_LINES|FILE_SKIP_EMPTY_LINES)),0,80):[]; ?>
 <div class="page-header"><div><h1 class="page-title">Security</h1><p class="page-subtitle">Security score: <?= $score ?>/100 · <?= $score>=85?'Good':($score>=60?'Needs attention':'At risk') ?></p></div><?php if($available): ?><div class="page-actions"><button class="btn btn-primary" id="fwAddOpen"><i data-lucide="plus"></i>Add Firewall Rule</button></div><?php endif; ?></div>
 <?php if(!$available||empty($status['ok'])): ?><div class="card"><div class="empty-state"><div class="es-icon"><i data-lucide="shield-off"></i></div><div style="font-weight:600"><?= $available?'Could not read firewall status':'UFW is not available' ?></div><div style="font-size:13px;margin-top:4px"><?= e($status['error']??'Install UFW to manage firewall rules.') ?></div></div></div><?php else: ?>
-<div class="card security-score" style="margin-bottom:18px"><div class="card-pad"><div class="score-ring" style="--score:<?= $score ?>"><strong><?= $score ?></strong><span>/ 100</span></div><div><h3><?= $score>=85?'Good security posture':($score>=60?'Review recommended':'Firewall requires attention') ?></h3><p><?= $status['active']?'UFW is active and enforcing '.count($status['rules']).' configured rules.':'UFW is installed but not currently enforcing rules.' ?></p></div><div class="security-checks"><span><i data-lucide="<?= $status['active']?'check-circle-2':'alert-triangle' ?>"></i>Firewall <?= $status['active']?'active':'inactive' ?></span><span><i data-lucide="list-checks"></i><?= count($status['rules']) ?> explicit rules</span><span><i data-lucide="file-clock"></i><?= count($audit) ?> recent audit events</span><span><i data-lucide="<?= $f2bActive?'shield-ban':'shield-off' ?>"></i>Fail2Ban <?= $f2b['installed']?($f2bActive?(int)$f2b['totals']['banned'].' IPs banned':'stopped'):'not installed' ?></span></div><button class="btn <?= $status['active']?'btn-danger':'btn-primary' ?>" data-fw="<?= $status['active']?'disable':'enable' ?>"><i data-lucide="power"></i><?= $status['active']?'Disable UFW':'Enable UFW' ?></button></div></div>
-<div class="tabs" id="securityTabs" style="margin-bottom:16px"><button class="tab active" data-tab-target="securityFirewall"><i data-lucide="shield"></i>Firewall (UFW)</button><button class="tab" data-tab-target="securityFail2ban"><i data-lucide="shield-ban"></i>Fail2Ban<?php if($f2bActive&&$f2b['totals']['banned']): ?> <span class="badge badge-red"><?= (int)$f2b['totals']['banned'] ?></span><?php endif; ?></button><button class="tab" data-tab-target="securityAudit"><i data-lucide="history"></i>Audit Log</button></div>
+<div class="card security-score" style="margin-bottom:18px"><div class="card-pad"><div class="score-ring" style="--score:<?= $score ?>"><strong><?= $score ?></strong><span>/ 100</span></div><div><h3><?= $score>=85?'Good security posture':($score>=60?'Review recommended':'Firewall requires attention') ?></h3><p><?= $status['active']?'UFW is active and enforcing '.count($status['rules']).' configured rules.':'UFW is installed but not currently enforcing rules.' ?></p></div><div class="security-checks"><span><i data-lucide="<?= $status['active']?'check-circle-2':'alert-triangle' ?>"></i>Firewall <?= $status['active']?'active':'inactive' ?></span><span><i data-lucide="list-checks"></i><?= count($status['rules']) ?> explicit rules</span><span><i data-lucide="file-clock"></i><?= count($audit) ?> recent audit events</span><span><i data-lucide="<?= $f2bActive?'shield-ban':'shield-off' ?>"></i>Fail2Ban <?= $f2b['installed']?($f2bActive?(int)$f2b['totals']['banned'].' IPs banned':'stopped'):'not installed' ?></span><span><i data-lucide="<?= $modsecOn?'shield-alert':'shield-off' ?>"></i>ModSecurity <?= $modsec['installed']?($modsec['enabled']?strtolower($modsec['mode']==='DetectionOnly'?'detection only':$modsec['mode']):'disabled'):'not installed' ?></span></div><button class="btn <?= $status['active']?'btn-danger':'btn-primary' ?>" data-fw="<?= $status['active']?'disable':'enable' ?>"><i data-lucide="power"></i><?= $status['active']?'Disable UFW':'Enable UFW' ?></button></div></div>
+<div class="tabs" id="securityTabs" style="margin-bottom:16px"><button class="tab active" data-tab-target="securityFirewall"><i data-lucide="shield"></i>Firewall (UFW)</button><button class="tab" data-tab-target="securityFail2ban"><i data-lucide="shield-ban"></i>Fail2Ban<?php if($f2bActive&&$f2b['totals']['banned']): ?> <span class="badge badge-red"><?= (int)$f2b['totals']['banned'] ?></span><?php endif; ?></button><button class="tab" data-tab-target="securityModsec"><i data-lucide="shield-alert"></i>ModSecurity<?php if($modsecOn): ?> <span class="badge badge-emerald">on</span><?php endif; ?></button><button class="tab" data-tab-target="securityAudit"><i data-lucide="history"></i>Audit Log</button></div>
 <div data-tab-panels>
 <section data-tab-panel id="securityFirewall" class="card"><div class="card-header"><h3>Firewall rules (UFW)</h3><span class="badge <?= $status['active']?'badge-emerald':'badge-slate' ?>"><span class="bdot"></span><?= $status['active']?'Active':'Inactive' ?></span></div><div class="table-wrap"><table class="data-table"><thead><tr><th>#</th><th>Rule</th><th>Action</th><th>Source / destination</th><th>Status</th><th></th></tr></thead><tbody><?php foreach($status['rules'] as $rule): $raw=$rule['raw'];$deny=stripos($raw,'DENY')!==false||stripos($raw,'REJECT')!==false; ?><tr><td class="mono"><?= (int)$rule['num'] ?></td><td class="mono"><?= e($raw) ?></td><td><span class="badge <?= $deny?'badge-red':'badge-emerald' ?>"><?= $deny?'Block':'Allow' ?></span></td><td class="mono text-tertiary"><?= stripos($raw,'Anywhere')!==false?'Anywhere':'Custom' ?></td><td><span class="badge badge-blue">Enabled</span></td><td style="text-align:right"><button class="icon-btn" data-fw-del="<?= (int)$rule['num'] ?>" style="color:var(--red-400)"><i data-lucide="trash-2"></i></button></td></tr><?php endforeach; ?><?php if(!$status['rules']): ?><tr><td colspan="6" class="text-tertiary" style="text-align:center;padding:28px">No firewall rules yet.</td></tr><?php endif; ?></tbody></table></div></section>
 <section data-tab-panel id="securityFail2ban" class="hidden">
@@ -27,6 +27,37 @@
     </div></div>
   <div class="card"><div class="card-header"><h3>Recent activity</h3><button class="btn btn-secondary btn-sm" id="f2bLogLoad"><i data-lucide="scroll-text"></i>Load log</button></div>
     <pre class="mono" id="f2bLog" style="margin:0;padding:16px;font-size:12px;line-height:1.55;white-space:pre-wrap;max-height:44vh;overflow:auto">Load the log to see recent bans, unbans and detections.</pre></div>
+<?php endif; ?>
+</section>
+<section data-tab-panel id="securityModsec" class="hidden">
+<?php if(!$modsec['installed']): ?>
+  <div class="card"><div class="empty-state"><div class="es-icon"><i data-lucide="shield-off"></i></div><div style="font-weight:600">ModSecurity is not installed</div><div style="font-size:13px;margin-top:4px">Install it from <a href="<?= e(url('apps')) ?>">Install Apps</a> to run the OWASP Core Rule Set in front of every nginx site.<?= $modsec['error']?' ':'' ?><?= e($modsec['error']) ?></div></div></div>
+<?php else: ?>
+  <?php if(!empty($modsec['error'])): ?><div class="notice notice-warning" style="margin-bottom:14px"><i data-lucide="alert-triangle"></i><div><strong>ModSecurity status unavailable</strong><div><?= e($modsec['error']) ?></div></div></div><?php endif; ?>
+  <?php if(!$modsec['enabled']): ?><div class="notice notice-warning" style="margin-bottom:14px"><i data-lucide="alert-triangle"></i><div><strong>The module is installed but not enabled in nginx</strong><div>Re-install ModSecurity from <a href="<?= e(url('apps')) ?>">Install Apps</a> to rewrite the nginx configuration.</div></div></div><?php endif; ?>
+  <div class="grid grid-4" style="margin-bottom:16px">
+    <div class="stat-card"><div class="stat-val" id="msMode"><?= e($modsec['mode']==='DetectionOnly'?'Detect':$modsec['mode']) ?></div><div class="stat-label">Rule engine</div></div>
+    <div class="stat-card"><div class="stat-val" id="msCrs"><?= $modsec['crs']?'Yes':'No' ?></div><div class="stat-label">OWASP CRS rules</div></div>
+    <div class="stat-card"><div class="stat-val" id="msDenied"><?= (int)$modsec['denied_recent'] ?></div><div class="stat-label">Requests denied (recent)</div></div>
+    <div class="stat-card"><div class="stat-val" id="msEvents"><?= (int)$modsec['audit_events'] ?></div><div class="stat-label">Audit log entries</div></div>
+  </div>
+  <div class="card" style="margin-bottom:16px"><div class="card-header"><h3>Web application firewall</h3><div class="flex items-center gap-2"><span class="badge <?= $modsecOn?'badge-emerald':($modsec['mode']==='DetectionOnly'?'badge-orange':'badge-slate') ?>" id="msBadge"><span class="bdot"></span><?= e($modsec['mode']) ?></span><button class="btn btn-secondary btn-sm" id="msRefresh"><i data-lucide="refresh-cw"></i>Refresh</button></div></div>
+    <div class="card-pad">
+      <div class="field-label">Rule engine mode</div>
+      <div class="flex gap-2" style="flex-wrap:wrap;margin-bottom:10px">
+        <button class="btn btn-primary btn-sm" data-ms-mode="On"><i data-lucide="shield-check"></i>Blocking (On)</button>
+        <button class="btn btn-secondary btn-sm" data-ms-mode="DetectionOnly"><i data-lucide="eye"></i>Detection only</button>
+        <button class="btn btn-secondary btn-sm" data-ms-mode="Off"><i data-lucide="power-off"></i>Off</button>
+      </div>
+      <div class="field-help">Blocking rejects matching requests; detection only logs them. Changes are validated with <span class="mono">nginx -t</span> and reload nginx — a rejected config is rolled back automatically.</div>
+      <div style="margin-top:14px;display:grid;gap:6px;font-size:12px">
+        <div><span class="text-tertiary">Rules file</span> <span class="mono" id="msRules"><?= e($modsec['rules_file']?:'—') ?></span></div>
+        <div><span class="text-tertiary">Base config</span> <span class="mono" id="msConfig"><?= e($modsec['config_file']?:'—') ?></span></div>
+        <div><span class="text-tertiary">Audit log</span> <span class="mono" id="msAudit"><?= e($modsec['audit_log']?:'—') ?></span></div>
+      </div>
+    </div></div>
+  <div class="card"><div class="card-header"><h3>Recent findings</h3><button class="btn btn-secondary btn-sm" id="msLogLoad"><i data-lucide="scroll-text"></i>Load log</button></div>
+    <pre class="mono" id="msLog" style="margin:0;padding:16px;font-size:12px;line-height:1.55;white-space:pre-wrap;max-height:44vh;overflow:auto">Load the log to see recent rule matches and blocked requests.</pre></div>
 <?php endif; ?>
 </section>
 <section data-tab-panel id="securityAudit" class="card hidden"><div class="card-header"><h3>Admin action audit log</h3><span class="muted">Most recent first</span></div><div class="table-wrap"><table class="data-table"><thead><tr><th>Event</th></tr></thead><tbody><?php foreach($audit as $line): ?><tr><td class="mono text-tertiary" style="font-size:12px;white-space:normal"><?= e($line) ?></td></tr><?php endforeach; ?><?php if(!$audit): ?><tr><td class="text-tertiary" style="text-align:center;padding:24px">No audit entries yet.</td></tr><?php endif; ?></tbody></table></div></section>
@@ -72,6 +103,37 @@ document.addEventListener('DOMContentLoaded',()=>{const{apiGet,apiPost,toast}=wi
   out.scrollTop=out.scrollHeight;btn.disabled=false;});
  // Only hit the API once the tab is opened — status costs a fail2ban-client call.
  let loaded=false;document.querySelector('[data-tab-target="securityFail2ban"]')?.addEventListener('click',()=>{if(!loaded){loaded=true;load();}});
+});
+</script>
+<?php endif; ?>
+<?php if($modsec['installed']): ?>
+<script>
+document.addEventListener('DOMContentLoaded',()=>{const{apiGet,apiPost,toast}=window.Nebula;
+ const $=id=>document.getElementById(id);
+ function render(m){if(!m)return;
+  $('msMode').textContent=m.mode==='DetectionOnly'?'Detect':m.mode;
+  $('msCrs').textContent=m.crs?'Yes':'No';
+  $('msDenied').textContent=m.denied_recent;$('msEvents').textContent=m.audit_events;
+  $('msRules').textContent=m.rules_file||'—';$('msConfig').textContent=m.config_file||'—';$('msAudit').textContent=m.audit_log||'—';
+  const badge=$('msBadge');badge.className=`badge ${m.mode==='On'?'badge-emerald':(m.mode==='DetectionOnly'?'badge-orange':'badge-slate')}`;
+  badge.innerHTML='<span class="bdot"></span>';badge.append(m.mode);
+  document.querySelectorAll('[data-ms-mode]').forEach(b=>b.classList.toggle('btn-primary',b.dataset.msMode===m.mode));
+  document.querySelectorAll('[data-ms-mode]').forEach(b=>b.classList.toggle('btn-secondary',b.dataset.msMode!==m.mode));
+  if(window.lucide)lucide.createIcons();}
+ async function load(){try{render(await apiGet('modsecurity'));}catch(e){toast('Could not read ModSecurity status','error');}}
+ $('msRefresh')?.addEventListener('click',load);
+ document.querySelectorAll('[data-ms-mode]').forEach(b=>b.addEventListener('click',async()=>{
+  const mode=b.dataset.msMode;
+  if(mode==='On'&&!confirm('Switch ModSecurity to blocking mode? Requests matching a rule will be rejected — check the findings log for false positives first.'))return;
+  if(mode==='Off'&&!confirm('Turn the web application firewall off completely?'))return;
+  b.disabled=true;const r=await apiPost('modsecurity',{action:'mode',mode});b.disabled=false;
+  toast(r.ok?`ModSecurity set to ${mode}`:(r.error||'Could not change the mode'),r.ok?'success':'error');if(r.ok)load();}));
+ $('msLogLoad')?.addEventListener('click',async(e)=>{const btn=e.currentTarget,out=$('msLog');out.textContent='Loading…';btn.disabled=true;
+  const r=await apiPost('modsecurity',{action:'log',lines:300});
+  out.textContent=r.ok?((r.log||'').trim()||'(no recent findings)'):(r.error||'Could not read the log');
+  out.scrollTop=out.scrollHeight;btn.disabled=false;});
+ // Status costs a helper call — only refresh once the tab is actually opened.
+ let msLoaded=false;document.querySelector('[data-tab-target="securityModsec"]')?.addEventListener('click',()=>{if(!msLoaded){msLoaded=true;load();}});
 });
 </script>
 <?php endif; ?>

@@ -472,9 +472,19 @@
     const sidebar = document.getElementById('sidebar');
     document.getElementById('collapseBtn')?.addEventListener('click', () => sidebar.classList.toggle('collapsed'));
     const themeBtn = document.getElementById('themeToggle');
+    // Keep the glyph in step with the theme the boot script already applied.
+    const syncThemeIcon = () => {
+      if (!themeBtn) return;
+      const light = document.documentElement.classList.contains('light');
+      themeBtn.innerHTML = `<i data-lucide="${light ? 'sun' : 'moon'}"></i>`;
+      themeBtn.title = light ? 'Switch to dark theme' : 'Switch to light theme';
+      if (window.lucide) lucide.createIcons();
+    };
+    syncThemeIcon();
     themeBtn?.addEventListener('click', () => {
       document.documentElement.classList.toggle('light');
       localStorage.setItem('nebula-theme', document.documentElement.classList.contains('light') ? 'light' : 'dark');
+      syncThemeIcon();
       syncCmThemes();
       if (window.lucide) lucide.createIcons();
     });

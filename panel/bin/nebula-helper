@@ -16,6 +16,11 @@ FM_ROOT_FILE=/etc/nebula-panel/fm-root
 PANEL_ROOT_FILE=/etc/nebula-panel/panel-root
 BIND_ZONE_DIR=/etc/bind/nebula-zones
 BIND_ZONE_CONF=/etc/bind/nebula-zones.conf
+MODSEC_DIR=/etc/nginx/modsec
+MODSEC_MAIN="$MODSEC_DIR/main.conf"
+MODSEC_CONF="$MODSEC_DIR/modsecurity.conf"
+MODSEC_ENABLE=/etc/nginx/conf.d/nebula-modsecurity.conf
+MODSEC_AUDIT=/var/log/nginx/modsec_audit.log
 MAIL_DIR=/etc/nebula-mail
 MAIL_STORE=/var/mail/nebula
 MAIL_VUID=5000
@@ -562,6 +567,171 @@ PINEOF
     { [[ -f /var/log/fail2ban.log ]] && tail -n "$LINES" /var/log/fail2ban.log; } 2>/dev/null \
       || journalctl -u fail2ban -n "$LINES" --no-pager 2>/dev/null \
       || echo "no fail2ban log available"
+    ;;
+
+  # ---- ModSecurity (nginx WAF) --------------------------------------------
+  # The panel owns exactly two files: $MODSEC_DIR (rule entrypoint + tuned base
+  # config) and $MODSEC_ENABLE in conf.d, which nginx already includes at http
+  # level. Everything else comes from the distro packages.
+
+  # modsec-status  ->  key=value lines.
+  modsec-status)
+    echo "installed=$([[ -n "$(ls /etc/nginx/modules-enabled/*modsecurity*.conf 2>/dev/null)" ]] && echo yes || echo no)"
+    echo "package=$(dpkg-query -W -f='${Status}' libnginx-mod-http-modsecurity 2>/dev/null | grep -q 'ok installed' && echo yes || echo no)"
+    echo "crs=$(dpkg-query -W -f='${Status}' modsecurity-crs 2>/dev/null | grep -q 'ok installed' && echo yes || echo no)"
+    echo "enabled=$([[ -f "$MODSEC_ENABLE" ]] && echo yes || echo no)"
+    MODE=unknown
+    if [[ -f "$MODSEC_CONF" ]]; then
+      MODE="$(sed -n 's/^[[:space:]]*SecRuleEngine[[:space:]]\+\([A-Za-z]\+\).*/\1/p' "$MODSEC_CONF" | tail -n1)"
+      MODE="${MODE:-unknown}"
+    fi
+    echo "mode=$MODE"
+    echo "rules_file=$MODSEC_MAIN"
+    echo "config_file=$MODSEC_CONF"
+    echo "audit_log=$MODSEC_AUDIT"
+    echo "nginx=$(systemctl is-active nginx 2>/dev/null || echo inactive)"
+    if [[ -f "$MODSEC_AUDIT" ]]; then
+      echo "audit_events=$(grep -c 'ModSecurity' "$MODSEC_AUDIT" 2>/dev/null || echo 0)"
+    else
+      echo "audit_events=0"
+    fi
+    if [[ -f /var/log/nginx/error.log ]]; then
+      echo "denied_recent=$(tail -n 2000 /var/log/nginx/error.log 2>/dev/null | grep -c 'ModSecurity.*Access denied' || echo 0)"
+    else
+      echo "denied_recent=0"
+    fi
+    ;;
+
+  # modsec-install  — install the nginx connector + OWASP CRS and switch it on.
+  modsec-install)
+    command -v nginx >/dev/null 2>&1 || die "nginx is not installed — ModSecurity is wired into nginx"
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get -o Dpkg::Use-Pty=0 -o APT::Color=0 update || true
+    apt-get -o Dpkg::Use-Pty=0 -o APT::Color=0 install -y libnginx-mod-http-modsecurity modsecurity-crs \
+      || die "apt could not install libnginx-mod-http-modsecurity / modsecurity-crs from this system's sources"
+
+    mkdir -p "$MODSEC_DIR"
+    chmod 0755 "$MODSEC_DIR"
+    if [[ ! -f "$MODSEC_CONF" ]]; then
+      RECOMMENDED=""
+      for CANDIDATE in /etc/nginx/modsecurity.conf-recommended \
+                       /etc/modsecurity/modsecurity.conf-recommended \
+                       /etc/modsecurity/modsecurity.conf \
+                       /usr/share/modsecurity/modsecurity.conf-recommended; do
+        [[ -f "$CANDIDATE" ]] && { RECOMMENDED="$CANDIDATE"; break; }
+      done
+      if [[ -n "$RECOMMENDED" ]]; then
+        cp "$RECOMMENDED" "$MODSEC_CONF"
+        echo "-- base config from $RECOMMENDED"
+      else
+        cat > "$MODSEC_CONF" <<'MSEOF'
+# Managed by Nebula Panel — minimal ModSecurity base configuration.
+SecRuleEngine DetectionOnly
+SecRequestBodyAccess On
+SecRequestBodyLimit 13107200
+SecRequestBodyNoFilesLimit 131072
+SecRequestBodyLimitAction Reject
+SecResponseBodyAccess Off
+SecTmpDir /tmp/
+SecDataDir /tmp/
+SecAuditEngine RelevantOnly
+SecAuditLogRelevantStatus "^(?:5|4(?!04))"
+SecAuditLogParts ABIJDEFHZ
+SecAuditLogType Serial
+SecAuditLog /var/log/nginx/modsec_audit.log
+MSEOF
+        echo "-- base config written by the panel (no distro template found)"
+      fi
+      # Start in DetectionOnly so a fresh install cannot take a live site down;
+      # the panel's Security page switches it to On once traffic looks clean.
+      sed -i 's|^[[:space:]]*SecRuleEngine[[:space:]].*|SecRuleEngine DetectionOnly|' "$MODSEC_CONF"
+      grep -q '^[[:space:]]*SecRuleEngine' "$MODSEC_CONF" || echo "SecRuleEngine DetectionOnly" >> "$MODSEC_CONF"
+      sed -i "s|^[[:space:]]*SecAuditLog[[:space:]]\+/.*|SecAuditLog $MODSEC_AUDIT|" "$MODSEC_CONF"
+      grep -q '^[[:space:]]*SecAuditLog[[:space:]]\+/' "$MODSEC_CONF" || echo "SecAuditLog $MODSEC_AUDIT" >> "$MODSEC_CONF"
+      chmod 0644 "$MODSEC_CONF"
+    fi
+
+    # Rule entrypoint: our base config, then the OWASP Core Rule Set. Package
+    # layouts differ between releases, so probe for whichever one is present.
+    {
+      echo "# Managed by Nebula Panel — ModSecurity rule entrypoint."
+      echo "Include $MODSEC_CONF"
+      if [[ -f /usr/share/modsecurity-crs/owasp-crs.load ]]; then
+        echo "Include /usr/share/modsecurity-crs/owasp-crs.load"
+      elif [[ -f /etc/modsecurity/crs/crs-setup.conf ]]; then
+        echo "Include /etc/modsecurity/crs/crs-setup.conf"
+        echo "Include /usr/share/modsecurity-crs/rules/*.conf"
+      elif [[ -f /usr/share/modsecurity-crs/crs-setup.conf ]]; then
+        echo "Include /usr/share/modsecurity-crs/crs-setup.conf"
+        echo "Include /usr/share/modsecurity-crs/rules/*.conf"
+      else
+        echo "# OWASP CRS not found — base rules only."
+      fi
+    } > "$MODSEC_MAIN"
+    chmod 0644 "$MODSEC_MAIN"
+
+    cat > "$MODSEC_ENABLE" <<EOF
+# Managed by Nebula Panel. Enables ModSecurity for every nginx server block.
+modsecurity on;
+modsecurity_rules_file $MODSEC_MAIN;
+EOF
+    chmod 0644 "$MODSEC_ENABLE"
+
+    if ! NGINX_TEST="$(nginx -t 2>&1)"; then
+      rm -f "$MODSEC_ENABLE"
+      echo "$NGINX_TEST" >&2
+      die "nginx rejected the ModSecurity configuration — it has been left disabled"
+    fi
+    systemctl reload nginx 2>/dev/null || systemctl restart nginx 2>/dev/null || true
+    echo "ModSecurity enabled in DetectionOnly mode (logging, not blocking)"
+    ;;
+
+  # modsec-uninstall  — disable in nginx first, then remove the packages.
+  modsec-uninstall)
+    rm -f "$MODSEC_ENABLE"
+    if command -v nginx >/dev/null 2>&1 && nginx -t >/dev/null 2>&1; then
+      systemctl reload nginx 2>/dev/null || true
+    fi
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get -o Dpkg::Use-Pty=0 -o APT::Color=0 remove -y libnginx-mod-http-modsecurity || true
+    if command -v nginx >/dev/null 2>&1; then
+      nginx -t >/dev/null 2>&1 && { systemctl reload nginx 2>/dev/null || systemctl restart nginx 2>/dev/null || true; }
+    fi
+    echo "ModSecurity disabled and removed ($MODSEC_DIR kept for its tuned rules)"
+    ;;
+
+  # modsec-mode <On|DetectionOnly|Off>
+  modsec-mode)
+    MODE="${1:-}"
+    case "$MODE" in On|DetectionOnly|Off) ;; *) die "invalid ModSecurity mode" ;; esac
+    command -v nginx >/dev/null 2>&1 || die "nginx is not installed"
+    [[ -f "$MODSEC_CONF" ]] || die "ModSecurity is not configured on this server"
+    cp "$MODSEC_CONF" "$MODSEC_CONF.nebula-bak"
+    sed -i "s|^[[:space:]]*SecRuleEngine[[:space:]].*|SecRuleEngine $MODE|" "$MODSEC_CONF"
+    grep -q "^SecRuleEngine $MODE" "$MODSEC_CONF" || echo "SecRuleEngine $MODE" >> "$MODSEC_CONF"
+    if ! NGINX_TEST="$(nginx -t 2>&1)"; then
+      mv "$MODSEC_CONF.nebula-bak" "$MODSEC_CONF"
+      echo "$NGINX_TEST" >&2
+      die "nginx rejected the change — the previous configuration was restored"
+    fi
+    rm -f "$MODSEC_CONF.nebula-bak"
+    systemctl reload nginx 2>/dev/null || systemctl restart nginx 2>/dev/null || true
+    echo "SecRuleEngine set to $MODE"
+    ;;
+
+  # modsec-log [lines]  ->  recent ModSecurity findings from nginx's error log.
+  modsec-log)
+    LINES="${1:-200}"
+    [[ "$LINES" =~ ^[0-9]{1,4}$ ]] || die "invalid line count"
+    FOUND=""
+    if [[ -f /var/log/nginx/error.log ]]; then
+      OUT="$(grep -h 'ModSecurity' /var/log/nginx/error.log 2>/dev/null | tail -n "$LINES" || true)"
+      [[ -n "$OUT" ]] && { printf '%s\n' "$OUT"; FOUND=yes; }
+    fi
+    if [[ -z "$FOUND" && -f "$MODSEC_AUDIT" ]]; then
+      tail -n "$LINES" "$MODSEC_AUDIT" 2>/dev/null && FOUND=yes
+    fi
+    [[ -n "$FOUND" ]] || echo "no ModSecurity events logged yet"
     ;;
 
   # compose-install  — install Docker Compose.
