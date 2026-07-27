@@ -83,9 +83,13 @@ die()  { printf '\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 # Clean up any downloaded temp files on exit.
 TMP_DL=""
 SUDOERS_TMP=""
+CERT_TMP=""
+KEY_TMP=""
 cleanup() {
   [[ -n "$TMP_DL" && -d "$TMP_DL" ]] && rm -rf "$TMP_DL"
   [[ -n "$SUDOERS_TMP" && -f "$SUDOERS_TMP" ]] && rm -f "$SUDOERS_TMP"
+  [[ -n "$CERT_TMP" && -f "$CERT_TMP" ]] && rm -f "$CERT_TMP"
+  [[ -n "$KEY_TMP" && -f "$KEY_TMP" ]] && rm -f "$KEY_TMP"
   return 0
 }
 trap cleanup EXIT
@@ -102,6 +106,21 @@ apt-get install -y -qq nginx php-fpm php-cli php-mysql php-curl php-mbstring php
 ok "Packages installed"
 if [[ -n "$PUBLIC_IP" ]] && ! php -r 'exit(filter_var($argv[1], FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE|FILTER_FLAG_NO_RES_RANGE) ? 0 : 1);' "$PUBLIC_IP"; then
   die "PUBLIC_IP must be a public IPv4 or IPv6 address."
+fi
+
+# Address used for domainless HTTPS and the printed URL. Prefer an explicitly
+# configured public address, then the IPv4 address selected by the default
+# route, then the first non-loopback address reported by the host.
+SERVER_IP="$PUBLIC_IP"
+if [[ -z "$SERVER_IP" ]]; then
+  SERVER_IP="$(ip -4 route get 1.1.1.1 2>/dev/null | sed -nE 's/.*[[:space:]]src[[:space:]]+([^[:space:]]+).*/\1/p' | head -1)"
+fi
+if [[ -z "$SERVER_IP" ]]; then
+  SERVER_IP="$(hostname -I 2>/dev/null | tr ' ' '\n' | grep -m1 -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' || true)"
+fi
+[[ "$LOCAL_ONLY" == 1 ]] && SERVER_IP="127.0.0.1"
+if [[ -z "$DOMAIN" && -z "$SERVER_IP" ]]; then
+  die "Could not detect a server IPv4 address. Set PUBLIC_IP or DOMAIN explicitly."
 fi
 
 # Detect PHP-FPM version, socket and service name.
@@ -438,8 +457,7 @@ fi
 log "Writing Nginx configuration…"
 PANEL_FPM_SOCK="/run/php/nebula-panel.sock"
 WEBAPPS_FPM_SOCK="/run/php/nebula-webapps.sock"
-PANEL_FORCE_HTTPS=0
-[[ -n "$DOMAIN" ]] && PANEL_FORCE_HTTPS=1
+PANEL_FORCE_HTTPS=1
 cat > "/etc/php/${PHP_VER}/fpm/pool.d/nebula-panel.conf" <<EOF
 [nebula-panel]
 user = ${PANEL_USER}
@@ -486,10 +504,43 @@ if [[ -n "$ADMIN_IP" ]]; then
   ACCESS_RULES=$'        allow '"$ADMIN_IP"$';\n        deny all;'
 fi
 
-if [[ -n "$DOMAIN" || "$LOCAL_ONLY" == 0 ]]; then
+PANEL_TLS=""
+PANEL_HTTP_REDIRECT=""
+if [[ -n "$DOMAIN" ]]; then
   PANEL_LISTEN=$'    listen 80 default_server;\n    listen [::]:80 default_server;'
 else
-  PANEL_LISTEN=$'    listen 127.0.0.1:80 default_server;\n    listen [::1]:80 default_server;'
+  SELF_SIGNED_CERT=/etc/ssl/certs/nebula-panel-selfsigned.crt
+  SELF_SIGNED_KEY=/etc/ssl/private/nebula-panel-selfsigned.key
+  CERT_OK=no
+  if [[ -s "$SELF_SIGNED_CERT" && -s "$SELF_SIGNED_KEY" ]] \
+      && openssl x509 -in "$SELF_SIGNED_CERT" -noout -checkend 604800 >/dev/null 2>&1 \
+      && openssl x509 -in "$SELF_SIGNED_CERT" -noout -text 2>/dev/null | grep -F "IP Address:${SERVER_IP}" >/dev/null \
+      && [[ "$(openssl x509 -in "$SELF_SIGNED_CERT" -noout -modulus 2>/dev/null)" == "$(openssl rsa -in "$SELF_SIGNED_KEY" -noout -modulus 2>/dev/null)" ]]; then
+    CERT_OK=yes
+  fi
+  if [[ "$CERT_OK" != yes ]]; then
+    log "Generating a self-signed HTTPS certificate for ${SERVER_IP}…"
+    CERT_TMP="$(mktemp)"
+    KEY_TMP="$(mktemp)"
+    openssl req -x509 -nodes -newkey rsa:3072 -sha256 -days 825 \
+      -subj "/CN=${SERVER_IP}" -addext "subjectAltName=IP:${SERVER_IP}" \
+      -keyout "$KEY_TMP" -out "$CERT_TMP" >/dev/null 2>&1 \
+      || die "Could not generate the self-signed panel certificate."
+    install -m 0600 -o root -g root "$KEY_TMP" "$SELF_SIGNED_KEY"
+    install -m 0644 -o root -g root "$CERT_TMP" "$SELF_SIGNED_CERT"
+    rm -f "$KEY_TMP" "$CERT_TMP"
+    CERT_TMP=""
+    KEY_TMP=""
+  fi
+  if [[ "$LOCAL_ONLY" == 1 ]]; then
+    PANEL_LISTEN=$'    listen 127.0.0.1:80 default_server;\n    listen [::1]:80 default_server;\n    listen 127.0.0.1:443 ssl default_server;\n    listen [::1]:443 ssl default_server;'
+  else
+    PANEL_LISTEN=$'    listen 80 default_server;\n    listen [::]:80 default_server;\n    listen 443 ssl default_server;\n    listen [::]:443 ssl default_server;'
+  fi
+  PANEL_TLS="    ssl_certificate ${SELF_SIGNED_CERT};
+    ssl_certificate_key ${SELF_SIGNED_KEY};
+    ssl_protocols TLSv1.2 TLSv1.3;"
+  PANEL_HTTP_REDIRECT='    if ($scheme = http) { return 308 https://$host$request_uri; }'
 fi
 NGINX_BACKUP="$(mktemp)"
 NGINX_HAD_CONFIG=no
@@ -502,6 +553,8 @@ cat > /etc/nginx/sites-available/nebula <<EOF
 server {
     # Keep the panel as the IP-address fallback after hosted vhosts are added.
 ${PANEL_LISTEN}
+${PANEL_TLS}
+${PANEL_HTTP_REDIRECT}
     server_name ${SERVER_NAME};
     root ${WEBROOT};
     index index.php index.html;
@@ -601,11 +654,9 @@ fi
 # --------------------------------------------------------------------------
 # 9. Summary
 # --------------------------------------------------------------------------
-IP="$(ip -4 route get 1.1.1.1 2>/dev/null | sed -nE 's/.*[[:space:]]src[[:space:]]+([^[:space:]]+).*/\1/p' | head -1)"
-[[ -n "$IP" ]] || IP="$(hostname -I 2>/dev/null | tr ' ' '\n' | grep -m1 -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' || true)"
-SCHEME="http"; HOST="${PUBLIC_IP:-${IP:-server-ip}}"
-[[ "$LOCAL_ONLY" == 1 ]] && HOST="127.0.0.1"
+SCHEME="https"; HOST="$SERVER_IP"
 [[ -n "$DOMAIN" ]] && { SCHEME="https"; HOST="$DOMAIN"; }
+[[ "$HOST" == *:* && "$HOST" != \[*\] ]] && HOST="[$HOST]"
 
 echo
 echo "============================================================"
@@ -619,7 +670,7 @@ echo "  FM root:    ${FM_ROOT}"
 echo "  PHP-FPM:    ${FPM_SVC}"
 [[ -n "$ADMIN_IP" ]] && echo "  Access:     restricted to ${ADMIN_IP}"
 [[ -n "$BOOTSTRAP_TOKEN" ]] && echo "  Bootstrap:  $BOOTSTRAP_TOKEN  (single-use; expires in 1 hour)"
-[[ -z "$DOMAIN" && "$LOCAL_ONLY" == 0 ]] && echo "  WARNING: domainless setup uses HTTP. Add DOMAIN for HTTPS after bootstrap."
+[[ -z "$DOMAIN" ]] && echo "  TLS:        self-signed certificate (accept the browser warning once)"
 [[ -z "$DOMAIN" && "$LOCAL_ONLY" == 1 ]] && echo "  (Local-only mode: use an SSH port-forward for setup.)"
 echo "------------------------------------------------------------"
 echo "  NEXT: open the URL and enter the single-use bootstrap token."

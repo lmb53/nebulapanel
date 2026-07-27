@@ -3,12 +3,12 @@
 A pre-production, self-hosted server control panel. The repository's application source
 lives in the clearly named `panel/` directory. Installation copies those files
 to a random URL prefix on first install. Without a domain, the quick installer
-uses the server IP over HTTP; set `LOCAL_ONLY=1` to require an SSH port-forward.
+uses the server IP with a self-signed HTTPS certificate; set `LOCAL_ONLY=1` to
+require an SSH port-forward.
 
-> The random directory name is not a security boundary. Domainless HTTP mode is
-> intended only for initial setup; add `DOMAIN` for HTTPS, restrict `ADMIN_IP`,
-> or set `LOCAL_ONLY=1`. Do not host untrusted applications until the documented
-> VM integration tests have passed for your OS and service combination.
+> The random directory name is not a security boundary. Browsers will warn once
+> about the domainless self-signed certificate. Add `DOMAIN` for publicly
+> trusted HTTPS, restrict `ADMIN_IP`, or set `LOCAL_ONLY=1`.
 
 ## Quick install
 
