@@ -51,15 +51,17 @@ $check(fm_resolve('../outside') === null, 'file-manager traversal was accepted')
 $check(is_page_route('dashboard') && !is_page_route('../config'), 'page route whitelist failed');
 $modules = nebula_modules();
 $check(is_page_route('domains') && is_page_route('dns') && is_page_route('sshkeys') && is_page_route('notifications'), 'mockup-backed module routes are missing');
-$check(!is_page_route('api') && !isset($modules['api']), 'removed public API page is still routed');
+$check(is_page_route('api') && isset($modules['api']), 'authenticated API-token management page is not routed');
 $check(($modules['files'][2] ?? '') === 'Hosting', 'File Manager is not in Hosting');
 $check(($modules['backups'][2] ?? '') === 'Tools', 'Backups is not in Tools');
 $check(!isset($modules['monitoring']) && !is_page_route('monitoring'), 'removed Monitoring page is still routed');
 $check(role_route_allowed('users', 'admin') && !role_route_allowed('users', 'auditor') && role_route_allowed('logs', 'auditor'), 'RBAC route policy failed');
 $check(role_can('services.control', 'operator') && !role_can('terminal.execute', 'operator') && !role_can('packages.manage', 'developer'), 'RBAC capabilities are too broad or incomplete');
-$check(!role_route_allowed('terminal', 'operator') && !role_route_allowed('docker', 'developer') && role_route_allowed('files', 'developer'), 'sensitive route policy failed');
+$check(!role_route_allowed('terminal', 'operator') && !role_route_allowed('docker', 'developer') && !role_route_allowed('files', 'developer'), 'sensitive route policy failed');
 $check(isset(panel_roles()['operator']) && isset(panel_roles()['developer']), 'panel roles are missing');
-$adminCreated = create_admin('smoke-admin', 'correct horse battery staple');
+$bootstrapToken = bin2hex(random_bytes(32));
+write_json_file(bootstrap_file(), ['hash' => hash('sha256', $bootstrapToken), 'expires_at' => time() + 300]);
+$adminCreated = create_admin('smoke-admin', 'correct horse battery staple', $bootstrapToken);
 $check(!empty($adminCreated['ok']) && count(panel_users()) === 1, 'initial panel administrator migration failed');
 $userCreated = panel_user_create('smoke-operator', 'another correct horse battery staple', 'operator');
 $createdUsers = panel_users();
@@ -76,13 +78,14 @@ $check(!password_verify('correct horse battery staple', (string) ($changedAdmin[
 $check(is_file(APP_ROOT . '/api/provision.php'), 'provisioning API endpoint is missing');
 $check(is_file(APP_ROOT . '/api/ssl.php'), 'SSL API endpoint is missing');
 $check(is_file(APP_ROOT . '/api/php.php'), 'PHP API endpoint is missing');
-$check(is_file(APP_ROOT . '/api/file-state.php') && is_file(APP_ROOT . '/api/file-owner.php') && is_file(APP_ROOT . '/api/file-compress.php'), 'extended File Manager endpoints are missing');
+$check(is_file(APP_ROOT . '/api/file-state.php') && is_file(APP_ROOT . '/api/file-compress.php'), 'extended File Manager endpoints are missing');
+$check(!is_file(APP_ROOT . '/api/file-owner.php'), 'arbitrary File Manager ownership changes are still exposed');
 $check(is_file(APP_ROOT . '/api/file-tree.php') && is_file(APP_ROOT . '/api/dns.php') && is_file(APP_ROOT . '/api/users.php'), 'tree, DNS, or panel-user API endpoint is missing');
 
 // Email module: registration, RBAC and the mail helpers.
 $check(is_page_route('mail') && ($modules['mail'][2] ?? '') === 'Hosting', 'Email module is not registered under Hosting');
 $check(is_file(APP_ROOT . '/api/mail.php') && is_file(APP_ROOT . '/lib/mod_mail.php') && is_file(APP_ROOT . '/views/mail.php'), 'Email module files are missing');
-$check(role_can('mail.manage', 'operator') && role_route_allowed('mail', 'operator') && !role_route_allowed('mail', 'auditor') && !role_route_allowed('mail', 'developer'), 'Email RBAC policy failed');
+$check(!role_can('mail.manage', 'operator') && !role_route_allowed('mail', 'operator') && !role_route_allowed('mail', 'auditor') && !role_route_allowed('mail', 'developer'), 'Email RBAC policy failed');
 require APP_ROOT . '/lib/mod_mail.php';
 $check(mail_valid_email('user@example.com') && !mail_valid_email('nope') && !mail_valid_email('user@localhost'), 'mail address validation failed');
 $mailHash = mail_hash_password('a decent mailbox password');
@@ -126,7 +129,7 @@ $check(($disabledCron['enabled'] ?? true) === false && ($disabledCron['schedule'
 // Fail2Ban module: files, RBAC routing and input validation.
 require APP_ROOT . '/lib/mod_fail2ban.php';
 $check(is_file(APP_ROOT . '/api/fail2ban.php'), 'Fail2Ban API endpoint is missing');
-$check(api_route_owner('fail2ban') === 'firewall' && role_route_allowed('firewall', 'operator') && !role_route_allowed('firewall', 'developer'), 'Fail2Ban API is not scoped to the firewall module');
+$check(api_route_owner('fail2ban') === 'firewall' && !role_route_allowed('firewall', 'operator') && !role_route_allowed('firewall', 'developer'), 'Fail2Ban API is not scoped to the admin-only firewall module');
 $check(empty(f2b_action('unban', 'sshd', 'not-an-ip')['ok']) && empty(f2b_action('unban', 'bad jail', '198.51.100.7')['ok']), 'Fail2Ban ban/unban input validation failed');
 $check(empty(f2b_action('drop', 'sshd', '198.51.100.7')['ok']), 'an unknown Fail2Ban action was accepted');
 
@@ -139,6 +142,8 @@ $storeApp = compose_catalog_list()[0] ?? [];
 $check(!empty($storeApp['logo']) && strpos($storeApp['logo'], 'logos/') !== false, 'App Store entries carry no official logo');
 foreach (compose_catalog() as $storeKey => $storeEntry) {
     $check(!empty($storeEntry['logo']) && is_file(APP_ROOT . '/assets/' . $storeEntry['logo']), 'App Store logo file is missing for ' . $storeKey);
+    $check(strpos((string) ($storeEntry['compose'] ?? ''), ':latest') === false, 'App Store still deploys a mutable latest image for ' . $storeKey);
+    $check(strpos((string) ($storeEntry['compose'] ?? ''), '/etc/') === false, 'App Store still deploys a host bind mount for ' . $storeKey);
 }
 
 $helperSource = (string) file_get_contents(APP_ROOT . '/bin/nebula-helper');
@@ -156,6 +161,10 @@ $check(strpos($helperSource, 'pma-signon)') !== false && strpos($helperSource, "
 $check(strpos($helperSource, 'roundcube-install)') !== false && strpos($helperSource, 'webmail-remove)') !== false, 'Roundcube installer or generic webmail remover is missing');
 $check(strpos($helperSource, 'snappymail-install)') === false, 'SnappyMail installer is still present (Roundcube is the only supported webmail)');
 $check(strpos($helperSource, 'compose-install)') !== false, 'Docker Compose installer helper action is missing');
+$check(strpos($helperSource, 'docker-query)') !== false && strpos($helperSource, 'compose-run)') !== false,
+    'typed Docker/Compose helper actions are missing');
+$check(strpos($helperSource, 'docker(-compose|[[:space:]]+compose)?') === false,
+    'the generic root Docker command broker is still enabled');
 $check(strpos($helperSource, 'f2b-status)') !== false && strpos($helperSource, 'f2b-unban|f2b-ban)') !== false, 'Fail2Ban helper actions are missing');
 $check(strpos($helperSource, 'mail-stats)') !== false, 'mail statistics helper action is missing');
 $check(strpos($helperSource, 'read -r email hash || [[ -n "$email" ]]') !== false && strpos($helperSource, 'read -r d || [[ -n "$d" ]]') !== false, 'mail-apply drops the final line without a trailing newline (single-mailbox login bug)');
@@ -169,13 +178,18 @@ $check(mail_log_time(date('M d H:i:s', strtotime('+40 days')) . ' host postfix/s
 $check(mail_log_reason('Jul 01 00:00:00 h postfix/smtp[1]: A1: to=<a@b>, status=bounced (host said: 550 no such user)') === 'host said: 550 no such user', 'the SMTP reason was not extracted from a status line');
 $pmaSource = (string) file_get_contents(APP_ROOT . '/lib/mod_pma.php');
 $check(preg_match("/session_write_close\(\);\s*session_id\(''\);\s*session_name\('NebulaPmaSignon'\)/", $pmaSource) === 1, 'phpMyAdmin signon session is not isolated from the panel session ID');
+$check(strpos($pmaSource, "\$state['accounts'][\$key] = \$account") === false, 'phpMyAdmin passwords are still persisted outside short-lived launches');
 $check(strpos($helperSource, 'cert-upload)') !== false && strpos($helperSource, 'openssl x509') !== false, 'custom certificate installation is missing');
 $check(strpos($helperSource, 'dns-zone-put)') !== false && strpos($helperSource, 'named-checkzone') !== false, 'authoritative DNS helper support is missing');
 $check(!is_page_route('file-view'), 'obsolete file viewer route is still enabled');
 $installerSource = (string) file_get_contents(dirname(__DIR__) . '/install.sh');
 $check(strpos($installerSource, 'Reusing active panel prefix') !== false && strpos($installerSource, 'Migrated runtime state') !== false, 'reinstall state preservation is missing');
-$check(strpos($installerSource, 'bind9 bind9-utils') !== false && strpos($installerSource, 'ufw allow 53/udp') !== false, 'authoritative DNS packages or firewall rules are missing');
-$check(strpos($installerSource, 'chown -R root:root "$DEST"') !== false && strpos($installerSource, 'chown -R www-data:www-data "$DEST/data"') !== false, 'panel code/data ownership separation is missing');
+$check(strpos($installerSource, 'bind9 bind9-utils') === false
+    && strpos($installerSource, 'ufw allow 53/udp') === false
+    && strpos($helperSource, 'install -y bind9 bind9-utils') !== false
+    && strpos($helperSource, 'ufw allow 53/udp') !== false,
+    'authoritative DNS is not installed/opened lazily on first use');
+$check(strpos($installerSource, 'chown -R root:root "$DEST"') !== false && strpos($installerSource, 'chown -R "$PANEL_USER:$PANEL_USER" "$DEST/data"') !== false, 'panel code/data ownership separation is missing');
 $check(strpos($installerSource, 'sudo_line tar') === false, 'broad root tar permission is still installed');
 $uploadSource = (string) file_get_contents(APP_ROOT . '/views/files.php');
 $check(strpos($uploadSource, 'Replace it with the uploaded file?') !== false, 'upload overwrite confirmation is missing');
@@ -231,6 +245,7 @@ $check(strpos($updaterSource, "preg_match('/^[a-f0-9]{40}$/") !== false && strpo
 @unlink($jsonPath);
 @unlink(login_attempts_file());
 @unlink(admin_file());
+@unlink(bootstrap_file());
 @unlink(panel_users_file());
 @unlink(DATA_DIR . '/panel-users.lock');
 @unlink(DATA_DIR . '/setup.lock');

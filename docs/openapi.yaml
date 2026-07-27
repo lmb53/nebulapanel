@@ -1,0 +1,59 @@
+openapi: 3.1.0
+info:
+  title: Nebula Panel API
+  version: 1.0.0
+  description: |
+    Versioned bearer API. Requests use the panel base URL with
+    `?r=api/v1/<endpoint>`. A token's role and endpoint scopes are both enforced.
+servers:
+  - url: https://panel.example.com/PANEL_PREFIX/
+paths:
+  /:
+    get:
+      summary: Read a versioned panel endpoint
+      description: Set the `r` query parameter to `api/v1/health` for the health snapshot.
+      parameters:
+        - in: query
+          name: r
+          required: true
+          schema:
+            type: string
+            const: api/v1/health
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Health snapshot
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok]
+                properties:
+                  ok: { type: boolean }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: "nbp_<48 hexadecimal characters>"
+  schemas:
+    Error:
+      type: object
+      required: [ok, error, code, message, request_id]
+      properties:
+        ok: { type: boolean, const: false }
+        error: { type: string, deprecated: true }
+        code: { type: string }
+        message: { type: string }
+        details: {}
+        request_id: { type: string }
+  responses:
+    Error:
+      description: Structured error
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"

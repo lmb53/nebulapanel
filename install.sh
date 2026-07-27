@@ -5,25 +5,21 @@
 # obscured URL prefix, sets permissions, wires up systemd service control
 # (sudoers), and the firewall. Optionally provisions HTTPS via certbot.
 #
-# QUICK INSTALL (downloads everything, no need to clone first):
+# REVIEWED INSTALL:
 #
-#   curl -fsSL https://raw.githubusercontent.com/lmb53/nebulapanel/main/install.sh | sudo bash
-#
-# With options (pass env vars before `bash`):
-#
-#   curl -fsSL https://raw.githubusercontent.com/lmb53/nebulapanel/main/install.sh \
-#     | sudo PANEL_PREFIX=random ADMIN_IP=203.0.113.7 DOMAIN=panel.example.com bash
-#
-# Or clone the repo and run ./install.sh locally (uses local files if found).
+#   git clone https://github.com/lmb53/nebulapanel.git
+#   cd nebulapanel && git checkout <reviewed-tag-or-commit>
+#   sudo DOMAIN=panel.example.com ADMIN_IP=203.0.113.7 ./install.sh
 #
 # Optional overrides (environment variables):
 #   REPO=lmb53/nebulapanel   GitHub repo to pull from
 #   REPO_REF=main            Branch, tag, or commit to install
 #   SOURCE=auto|remote|local Where to get files (default: auto = local else remote)
 #   PANEL_PREFIX=myprefix    Fixed URL prefix (default: reuse active install, random on first run)
-#   FM_ROOT=/var/www         Directory the File Manager may browse
+#   FM_ROOT=/srv/nebula/sites Directory the File Manager may browse
 #   DOMAIN=panel.example.com Provision HTTPS via certbot for this domain
 #   ADMIN_IP=203.0.113.7     Restrict panel access to this IP (recommended)
+#   PUBLIC_IP=203.0.113.8    Explicit public address for mail/DNS guidance
 #   WEBROOT=/var/www/html    Nginx document root
 #   PANEL_SRC=/path/to/src   Explicit path to the panel source dir (skips download)
 #
@@ -33,7 +29,7 @@ set -euo pipefail
 # 0. Preconditions & configuration
 # --------------------------------------------------------------------------
 if [[ $EUID -ne 0 ]]; then
-  echo "This script must run as root. Try: sudo $0  (or pipe to 'sudo bash')" >&2
+  echo "This script must run as root. Try: sudo $0" >&2
   exit 1
 fi
 
@@ -41,12 +37,18 @@ REPO="${REPO:-lmb53/nebulapanel}"
 REPO_REF="${REPO_REF:-main}"
 SOURCE="${SOURCE:-auto}"
 WEBROOT="${WEBROOT:-/var/www/html}"
-FM_ROOT="${FM_ROOT:-/var/www}"
+FM_ROOT="${FM_ROOT:-/srv/nebula/sites}"
 PANEL_PREFIX="${PANEL_PREFIX:-}"
 DOMAIN="${DOMAIN:-}"
 ADMIN_IP="${ADMIN_IP:-}"
+PUBLIC_IP="${PUBLIC_IP:-}"
+PANEL_USER="${PANEL_USER:-nebula-panel}"
+WEBAPPS_USER="${WEBAPPS_USER:-nebula-webapps}"
+SITES_ROOT="${SITES_ROOT:-/srv/nebula/sites}"
+RESOLVED_SHA=""
+BOOTSTRAP_TOKEN=""
 
-# Resolve the script's own directory (handles being piped via curl | bash).
+# Resolve the script's own directory.
 if [[ -n "${BASH_SOURCE[0]:-}" && -f "${BASH_SOURCE[0]}" ]]; then
   SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 else
@@ -76,9 +78,12 @@ log "Installing packages (Nginx, PHP-FPM, tooling)…"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
 apt-get install -y -qq nginx php-fpm php-cli php-mysql php-curl php-mbstring php-xml php-zip \
-  rsync ufw sudo curl ca-certificates tar zip openssl bind9 bind9-utils git \
+  rsync ufw sudo curl ca-certificates tar zip openssl git acl \
   certbot python3-certbot-nginx >/dev/null
 ok "Packages installed"
+if [[ -n "$PUBLIC_IP" ]] && ! php -r 'exit(filter_var($argv[1], FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE|FILTER_FLAG_NO_RES_RANGE) ? 0 : 1);' "$PUBLIC_IP"; then
+  die "PUBLIC_IP must be a public IPv4 or IPv6 address."
+fi
 
 # Detect PHP-FPM version, socket and service name.
 #
@@ -154,7 +159,7 @@ systemctl enable --now "$FPM_SVC" >/dev/null 2>&1 || true
 # Find a dir that looks like the panel (has index.php + lib/bootstrap.php).
 detect_panel_dir() {
   local root="$1" hit
-  hit="$(find "$root" -type f -path '*/lib/bootstrap.php' 2>/dev/null | head -1 || true)"
+  hit="$(find "$root" -maxdepth 4 -type f -path '*/lib/bootstrap.php' 2>/dev/null | head -1 || true)"
   [[ -z "$hit" ]] && return 1
   local dir; dir="$(dirname "$(dirname "$hit")")"
   [[ -f "$dir/index.php" ]] && { echo "$dir"; return 0; }
@@ -162,22 +167,38 @@ detect_panel_dir() {
 }
 
 download_source() {
-  local url="https://codeload.github.com/${REPO}/tar.gz/${REPO_REF}"
+  local meta url top
+  meta="$(curl -fsSL -H 'User-Agent: NebulaPanel' \
+    "https://api.github.com/repos/${REPO}/commits/${REPO_REF}")" \
+    || die "Could not resolve ${REPO}@${REPO_REF}."
+  RESOLVED_SHA="$(printf '%s' "$meta" | grep -m1 '"sha"' | sed -E 's/.*"sha": ?"([a-f0-9]{40})".*/\1/')"
+  [[ "$RESOLVED_SHA" =~ ^[a-f0-9]{40}$ ]] || die "GitHub returned an invalid commit for ${REPO}@${REPO_REF}."
+  url="https://codeload.github.com/${REPO}/tar.gz/${RESOLVED_SHA}"
   TMP_DL="$(mktemp -d)"
   log "Downloading ${REPO}@${REPO_REF} from GitHub…"
   if ! curl -fsSL "$url" -o "$TMP_DL/src.tar.gz"; then
     die "Download failed: $url  (check REPO/REPO_REF and that the repo is public)"
   fi
-  tar -xzf "$TMP_DL/src.tar.gz" -C "$TMP_DL" || die "Failed to extract the downloaded archive."
-  local dir
-  dir="$(detect_panel_dir "$TMP_DL")" || die "Downloaded archive did not contain a panel source dir."
-  echo "$dir"
+  top="$(tar -tzf "$TMP_DL/src.tar.gz" | awk -F/ 'NF {print $1}' | sort -u)"
+  [[ -n "$top" && "$top" != *$'\n'* ]] || die "Archive must contain exactly one top-level directory."
+  if tar -tzf "$TMP_DL/src.tar.gz" | grep -Eq '(^/|(^|/)\.\.(/|$))'; then
+    die "Archive contains an unsafe path."
+  fi
+  if tar -tvzf "$TMP_DL/src.tar.gz" | grep -Eq '^[^d-]'; then
+    die "Archive contains links or special files."
+  fi
+  tar --no-same-owner --no-same-permissions -xzf "$TMP_DL/src.tar.gz" -C "$TMP_DL" \
+    || die "Failed to extract the downloaded archive."
+  PANEL_SRC="$TMP_DL/$top/panel"
+  [[ -f "$PANEL_SRC/index.php" && -f "$PANEL_SRC/lib/bootstrap.php" ]] \
+    || die "Downloaded archive did not contain the expected top-level panel/ directory."
 }
 
 resolve_source() {
   if [[ -n "${PANEL_SRC:-}" ]]; then
     [[ -f "$PANEL_SRC/index.php" ]] || die "PANEL_SRC=$PANEL_SRC has no index.php."
-    echo "$PANEL_SRC"; return
+    RESOLVED_SHA="$(git -C "$PANEL_SRC" rev-parse HEAD 2>/dev/null || true)"
+    return
   fi
   local local_dir=""
   if [[ "$SOURCE" != "remote" ]]; then
@@ -185,13 +206,14 @@ resolve_source() {
   fi
   if [[ -n "$local_dir" && "$SOURCE" != "remote" ]]; then
     log "Using local panel source (no download needed)."
-    echo "$local_dir"
+    PANEL_SRC="$local_dir"
+    RESOLVED_SHA="$(git -C "$SCRIPT_DIR" rev-parse HEAD 2>/dev/null || true)"
   else
     download_source
   fi
 }
 
-PANEL_SRC="$(resolve_source)"
+resolve_source
 SRC_NAME="$(basename "$PANEL_SRC")"
 ok "Panel source: $PANEL_SRC"
 
@@ -262,7 +284,8 @@ ok "Files copied"
 for _required in index.php lib/bootstrap.php lib/sys.php \
                  api/apps.php api/updates.php api/provision.php \
                  api/notifications.php api/sshkeys.php api/file-state.php \
-                 api/file-owner.php api/file-compress.php assets/app.js assets/style.css; do
+                 api/file-owner.php api/file-compress.php assets/app.js assets/style.css \
+                 bin/nebula-helper bin/nebula-recovery bin/recovery.php; do
   [[ -f "$DEST/$_required" ]] || die "Deployed source is incomplete: missing $_required"
 done
 
@@ -283,8 +306,8 @@ else
 fi
 
 # Set the File Manager root in config.php if it differs from the default.
-if [[ "$FM_ROOT" != "/var/www" ]]; then
-  sed -i "s|?: '/var/www'|?: '${FM_ROOT}'|" "$DEST/config.php"
+if [[ "$FM_ROOT" != "/srv/nebula/sites" ]]; then
+  sed -i "s|?: '/srv/nebula/sites'|?: '${FM_ROOT}'|" "$DEST/config.php"
   ok "File Manager root set to $FM_ROOT"
 fi
 
@@ -298,35 +321,69 @@ chmod 0644 /etc/nebula-panel/fm-root
 printf '%s\n' "$(readlink -f "$DEST")" > /etc/nebula-panel/panel-root
 chown root:root /etc/nebula-panel/panel-root
 chmod 0644 /etc/nebula-panel/panel-root
+if [[ -n "$PUBLIC_IP" ]]; then
+  printf '%s\n' "$PUBLIC_IP" > /etc/nebula-panel/public-ip
+  chown root:root /etc/nebula-panel/public-ip
+  chmod 0644 /etc/nebula-panel/public-ip
+fi
 
 # --------------------------------------------------------------------------
 # 4. Permissions
 # --------------------------------------------------------------------------
 log "Setting ownership and permissions…"
+if ! getent passwd "$PANEL_USER" >/dev/null 2>&1; then
+  useradd --system --home-dir /var/lib/nebula-panel --create-home \
+    --shell /usr/sbin/nologin "$PANEL_USER"
+fi
+if ! getent passwd "$WEBAPPS_USER" >/dev/null 2>&1; then
+  useradd --system --home-dir /var/lib/nebula-webapps --create-home \
+    --shell /usr/sbin/nologin "$WEBAPPS_USER"
+fi
+install -d -m 0750 -o root -g "$PANEL_USER" /etc/nebula-panel
+install -d -m 0711 -o root -g root /srv/nebula
+install -d -m 0711 -o root -g root "$SITES_ROOT"
+install -d -m 0700 -o root -g root /srv/nebula/trash /etc/nebula-panel/sites
+setfacl -m "u:${PANEL_USER}:rx" "$SITES_ROOT"
+for _site_base in "$SITES_ROOT"/*; do
+  [[ -d "$_site_base" && ! -L "$_site_base" && "$(basename "$_site_base")" =~ ^[a-f0-9]{32}$ ]] || continue
+  setfacl -m "u:${PANEL_USER}:rx" "$_site_base"
+  if [[ -d "$_site_base/public" && ! -L "$_site_base/public" ]]; then
+    setfacl -R -m "u:${PANEL_USER}:rX" "$_site_base/public"
+    find "$_site_base/public" -type d -exec setfacl -m "d:u:${PANEL_USER}:rX" {} +
+  fi
+done
 chown -R root:root "$DEST"
 find "$DEST" -type d -exec chmod 755 {} \;
 find "$DEST" -type f -exec chmod 644 {} \;
 mkdir -p "$DEST/data"
-chown -R www-data:www-data "$DEST/data"
+chown -R "$PANEL_USER:$PANEL_USER" "$DEST/data"
 chmod 700 "$DEST/data"
+if [[ ! -f "$DEST/data/panel-users.json" && ! -f "$DEST/data/admin.json" ]]; then
+  BOOTSTRAP_TOKEN="$(openssl rand -hex 32)"
+  BOOTSTRAP_HASH="$(printf '%s' "$BOOTSTRAP_TOKEN" | sha256sum | awk '{print $1}')"
+  printf '{\n  "hash": "%s",\n  "expires_at": %s\n}\n' \
+    "$BOOTSTRAP_HASH" "$(( $(date +%s) + 3600 ))" > "$DEST/data/bootstrap.json"
+  chown "$PANEL_USER:$PANEL_USER" "$DEST/data/bootstrap.json"
+  chmod 0600 "$DEST/data/bootstrap.json"
+fi
 ok "Permissions applied (data/ is private, web-writable)"
 
-# Record the installed commit SHA so the Panel Updates page has a baseline.
-SHA="$(curl -fsSL -H 'User-Agent: NebulaPanel' \
-        "https://api.github.com/repos/${REPO}/commits/${REPO_REF}" 2>/dev/null \
-        | grep -m1 '"sha"' | sed -E 's/.*"sha": ?"([a-f0-9]+)".*/\1/')"
+# Record the exact commit that supplied the deployed bytes. Never resolve the
+# mutable ref a second time after download.
+SHA="$RESOLVED_SHA"
 if [[ -n "$SHA" ]]; then
   printf '{\n  "sha": "%s",\n  "ref": "%s",\n  "applied_at": "%s"\n}\n' \
     "$SHA" "$REPO_REF" "$(date -Iseconds 2>/dev/null || date)" > "$DEST/data/version.json"
-  chown www-data:www-data "$DEST/data/version.json"
+  chown "$PANEL_USER:$PANEL_USER" "$DEST/data/version.json"
   chmod 600 "$DEST/data/version.json"
   ok "Recorded version baseline (${SHA:0:12})"
 fi
 
 # Install the privileged helper root-owned, OUTSIDE the web-writable tree, so
 # the web user can't modify what it runs as root.
-if [[ -f "$DEST/bin/nebula-helper" ]]; then
+if [[ -f "$DEST/bin/nebula-helper" && -f "$DEST/bin/nebula-recovery" && -f "$DEST/bin/recovery.php" ]]; then
   install -m 0755 -o root -g root "$DEST/bin/nebula-helper" /usr/local/bin/nebula-helper
+  install -m 0755 -o root -g root "$DEST/bin/nebula-recovery" /usr/local/sbin/nebula-recovery
   ok "Installed privileged helper (/usr/local/bin/nebula-helper)"
 else
   warn "bin/nebula-helper missing from source — Websites/phpMyAdmin will be limited."
@@ -336,17 +393,69 @@ fi
 # 5. Nginx site
 # --------------------------------------------------------------------------
 log "Writing Nginx configuration…"
+PANEL_FPM_SOCK="/run/php/nebula-panel.sock"
+WEBAPPS_FPM_SOCK="/run/php/nebula-webapps.sock"
+cat > "/etc/php/${PHP_VER}/fpm/pool.d/nebula-panel.conf" <<EOF
+[nebula-panel]
+user = ${PANEL_USER}
+group = ${PANEL_USER}
+listen = ${PANEL_FPM_SOCK}
+listen.owner = www-data
+listen.group = www-data
+listen.mode = 0660
+pm = ondemand
+pm.max_children = 10
+pm.process_idle_timeout = 20s
+pm.max_requests = 500
+clear_env = yes
+catch_workers_output = yes
+security.limit_extensions = .php
+rlimit_files = 4096
+php_admin_value[session.save_path] = ${DEST}/data/sessions
+php_admin_value[upload_tmp_dir] = ${DEST}/data/tmp
+EOF
+cat > "/etc/php/${PHP_VER}/fpm/pool.d/nebula-webapps.conf" <<EOF
+[nebula-webapps]
+user = ${WEBAPPS_USER}
+group = ${WEBAPPS_USER}
+listen = ${WEBAPPS_FPM_SOCK}
+listen.owner = www-data
+listen.group = www-data
+listen.mode = 0660
+pm = ondemand
+pm.max_children = 5
+pm.process_idle_timeout = 20s
+pm.max_requests = 300
+clear_env = yes
+security.limit_extensions = .php
+php_admin_value[disable_functions] = exec,passthru,shell_exec,system,proc_open,popen
+EOF
+install -d -m 0700 -o "$PANEL_USER" -g "$PANEL_USER" "$DEST/data/sessions" "$DEST/data/tmp"
+systemctl restart "$FPM_SVC"
+[[ -S "$PANEL_FPM_SOCK" ]] || die "Dedicated panel FPM socket was not created."
+
 SERVER_NAME="${DOMAIN:-_}"
 ACCESS_RULES=""
 if [[ -n "$ADMIN_IP" ]]; then
   ACCESS_RULES=$'        allow '"$ADMIN_IP"$';\n        deny all;'
 fi
 
+if [[ -n "$DOMAIN" ]]; then
+  PANEL_LISTEN=$'    listen 80 default_server;\n    listen [::]:80 default_server;'
+else
+  PANEL_LISTEN=$'    listen 127.0.0.1:80 default_server;\n    listen [::1]:80 default_server;'
+fi
+NGINX_BACKUP="$(mktemp)"
+NGINX_HAD_CONFIG=no
+if [[ -f /etc/nginx/sites-available/nebula ]]; then
+  cp -a /etc/nginx/sites-available/nebula "$NGINX_BACKUP"
+  NGINX_HAD_CONFIG=yes
+fi
+DEFAULT_TARGET="$(readlink /etc/nginx/sites-enabled/default 2>/dev/null || true)"
 cat > /etc/nginx/sites-available/nebula <<EOF
 server {
     # Keep the panel as the IP-address fallback after hosted vhosts are added.
-    listen 80 default_server;
-    listen [::]:80 default_server;
+${PANEL_LISTEN}
     server_name ${SERVER_NAME};
     root ${WEBROOT};
     index index.php index.html;
@@ -360,9 +469,13 @@ ${ACCESS_RULES}
         try_files \$uri \$uri/ /${PANEL_PREFIX}/index.php\$is_args\$args;
     }
 
+    location ~ ^/${PANEL_PREFIX}/.*\.php\$ {
+        include snippets/fastcgi-php.conf;
+        fastcgi_pass unix:${PANEL_FPM_SOCK};
+    }
     location ~ \.php\$ {
         include snippets/fastcgi-php.conf;
-        fastcgi_pass unix:${FPM_SOCK};
+        fastcgi_pass unix:${WEBAPPS_FPM_SOCK};
     }
 
     # Do not serve dotfiles from the panel or hosted websites.
@@ -372,54 +485,34 @@ EOF
 
 ln -sf /etc/nginx/sites-available/nebula /etc/nginx/sites-enabled/nebula
 rm -f /etc/nginx/sites-enabled/default
-nginx -t >/dev/null 2>&1 || die "Nginx config test failed. Run 'nginx -t' to see why."
-systemctl reload nginx
+if ! nginx -t >/dev/null 2>&1 || ! systemctl reload nginx; then
+  if [[ "$NGINX_HAD_CONFIG" == yes ]]; then cp -a "$NGINX_BACKUP" /etc/nginx/sites-available/nebula
+  else rm -f /etc/nginx/sites-available/nebula /etc/nginx/sites-enabled/nebula
+  fi
+  [[ -n "$DEFAULT_TARGET" ]] && ln -sf "$DEFAULT_TARGET" /etc/nginx/sites-enabled/default
+  nginx -t >/dev/null 2>&1 && systemctl reload nginx >/dev/null 2>&1 || true
+  rm -f "$NGINX_BACKUP"
+  die "Nginx validation/reload failed; previous configuration restored."
+fi
+rm -f "$NGINX_BACKUP"
 ok "Nginx configured and reloaded"
 
 # --------------------------------------------------------------------------
-# 6. Grant scoped root to the web user via sudoers
+# 6. Grant only the root-owned broker to the dedicated panel identity
 # --------------------------------------------------------------------------
-# The panel drives real tools (systemctl, ufw, apt-get, docker, mysql, tar,
-# journalctl). Each needs passwordless sudo. NOTE: several of these (tar,
-# docker, mysql, apt-get) effectively confer broad root power — that is
-# inherent to a server control panel. This is exactly why the panel must sit
-# behind the obscured prefix + HTTPS + an IP allow-list.
-log "Granting www-data scoped root via sudoers…"
+# The panel receives no direct tool grants. Every privileged request crosses
+# the single root-owned helper, which validates a typed action and arguments.
+log "Granting $PANEL_USER access to the privileged broker…"
 SUDOERS=/etc/sudoers.d/nebula-panel
 SUDOERS_TMP="$(mktemp)"
 {
-  echo "# Nebula Panel — passwordless root for the web user, scoped to the"
-  echo "# commands the panel uses. Keep the panel behind HTTPS + IP allow-list."
+  echo "# Nebula Panel: the validating helper is the only privileged surface."
 } > "$SUDOERS_TMP"
-
-# systemctl: lifecycle actions exposed by the Services page.
-SC="$(command -v systemctl || true)"
-[[ -n "$SC" ]] && echo "www-data ALL=(root) NOPASSWD: $SC start *, $SC stop *, $SC restart *, $SC enable *, $SC disable *" >> "$SUDOERS_TMP"
-
-# Add a rule for an installed binary, or its standard Ubuntu path so apps
-# installed later by the panel are immediately manageable.
-sudo_line() {
-  local bin="$1" fallback="$2" tag="${3:-}" p
-  p="$(command -v "$bin" 2>/dev/null || true)"
-  [[ -n "$p" ]] || p="$fallback"
-  echo "www-data ALL=(root) NOPASSWD:${tag:+$tag:} $p *" >> "$SUDOERS_TMP"
-  return 0
-}
-sudo_line ufw        /usr/sbin/ufw
-sudo_line docker     /usr/bin/docker
-# Standalone Compose binary — used when the `docker compose` CLI plugin is absent.
-sudo_line docker-compose /usr/bin/docker-compose
-sudo_line mysql      /usr/bin/mysql
-sudo_line journalctl /usr/bin/journalctl
-# NB: deliberately NO `tar` rule. `sudo tar` is arbitrary root code execution
-# (via --to-command / --checkpoint-action), so backups run as www-data over
-# web-readable files instead. The Diagnostics page reflects this.
-sudo_line apt-get    /usr/bin/apt-get SETENV   # SETENV permits DEBIAN_FRONTEND
 
 # The privileged helper: a single tight entry that covers vhost/SSL/phpMyAdmin
 # operations, instead of granting tee/ln/mkdir/certbot broadly.
 [[ -x /usr/local/bin/nebula-helper ]] && \
-  echo "www-data ALL=(root) NOPASSWD: /usr/local/bin/nebula-helper *" >> "$SUDOERS_TMP"
+  echo "$PANEL_USER ALL=(root) NOPASSWD: /usr/local/bin/nebula-helper *" >> "$SUDOERS_TMP"
 
 chmod 440 "$SUDOERS_TMP"
 if ! visudo -cf "$SUDOERS_TMP" >/dev/null 2>&1; then
@@ -431,9 +524,7 @@ SUDOERS_TMP=""
 
 # Catch a partial/ineffective sudoers deployment during installation rather
 # than deferring the failure to the web UI.
-sudo -u www-data sudo -n /usr/bin/apt-get --version >/dev/null 2>&1 \
-  || die "apt-get sudo rule verification failed ($SUDOERS)."
-sudo -u www-data sudo -n /usr/local/bin/nebula-helper php-versions >/dev/null 2>&1 \
+sudo -u "$PANEL_USER" sudo -n /usr/local/bin/nebula-helper php-versions >/dev/null 2>&1 \
   || die "privileged helper sudo rule verification failed ($SUDOERS)."
 ok "sudoers rule installed ($SUDOERS)"
 
@@ -443,8 +534,6 @@ ok "sudoers rule installed ($SUDOERS)"
 log "Configuring UFW firewall…"
 ufw allow OpenSSH >/dev/null 2>&1 || true
 ufw allow 'Nginx Full' >/dev/null 2>&1 || true
-ufw allow 53/tcp >/dev/null 2>&1 || true
-ufw allow 53/udp >/dev/null 2>&1 || true
 yes | ufw enable >/dev/null 2>&1 || true
 ok "Firewall allows SSH + HTTP/HTTPS"
 
@@ -466,7 +555,7 @@ fi
 # 9. Summary
 # --------------------------------------------------------------------------
 IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
-SCHEME="http"; HOST="${IP:-YOUR_IP}"
+SCHEME="http"; HOST="127.0.0.1"
 [[ -n "$DOMAIN" ]] && { SCHEME="https"; HOST="$DOMAIN"; }
 
 echo
@@ -477,9 +566,11 @@ echo "  URL:        ${SCHEME}://${HOST}/${PANEL_PREFIX}/"
 echo "  Deployed:   ${DEST}"
 echo "  Source:     ${REPO}@${REPO_REF}"
 echo "  FM root:    ${FM_ROOT}"
+[[ -n "$PUBLIC_IP" ]] && echo "  Public IP:  ${PUBLIC_IP}"
 echo "  PHP-FPM:    ${FPM_SVC}"
 [[ -n "$ADMIN_IP" ]] && echo "  Access:     restricted to ${ADMIN_IP}"
-[[ -z "$DOMAIN"  ]] && echo "  (No domain given — running over HTTP by IP. Set DOMAIN=... for HTTPS.)"
+[[ -n "$BOOTSTRAP_TOKEN" ]] && echo "  Bootstrap:  $BOOTSTRAP_TOKEN  (single-use; expires in 1 hour)"
+[[ -z "$DOMAIN"  ]] && echo "  (No domain: loopback only. Use an SSH port-forward for setup.)"
 echo "------------------------------------------------------------"
-echo "  NEXT: open the URL and complete the one-time admin setup."
+echo "  NEXT: open the URL and enter the single-use bootstrap token."
 echo "============================================================"

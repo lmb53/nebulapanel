@@ -1,11 +1,13 @@
 # Nebula Panel — PHP Web Control Panel
 
-A working, self-hosted server control panel. The repository's application source
+A pre-production, self-hosted server control panel. The repository's application source
 lives in the clearly named `panel/` directory. Installation copies those files
-to a **random public URL prefix** on first install, e.g. `http://YOUR_IP/a1b2c3d4e5f6/`.
+to a random URL prefix on first install. Without a domain, Nginx binds the panel
+to loopback only; use an SSH port-forward for bootstrap.
 
-> The random directory name is *obscurity*, not real security. Always pair it with
-> HTTPS, a strong admin password, and ideally IP allow-listing. See "Hardening".
+> The random directory name is not a security boundary. HTTPS is required away
+> from loopback. Do not host untrusted applications until the documented VM
+> integration tests have passed for your OS and service combination.
 
 ## Quick install
 
@@ -16,43 +18,39 @@ firewall). The first run creates a random directory at
 retain its private runtime state:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/lmb53/nebulapanel/main/install.sh | sudo bash
+git clone https://github.com/lmb53/nebulapanel.git
+cd nebulapanel
+git checkout <reviewed-tag-or-commit>
+sudo DOMAIN=panel.example.com ADMIN_IP=203.0.113.7 ./install.sh
 ```
 
-Hardened variant — random URL prefix, locked to your IP, with HTTPS:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/lmb53/nebulapanel/main/install.sh \
-  | sudo PANEL_PREFIX=random ADMIN_IP=203.0.113.7 DOMAIN=panel.example.com bash
-```
-
-The installer prints both the random public URL and its filesystem path when it
-finishes — open the URL to create the admin account and run the provisioning
-wizard. An unset `PANEL_PREFIX` reuses an existing active install and generates a
+The installer prints the URL, filesystem path, and a single-use one-hour
+bootstrap token. Use that token to create the administrator account and run the
+provisioning wizard. An unset `PANEL_PREFIX` reuses an existing active install and generates a
 random one only on the first run. Set `PANEL_PREFIX=random` to deliberately rotate
 the URL (runtime state is migrated), or use a fixed name. Options (env vars):
 `PANEL_PREFIX`, `WEBROOT`, `ADMIN_IP`, `DOMAIN`, `FM_ROOT`, `REPO`, `REPO_REF`
 (see [install.sh](install.sh)).
 
-> ⚠️ `curl … | sudo bash` runs remote code as root. It's your repo, but pin
-> `REPO_REF` to a tag/commit for reproducible, reviewed installs.
+> Review the installer and pin `REPO_REF` to a tag or commit for reproducible
+> installs. Remote refs are resolved before the immutable archive is fetched.
 
 ## What works
 
 | Feature | Status |
 |---|---|
-| First-run admin setup (bcrypt) + login/logout | ✅ |
-| Session auth, idle timeout, POST-only logout, CSRF, login throttling, audit log | ✅ |
+| Token-gated first-run setup (Argon2id where available) + login/logout | ✅ |
+| Session idle/absolute expiry, rotation, CSRF, account/IP throttling, structured audit | ✅ |
 | **Dashboard** — live charts, load/CPU, services, top processes and actionable health alerts | ✅ |
 | **Services** — tabbed per-instance manager, virtual hosts, logs, start / stop / restart + boot state | ✅ sudo |
 | **Install Apps** — install apache2/redis/mariadb/fail2ban/ModSecurity + extra PHP versions with live output, each shown with its official brand logo | ✅ sudo/helper |
 | **Updates** — list upgradable, update one/all, with persistent streaming apt output | ✅ sudo |
 | **Users & RBAC** — panel accounts with administrator/operator/developer/auditor roles, plus system-account inventory | ✅ |
 | **SSH Keys** — list/add/revoke authorized keys for interactive users | ✅ helper |
-| **Cron** — full CRUD on the web user's crontab | ✅ |
+| **Cron** — administrator-only CRUD on the panel account's crontab | ✅ |
 | **Security** — UFW status, enable/disable, add/delete rules, plus a **Fail2Ban** tab showing every jail's counters, the live banned-IP list with one-click unban, manual ban, and recent ban activity, and a **ModSecurity** tab (OWASP Core Rule Set WAF for nginx: blocking / detection-only / off, with nginx-validated switching and recent findings) | ✅ sudo/helper |
 | **Logs** — journalctl per-unit + `/var/log` file tails | ✅ |
-| **Websites** — create Nginx vhosts, PHP version, service health, docroot disk/file usage, Let's Encrypt, **Git deploy (connect a repo & pull into the docroot)**; deleting a site also removes its document root, DNS zone and certificates | ✅ helper |
+| **Websites** — immutable IDs, confined roots, per-site Unix/FPM identity, usage, TLS, and credential-free HTTPS Git deploy; deletion archives to root-owned trash | ✅ helper |
 | **Domains + DNS** — authoritative BIND zones and record CRUD for panel-managed domains | ✅ helper |
 | **SSL** — list / issue / renew / delete certbot certificates + validated custom PEM upload | ✅ helper |
 | **PHP** — per-version ini settings (memory_limit, upload size…) + modules | ✅ helper |
@@ -68,13 +66,16 @@ the URL (runtime state is migrated), or use a fixed name. Options (env vars):
 | **Panel Updates** — self-update from GitHub (check + apply) | ✅ |
 | **Settings** — panel name, timeout, change password, audit log | ✅ |
 | **Notifications** — live operational inbox, top-bar dropdown, mark-read and delete state | ✅ |
+| **Bearer API** — named, role-bound, scoped, expiring, optionally IP-bound tokens under `api/v1` | ✅ |
 
-Rows marked **sudo** require the passwordless sudoers rules the installer sets up
-(see below). The panel is modular: each feature is `lib/mod_<x>.php` +
+Rows marked **sudo** are routed through the root-owned validating helper; no
+tool receives a direct wildcard sudo grant. The panel is modular: each feature is `lib/mod_<x>.php` +
 `views/<x>.php` (+ `api/<x>.php`), registered in `lib/modules.php`.
 
 Metrics read Linux `/proc` and use `systemctl`, so **run this on the Linux VPS**.
 On macOS/Windows the pages load but most metrics show `n/a`.
+
+The initial versioned API contract is in [`docs/openapi.yaml`](docs/openapi.yaml).
 
 ## Requirements
 
@@ -104,8 +105,9 @@ sudoers rules without replacing `data/` (accounts, settings, backups, and audit
 history are preserved). For example:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/lmb53/nebulapanel/main/install.sh \
-  | sudo PANEL_PREFIX=5cc813be4cbdf4b3c35be176 bash
+git fetch --tags
+git checkout <reviewed-tag-or-commit>
+sudo PANEL_PREFIX=5cc813be4cbdf4b3c35be176 ./install.sh
 ```
 
 Use the prefix from your current `/var/www/html/<prefix>/` path. Omitting it
@@ -118,20 +120,9 @@ Nginx loaded first.
 
 ## Install
 
-```bash
-# 1. Copy the panel source to a random directory in your web root.
-PANEL_PREFIX="$(od -An -N12 -tx1 /dev/urandom | tr -d '[:space:]')"
-sudo cp -r panel "/var/www/html/$PANEL_PREFIX"
-
-# 2. Make data/ writable by the web user (setup + audit log live here).
-sudo chown -R www-data:www-data "/var/www/html/$PANEL_PREFIX/data"
-sudo chmod 700 "/var/www/html/$PANEL_PREFIX/data"
-
-# 3. Choose which directory the File Manager may browse (default /var/www).
-#    Either edit config.php ('fm_root') or set an env var in your FPM pool.
-# 4. Set NEBULA_NS1 and NEBULA_NS2 in the FPM environment when the server's
-#    hostname is not already the desired authoritative nameserver base.
-```
+Use `install.sh`; a manual copy misses the dedicated panel/webapp/site FPM
+pools, root-owned site registry, broker policy, bootstrap token, and Nginx
+confinement. Review the script and pin the source commit before running it.
 
 ### Nginx
 
@@ -145,7 +136,7 @@ location ~ ^/RANDOM_PREFIX/(api|data|lib|views|bin)/ { deny all; return 404; }
 location = /RANDOM_PREFIX/config.php { deny all; return 404; }
 location ~ \.php$ {
     include snippets/fastcgi-php.conf;
-    fastcgi_pass unix:/run/php/php8.3-fpm.sock;
+    fastcgi_pass unix:/run/php/nebula-panel.sock;
 }
 ```
 
@@ -157,24 +148,18 @@ location ~ \.php$ {
 
 ## Privileges (sudoers)
 
-Several modules drive tools that need root. **The installer writes these rules
-for you** to `/etc/sudoers.d/nebula-panel` (only for binaries that exist):
+Several modules drive tools that need root. The installer writes one rule to
+`/etc/sudoers.d/nebula-panel`:
 
 ```
-www-data ALL=(root) NOPASSWD: /usr/sbin/ufw *
-www-data ALL=(root) NOPASSWD: /usr/bin/docker *
-www-data ALL=(root) NOPASSWD: /usr/bin/mysql *
-www-data ALL=(root) NOPASSWD: /usr/bin/journalctl *
-www-data ALL=(root) NOPASSWD:SETENV: /usr/bin/apt-get *
-www-data ALL=(root) NOPASSWD: /usr/local/bin/nebula-helper *
+nebula-panel ALL=(root) NOPASSWD: /usr/local/bin/nebula-helper *
 ```
 
-> ⚠️ **This is broad.** `docker`, `mysql`, and `apt-get` as root are each
-> effectively a path to full root. That is inherent to a control panel — the
-> mitigation is *access control*, not command scoping: keep the panel behind the
-> obscured prefix **+ HTTPS + an IP allow-list**, and treat panel access as root
-> access. If you don't need a module, delete its `sudo_line` from `install.sh`
-> (or the rule from the sudoers file) to shrink the surface.
+The root-owned helper accepts fixed actions, validates resource IDs and
+arguments again at the privilege boundary, and confines site paths with
+root-owned filesystem identity state. Docker remains root-equivalent, so
+Docker, package, database, site, file, cron, firewall, terminal, and related
+operations are administrator-only.
 
 Modules whose tool/sudo rule is missing degrade gracefully: read-only status
 still shows and actions return a clear permission error in the UI.
@@ -188,28 +173,31 @@ single **root-owned** script to `/usr/local/bin/nebula-helper` with one tight
 sudoers rule:
 
 ```
-www-data ALL=(root) NOPASSWD: /usr/local/bin/nebula-helper *
+nebula-panel ALL=(root) NOPASSWD: /usr/local/bin/nebula-helper *
 ```
 
 The helper accepts only a fixed set of validated subcommands covering site,
 certificate, DNS, PHP, File Manager, phpMyAdmin, and panel-update operations and
 re-validates every argument itself. It lives **outside** the web-writable tree
-and is root-owned, so the web user can't alter what runs as root. Self-update
-does **not** touch it — re-run `install.sh` to update the helper.
+and is root-owned, so web identities cannot alter it. A validated self-update
+does refresh the staged helper; re-run `install.sh` when installer-owned FPM,
+Nginx, account, or sudoers configuration changes.
 
 ## First run
 
-1. Visit the random URL printed by the installer.
-2. You'll be redirected to **Setup** — create the admin username + password.
+1. Visit the HTTPS URL printed by the installer, or use its loopback URL through
+   an SSH port-forward.
+2. Enter the single-use bootstrap token and create the admin username + password.
 3. Then the **provisioning wizard** opens: pick the services to install (MariaDB,
    a PHP version, phpMyAdmin, Redis, Fail2Ban, Certbot, Docker, …). It installs
    each in order with live progress, via apt + the privileged helper. You can
    skip and add more later from **Install Apps**.
 4. You're in. Credentials and RBAC state are hashed into `data/panel-users.json`.
 
-To reset a locked-out installation, stop the web service, back up and remove both
-`data/panel-users.json` and the legacy `data/admin.json`, then reload Setup. Do
-not remove either file while the panel is publicly reachable.
+For local account recovery, run `sudo nebula-recovery reset-admin`. It updates
+the administrator with Argon2id and revokes existing sessions without exposing
+setup publicly. `sudo nebula-recovery issue-bootstrap` rotates the one-hour
+single-use setup token when initialization has not yet completed.
 
 ## Email
 
@@ -217,8 +205,8 @@ The **Email** page (Hosting section) runs a complete self-hosted mail server
 with as little configuration as possible:
 
 1. **Install & configure mail server** — one click installs and wires up
-   **Postfix** (SMTP + submission on 587), **Dovecot** (IMAP 143 / POP3 110 with
-   SASL for authenticated sending), and **OpenDKIM** (signing milter). Mailboxes
+   **Postfix** (SMTP + TLS-required submission on 587), **Dovecot** (implicit
+   TLS IMAP 993 / POP3S 995 with SASL), and **OpenDKIM** (signing milter). Mailboxes
    are *virtual* and file-backed — there is no SQL to configure. When UFW is
    active the standard mail ports are opened automatically.
 2. **Add a mail domain**, then create **mailboxes** (full-address + password) and
@@ -252,9 +240,7 @@ log in after an upgrade.
 
 ## Hardening (do this before exposing it)
 
-- **HTTPS** — put it behind Let's Encrypt / a reverse proxy. Sessions set the
-  `Secure` cookie flag automatically over HTTPS.
-- **Change the secret prefix** — rename the directory to your own random string.
+- **HTTPS** — required away from loopback. Monitor certificate renewal.
 - **IP allow-list** the location block to your admin IPs.
 - **Rate-limit** `/<random-prefix>/?r=login` (nginx `limit_req` or fail2ban).
 - If TLS terminates at a reverse proxy, add only that proxy's IP to
@@ -303,7 +289,7 @@ in place:
    `data/` and `config.php`.
 
 The installer keeps application code root-owned and only `data/` writable by the
-web process. Notes:
+dedicated `nebula-panel` process. Notes:
 - `config.php` is intentionally **not** overwritten, so new config keys from an
   update won't appear automatically — diff it against the repo after a major
   update. Runtime prefs (panel name, timeout) live in `data/settings.json` and
@@ -315,9 +301,9 @@ web process. Notes:
 
 ## Still to build (natural next steps)
 
-- **Email hosting** — an SMTP/IMAP stack and reputation tooling remain separate
-- **PHP** — install additional versions (ondrej PPA), extensions, per-site `php.ini`
-- **Websites** — per-site logs viewer, clone/staging, wildcard certs, Apache mode
+- **Websites** — staged releases, rollback, wildcard certificates, Apache mode
+- **Recovery** — complete encrypted off-host restore workflow and tested drills
+- **Authentication** — passkeys/TOTP, recovery codes, and step-up checks
 - **Live PTY terminal** — real interactive shell (needs a WebSocket sidecar)
 - **Two-factor authentication** for panel users
 ```
