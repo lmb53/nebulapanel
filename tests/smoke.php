@@ -191,6 +191,10 @@ $check(strpos($installerSource, 'bind9 bind9-utils') === false
     'authoritative DNS is not installed/opened lazily on first use');
 $check(strpos($installerSource, 'chown -R root:root "$DEST"') !== false && strpos($installerSource, 'chown -R "$PANEL_USER:$PANEL_USER" "$DEST/data"') !== false, 'panel code/data ownership separation is missing');
 $check(strpos($installerSource, 'sudo_line tar') === false, 'broad root tar permission is still installed');
+$check(strpos($installerSource, 'nebula-panel-selfsigned.crt') !== false
+    && strpos($installerSource, 'listen 443 ssl default_server') !== false
+    && strpos($installerSource, 'subjectAltName=IP:${SERVER_IP}') !== false,
+    'domainless self-signed HTTPS provisioning is missing');
 $uploadSource = (string) file_get_contents(APP_ROOT . '/views/files.php');
 $check(strpos($uploadSource, 'Replace it with the uploaded file?') !== false, 'upload overwrite confirmation is missing');
 $check(strpos($uploadSource, 'fm-tree-section-title">Pinned') === false && strpos($uploadSource, 'No subfolders') === false, 'File Manager tree still includes removed sidebar placeholders');
