@@ -154,8 +154,27 @@
     return ok;
   }
 
+  // ---- Cross-widget refresh bus -------------------------------------------
+  // A page can render the same server state through several independent view
+  // scripts (Docker draws containers in one block and compose stacks in
+  // another). Without a shared signal, an action handled by one block leaves
+  // every other block showing pre-action state until a full page reload.
+  // Each block registers its own loader here; any mutation calls refreshAll().
+  const refreshers = new Set();
+  function registerRefresh(fn) {
+    if (typeof fn === 'function') { refreshers.add(fn); }
+    return fn;
+  }
+  // `delay` re-runs the refresh once more after the given ms. Some backends
+  // (docker compose up) return before the daemon has finished registering
+  // every container, so an immediate read can still miss it.
+  function refreshAll(delay) {
+    refreshers.forEach((fn) => { try { fn(); } catch (e) { /* a stale widget must not block the rest */ } });
+    if (delay) { setTimeout(() => refreshers.forEach((fn) => { try { fn(); } catch (e) {} }), delay); }
+  }
+
   // Public API for per-module view scripts (available by DOMContentLoaded).
-  window.Nebula = { api, apiGet, apiPost, streamPost, toast, copyText, fmtBytes, cmTheme, registerCM };
+  window.Nebula = { api, apiGet, apiPost, streamPost, toast, copyText, fmtBytes, cmTheme, registerCM, registerRefresh, refreshAll };
 
   // ---- Toasts -------------------------------------------------------------
   function toast(msg, type = 'success') {

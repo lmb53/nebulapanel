@@ -61,6 +61,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         case 'remove':
             $res = compose_remove($name, (bool) ($body['volumes'] ?? false), $emit);
             break;
+        case 'proxy-create':
+            $res = compose_proxy_create((string) ($body['domain'] ?? ''), $name, (int) ($body['port'] ?? 0));
+            break;
+        case 'proxy-remove':
+            $res = compose_proxy_remove((string) ($body['domain'] ?? ''));
+            break;
         default:
             $res = ['ok' => false, 'error' => 'Unknown action.'];
     }

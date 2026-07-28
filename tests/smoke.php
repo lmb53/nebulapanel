@@ -347,6 +347,102 @@ $check(strpos($updaterSource, 'git ls-remote') !== false, 'self-update does not 
 @unlink(bootstrap_file());
 @unlink(panel_users_file());
 @unlink(DATA_DIR . '/panel-users.lock');
+
+// ---------------------------------------------------------------------------
+// Post-action refresh: a page whose widgets are drawn by independent view
+// scripts must refresh all of them after a mutation. Docker draws containers in
+// one block and compose stacks in another, so an App Store install used to
+// leave the new container invisible until a manual page reload.
+// ---------------------------------------------------------------------------
+$appJs = (string) file_get_contents(APP_ROOT . '/assets/app.js');
+$check(strpos($appJs, 'registerRefresh') !== false && strpos($appJs, 'refreshAll') !== false,
+    'the shared refresh bus is missing from app.js');
+$dockerView = (string) file_get_contents(APP_ROOT . '/views/docker.php');
+$check(substr_count($dockerView, 'window.Nebula.registerRefresh') >= 2,
+    'the Docker page does not register both of its independent loaders with the refresh bus');
+$check(preg_match('/action:\s*\'install\'[^;]*?window\.Nebula\.refreshAll/s', $dockerView) === 1
+    || strpos($dockerView, "if(r.ok){window.Nebula.refreshAll(1500);") !== false,
+    'an App Store install still refreshes only the compose widgets, so new containers stay hidden');
+$check(strpos($dockerView, 'toast(r.ok?ok:(r.error||\'Compose action failed\'),r.ok?\'success\':\'error\');loadCompose();}') === false,
+    'a streamed compose lifecycle action still refreshes only its own block');
+// Install Apps is server-rendered, so installed badges, the PHP version list
+// and the sidebar only change on reload.
+$appsView = (string) file_get_contents(APP_ROOT . '/views/apps.php');
+$check(strpos($appsView, 'reloadWithLog') !== false && strpos($appsView, 'location.reload') !== false,
+    'installing a package leaves the Install Apps page showing pre-install state');
+$check(strpos($appsView, 'sessionStorage') !== false,
+    'the refresh after an install discards the command output');
+
+// ---------------------------------------------------------------------------
+// App Store stacks bind to loopback, so a reverse proxy is the supported way to
+// reach one. The UI must say so rather than implying host:port works.
+// ---------------------------------------------------------------------------
+require_once APP_ROOT . '/lib/mod_compose.php';
+$check(function_exists('compose_stack_ports') && function_exists('compose_proxy_create')
+    && function_exists('compose_proxy_remove'), 'reverse-proxy support is missing from the compose module');
+$check(strpos($dockerView, 'proxy-create') !== false && strpos($dockerView, 'Publish on a hostname') !== false,
+    'the Stacks tab offers no way to publish a loopback-bound stack');
+$check(stripos($dockerView, 'will not respond') !== false,
+    'the install drawer still implies the published host port is reachable');
+$helperSourceProxy = $helperSource;
+$check(strpos($helperSourceProxy, 'proxy-create)') !== false && strpos($helperSourceProxy, 'proxy_pass http://127.0.0.1:') !== false,
+    'the helper cannot create a reverse-proxy vhost');
+$check(strpos($helperSourceProxy, 'proxy_set_header Upgrade') !== false && strpos($helperSourceProxy, 'connection_upgrade') !== false,
+    'proxied apps that need websockets (Uptime Kuma, code-server, n8n) would break');
+// Proxy targets are constrained to ports the stack actually publishes.
+$check(empty(compose_proxy_create('app.example.com', 'no-such-stack', 8080)['ok']),
+    'a proxy can be created for a stack that does not exist');
+$check(empty(compose_proxy_create('not a hostname', 'whatever', 8080)['ok']),
+    'a proxy accepts an invalid hostname');
+
+// ---------------------------------------------------------------------------
+// Databases: the page needs a reachable *server*, not just the mysql client.
+// ---------------------------------------------------------------------------
+require_once APP_ROOT . '/lib/mod_db.php';
+$check(function_exists('db_server_status') && function_exists('db_error'),
+    'database server diagnosis is missing');
+$dbStatus = db_server_status();
+$check(in_array($dbStatus['state'], ['ready', 'stopped', 'absent', 'no-client'], true)
+    && array_key_exists('message', $dbStatus) && array_key_exists('ready', $dbStatus),
+    'db_server_status did not return a usable state');
+$check($dbStatus['ready'] === true || trim((string) $dbStatus['message']) !== '',
+    'an unavailable database server produced no explanation');
+// The raw client error names a socket path and no remedy; the panel must not show it bare.
+$socketError = "ERROR 2002 (HY000): Can't connect to local MySQL server through socket '/var/run/mysqld/mysqld.sock' (2)";
+$translated = db_error($socketError, 1);
+$check($translated !== $socketError && stripos($translated, 'mysqld.sock') === false,
+    'the raw MySQL socket error is still surfaced to the user verbatim');
+$check(stripos($translated, 'install') !== false || stripos($translated, 'start') !== false
+    || stripos($translated, 'running') !== false,
+    'the translated database connection error suggests no action');
+$dbView = (string) file_get_contents(APP_ROOT . '/views/databases.php');
+$check(strpos($dbView, 'db_server_status()') !== false && strpos($dbView, 'db_available()') === false,
+    'the Databases page still gates on the client binary instead of the server');
+
+// ---------------------------------------------------------------------------
+// Webmail needs the hostname the mail stack was set up with — Postfix's
+// myhostname is the *system* hostname when Postfix arrived as a dependency,
+// which sends the certificate lookup to a name that never had one issued.
+// ---------------------------------------------------------------------------
+$check(function_exists('mail_hostname'), 'the configured mail hostname is not recorded');
+$mailSource = (string) file_get_contents(APP_ROOT . '/lib/mod_mail.php');
+$check(strpos($mailSource, "\$state['hostname'] = \$hostname;") !== false,
+    'mail setup does not persist the hostname it issued the certificate for');
+$check(preg_match('/webmail.*install.*escapeshellarg\(\$hostname\)/s', $mailSource) === 1,
+    'the webmail installer is not told which hostname to trust');
+$noHost = mail_webmail_install('roundcube');
+$check(empty($noHost['ok']) && stripos((string) ($noHost['error'] ?? ''), 'mail') !== false,
+    'webmail installs before the mail stack owns a hostname');
+$check(strpos($helperSource, 'mail_cert_dir()') !== false,
+    'the helper cannot resolve a certbot lineage directory');
+$check(preg_match('/roundcube-install\)(.*?)\n  # roundcube-remove/s', $helperSource, $rcBlock) === 1
+    && strpos($rcBlock[1], '/etc/letsencrypt/live/${HOSTFQDN}/fullchain.pem') === false
+    && strpos($rcBlock[1], 'mail_cert_dir') !== false,
+    'the webmail installer still assumes the bare certbot lineage path');
+$check(preg_match('/roundcube-install\)(.*?)\n  # roundcube-remove/s', $helperSource, $rcMsg) === 1
+    && stripos($rcMsg[1], 'Set up mail') !== false,
+    'the missing-certificate error does not tell the user how to fix it');
+
 @unlink(DATA_DIR . '/setup.lock');
 @unlink(fm_state_file());
 @unlink(fm_state_file() . '.lock');

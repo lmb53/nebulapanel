@@ -118,6 +118,27 @@ valid_email()  { [[ -z "$1" || "$1" =~ ^[^@[:space:]]+@[^@[:space:]]+$ ]] || die
 valid_user()   { [[ "$1" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] || die "invalid user"; }
 valid_group()  { [[ "$1" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] || die "invalid group"; }
 valid_site_id(){ [[ "$1" =~ ^[a-f0-9]{32}$ ]] || die "invalid site id"; }
+
+# Print the Let's Encrypt lineage directory holding a currently-valid
+# certificate for $1, or nothing when there is none.
+#
+# The plain /etc/letsencrypt/live/<fqdn>/ path is only correct for the first
+# lineage of a name: certbot appends -0001, -0002 … when a lineage for that
+# name already exists, so assuming the bare directory reports a perfectly good
+# certificate as missing. Prefer the exact directory, then fall back to any
+# lineage whose certificate actually covers the hostname.
+mail_cert_dir() {
+  local fqdn="$1" dir cert
+  for dir in "/etc/letsencrypt/live/$fqdn" /etc/letsencrypt/live/*; do
+    cert="$dir/fullchain.pem"
+    [[ -r "$cert" && -r "$dir/privkey.pem" ]] || continue
+    openssl x509 -in "$cert" -noout -checkend 86400 >/dev/null 2>&1 || continue
+    openssl x509 -in "$cert" -noout -checkhost "$fqdn" >/dev/null 2>&1 || continue
+    printf '%s\n' "$dir"
+    return 0
+  done
+  return 1
+}
 valid_component(){ [[ "$1" != "." && "$1" != ".." && "$1" =~ ^[A-Za-z0-9._\ -]{1,255}$ ]] || die "invalid path component"; }
 valid_docker_id(){ [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,127}$ ]] || die "invalid Docker identifier"; }
 valid_docker_name(){ [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$ ]] || die "invalid Docker name"; }
@@ -1055,6 +1076,82 @@ EOF
     echo "ssl issued for $DOMAIN"
     ;;
 
+  # proxy-create <domain> <port>
+  #
+  # Publish a loopback-bound service (a Compose stack from the App Store) on a
+  # real hostname. App Store containers deliberately bind 127.0.0.1 only, so
+  # http://<server-ip>:<port> is unreachable by design; this vhost is the
+  # supported way to reach them without opening the port to the internet.
+  proxy-create)
+    DOMAIN="${1:-}"; PORT="${2:-}"
+    valid_domain "$DOMAIN"
+    [[ "$PORT" =~ ^[0-9]{1,5}$ ]] && (( PORT >= 1 && PORT <= 65535 )) || die "invalid port"
+    [[ -d "$NGINX_AV" ]] || die "nginx is not installed"
+    if [[ -e "$NGINX_AV/$DOMAIN" ]]; then
+      grep -q '^# Managed by Nebula Panel. Reverse proxy' "$NGINX_AV/$DOMAIN" 2>/dev/null \
+        || die "$DOMAIN already has an nginx configuration that this panel did not create as a proxy"
+    fi
+    cat > "$NGINX_AV/$DOMAIN" <<EOF
+# Managed by Nebula Panel. Reverse proxy -> 127.0.0.1:${PORT}
+server {
+    listen 80;
+    listen [::]:80;
+    server_name ${DOMAIN};
+
+    access_log /var/log/nginx/${DOMAIN}.access.log;
+    error_log  /var/log/nginx/${DOMAIN}.error.log;
+
+    # Large uploads are common for the self-hosted apps this fronts.
+    client_max_body_size 512m;
+
+    location / {
+        proxy_pass http://127.0.0.1:${PORT};
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        # Websockets: Uptime Kuma, code-server and n8n are unusable without these.
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection \$connection_upgrade;
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
+        proxy_buffering off;
+    }
+}
+EOF
+    # $connection_upgrade must exist at http level for the websocket headers above.
+    if ! grep -rqs 'connection_upgrade' /etc/nginx/conf.d/ 2>/dev/null; then
+      cat > /etc/nginx/conf.d/nebula-proxy-upgrade.conf <<'EOF'
+# Managed by Nebula Panel. Shared websocket upgrade map for proxied apps.
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ''      close;
+}
+EOF
+    fi
+    ln -sfn "$NGINX_AV/$DOMAIN" "$NGINX_EN/$DOMAIN"
+    if ! nginx -t >/dev/null 2>&1; then
+      rm -f "$NGINX_EN/$DOMAIN" "$NGINX_AV/$DOMAIN"
+      nginx -t >/dev/null 2>&1 || true
+      die "nginx rejected the generated proxy configuration"
+    fi
+    systemctl reload nginx || die "nginx reload failed"
+    echo "proxy for $DOMAIN -> 127.0.0.1:$PORT"
+    ;;
+
+  # proxy-remove <domain>
+  proxy-remove)
+    DOMAIN="${1:-}"
+    valid_domain "$DOMAIN"
+    [[ -e "$NGINX_AV/$DOMAIN" ]] || { echo "no proxy for $DOMAIN"; exit 0; }
+    grep -q '^# Managed by Nebula Panel. Reverse proxy' "$NGINX_AV/$DOMAIN" 2>/dev/null \
+      || die "$DOMAIN is not a panel-managed reverse proxy"
+    rm -f "$NGINX_EN/$DOMAIN" "$NGINX_AV/$DOMAIN"
+    nginx -t >/dev/null 2>&1 && { systemctl reload nginx >/dev/null 2>&1 || true; }
+    echo "removed proxy for $DOMAIN"
+    ;;
+
   # php-install <version>  (adds ondrej/php PPA on Ubuntu, installs php<ver>-fpm + common extensions)
   php-install)
     VER="${1:-}"
@@ -1664,13 +1761,17 @@ EOF
     valid_email "$CERT_EMAIL"
     command -v certbot >/dev/null 2>&1 || die "certbot is not installed; re-run install.sh first"
     command -v openssl >/dev/null 2>&1 || die "openssl is not installed"
+    # Resolve through mail_cert_dir so an existing -0001 lineage is reused
+    # instead of being reissued (and then still not found at the bare path).
+    mail_certificate_valid() {
+      local dir
+      dir="$(mail_cert_dir "$HOSTFQDN" || true)"
+      [[ -n "$dir" ]] || return 1
+      MAIL_CERT="$dir/fullchain.pem"
+      MAIL_KEY="$dir/privkey.pem"
+    }
     MAIL_CERT="/etc/letsencrypt/live/${HOSTFQDN}/fullchain.pem"
     MAIL_KEY="/etc/letsencrypt/live/${HOSTFQDN}/privkey.pem"
-    mail_certificate_valid() {
-      [[ -r "$MAIL_CERT" && -r "$MAIL_KEY" ]] \
-        && openssl x509 -in "$MAIL_CERT" -noout -checkend 86400 >/dev/null 2>&1 \
-        && openssl x509 -in "$MAIL_CERT" -noout -checkhost "$HOSTFQDN" >/dev/null 2>&1
-    }
     if ! mail_certificate_valid; then
       echo "Requesting a Let's Encrypt certificate for ${HOSTFQDN}..."
       CERTBOT_ARGS=(certonly --nginx -d "$HOSTFQDN" --non-interactive --agree-tos)
@@ -2171,10 +2272,21 @@ EOF
   # roundcube-install <targetdir>
   roundcube-install)
     TARGET="${1:-}"; valid_path "$TARGET"
-    HOSTFQDN="$(postconf -h myhostname 2>/dev/null || true)"
-    [[ -n "$HOSTFQDN" ]] || die "mail hostname is not configured; install or repair the mail stack first"
-    [[ -r "/etc/letsencrypt/live/${HOSTFQDN}/fullchain.pem" ]] \
-      || die "mail hostname certificate is missing"
+    # The panel passes the hostname it configured the mail stack with. Fall back
+    # to Postfix's own value only when the caller supplies nothing (older panel
+    # builds), because postconf reports the *system* hostname when Postfix was
+    # installed as somebody else's dependency — pointing the certificate lookup
+    # at a name that was never issued one.
+    HOSTFQDN="${2:-}"
+    if [[ -n "$HOSTFQDN" ]]; then
+      valid_domain "$HOSTFQDN"
+    else
+      HOSTFQDN="$(postconf -h myhostname 2>/dev/null || true)"
+    fi
+    [[ -n "$HOSTFQDN" ]] || die "mail hostname is not configured; run Email → Set up mail first"
+    command -v openssl >/dev/null 2>&1 || die "openssl is not installed"
+    CERT_DIR="$(mail_cert_dir "$HOSTFQDN" || true)"
+    [[ -n "$CERT_DIR" ]] || die "no valid TLS certificate for ${HOSTFQDN}. Webmail connects to IMAP/SMTP over TLS and verifies this name, so it needs one. Run Email → Set up mail for ${HOSTFQDN} (its DNS must point at this server and ports 80/443 must be reachable), then install webmail again."
     export DEBIAN_FRONTEND=noninteractive
     # Roundcube's runtime dependencies (SQLite backend keeps setup zero-config).
     PHP_VER="$(ls -d /etc/php/*/fpm 2>/dev/null | sort -V | tail -1 | awk -F/ '{print $4}')"

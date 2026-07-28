@@ -182,6 +182,10 @@ function compose_list(): array
             'running' => $running,
             'exists'  => is_file($file),
             'updated' => is_file($file) ? filemtime($file) : null,
+            // Surfaced so the UI can say where a stack is actually reachable
+            // instead of implying the host port is open to the world.
+            'ports'   => compose_stack_ports($name),
+            'proxies' => compose_stack_proxies($name),
         ];
     }
     usort($stacks, fn($a, $b) => strcmp($a['name'], $b['name']));
@@ -326,6 +330,9 @@ function compose_remove(string $name, bool $volumes = false, ?callable $onOutput
     if (empty($res['ok'])) {
         return $res;
     }
+    foreach (compose_stack_proxies($name) as $proxy) {
+        compose_proxy_remove((string) $proxy['domain']);
+    }
     $dir = compose_stack_dir($name);
     if (is_dir($dir) && strpos(realpath($dir) ?: '', realpath(compose_root()) ?: '#') === 0) {
         compose_rmdir($dir);
@@ -360,6 +367,121 @@ function compose_logs(string $name, int $lines = 200): array
     [$code, $out] = helper_cmd($cmd, 60);
     if ($code !== 0) { return ['ok' => false, 'error' => sudo_error($out, $code)]; }
     return ['ok' => true, 'logs' => $out];
+}
+
+// ---------------------------------------------------------------------------
+// Reverse proxies
+//
+// App Store containers publish their ports on 127.0.0.1 only, so reaching one
+// at http://<server-ip>:<port> times out no matter what the firewall says —
+// nothing is listening on the public interface. Rather than opening the port,
+// front the stack with an Nginx vhost on a real hostname, which also makes the
+// existing SSL flow (Websites → SSL) apply to it.
+// ---------------------------------------------------------------------------
+
+/** Host ports a stack publishes on loopback, parsed from its compose file. */
+function compose_stack_ports(string $name): array
+{
+    if (!compose_name_ok($name)) { return []; }
+    $file = compose_file($name);
+    if (!is_file($file)) { return []; }
+    $content = (string) file_get_contents($file);
+    $ports = [];
+    if (preg_match_all('/^\s*-\s*["\']?(?:127\.0\.0\.1|\[::1\]):([0-9]+):[0-9]+(?:\/(?:tcp|udp))?["\']?\s*$/mi', $content, $m)) {
+        foreach ($m[1] as $port) {
+            $port = (int) $port;
+            if ($port >= 1 && $port <= 65535 && !in_array($port, $ports, true)) { $ports[] = $port; }
+        }
+    }
+    sort($ports);
+    return $ports;
+}
+
+function compose_proxy_file(): string
+{
+    return DATA_DIR . '/proxies.json';
+}
+
+/** domain => ['stack' => name, 'port' => int, 'created' => ISO8601] */
+function compose_proxies(): array
+{
+    $raw = json_decode((string) @file_get_contents(compose_proxy_file()), true);
+    return is_array($raw) ? $raw : [];
+}
+
+/** Proxies belonging to one stack, as a flat list. */
+function compose_stack_proxies(string $name): array
+{
+    $rows = [];
+    foreach (compose_proxies() as $domain => $meta) {
+        if ((string) ($meta['stack'] ?? '') === $name) {
+            $rows[] = ['domain' => $domain, 'port' => (int) ($meta['port'] ?? 0)];
+        }
+    }
+    return $rows;
+}
+
+/** Point a hostname at one of a stack's loopback ports. */
+function compose_proxy_create(string $domain, string $stack, int $port): array
+{
+    $domain = strtolower(rtrim(trim($domain), '.'));
+    if (!domain_name_ok($domain)) {
+        return ['ok' => false, 'error' => 'Enter a valid hostname such as app.example.com.'];
+    }
+    if (!compose_name_ok($stack) || !is_file(compose_file($stack))) {
+        return ['ok' => false, 'error' => 'Stack not found.'];
+    }
+    $published = compose_stack_ports($stack);
+    if (!$published) {
+        return ['ok' => false, 'error' => 'This stack does not publish a host port, so there is nothing to proxy to.'];
+    }
+    if (!in_array($port, $published, true)) {
+        return ['ok' => false, 'error' => 'Port ' . $port . ' is not published by this stack.'];
+    }
+    $proxies = compose_proxies();
+    if (isset($proxies[$domain]) && (string) ($proxies[$domain]['stack'] ?? '') !== $stack) {
+        return ['ok' => false, 'error' => 'That hostname already proxies to another stack.'];
+    }
+    if (!helper_available()) {
+        return ['ok' => false, 'error' => 'Privileged helper not installed. Re-run install.sh.'];
+    }
+    [$code, $out] = helper_cmd('proxy-create ' . escapeshellarg($domain) . ' ' . $port, 60);
+    if ($code !== 0) {
+        $err = trim($out);
+        if (stripos($err, 'unknown command') !== false) {
+            $err = 'The privileged helper on this server is out of date. Update the panel (Panel Updates) '
+                 . 'or re-run install.sh, then try again.';
+        }
+        return ['ok' => false, 'error' => $err ?: 'Could not create the reverse proxy.'];
+    }
+    $proxies[$domain] = ['stack' => $stack, 'port' => $port, 'created' => date('c')];
+    write_json_file(compose_proxy_file(), $proxies, 0600);
+    audit('compose.proxy-create', $domain . ' -> ' . $stack . ':' . $port);
+    return ['ok' => true, 'domain' => $domain, 'port' => $port];
+}
+
+/** Remove a panel-managed proxy vhost. */
+function compose_proxy_remove(string $domain): array
+{
+    $domain = strtolower(rtrim(trim($domain), '.'));
+    if (!domain_name_ok($domain)) {
+        return ['ok' => false, 'error' => 'Invalid hostname.'];
+    }
+    $proxies = compose_proxies();
+    if (!isset($proxies[$domain])) {
+        return ['ok' => false, 'error' => 'No panel-managed proxy for that hostname.'];
+    }
+    if (!helper_available()) {
+        return ['ok' => false, 'error' => 'Privileged helper not installed. Re-run install.sh.'];
+    }
+    [$code, $out] = helper_cmd('proxy-remove ' . escapeshellarg($domain), 60);
+    if ($code !== 0) {
+        return ['ok' => false, 'error' => trim($out) ?: 'Could not remove the reverse proxy.'];
+    }
+    unset($proxies[$domain]);
+    write_json_file(compose_proxy_file(), $proxies, 0600);
+    audit('compose.proxy-remove', $domain);
+    return ['ok' => true];
 }
 
 /** Create a stack from an app-store template and return its name. */

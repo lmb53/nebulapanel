@@ -28,6 +28,10 @@ function mail_state(): array
     $s['accounts']  = is_array($s['accounts'] ?? null) ? array_values($s['accounts']) : [];
     $s['aliases']   = is_array($s['aliases'] ?? null) ? array_values($s['aliases']) : [];
     $s['roundcube'] = is_array($s['roundcube'] ?? null) ? $s['roundcube'] : null;
+    // The FQDN mail-setup issued the TLS certificate for. Webmail must use this
+    // name, not Postfix's myhostname, which is the system hostname when Postfix
+    // was installed as an unrelated package's dependency.
+    $s['hostname']  = is_string($s['hostname'] ?? null) ? $s['hostname'] : '';
     $s['webmail']   = is_array($s['webmail'] ?? null) ? $s['webmail'] : null;
     return $s;
 }
@@ -345,6 +349,11 @@ function mail_setup(string $hostname, string $certEmail = '', ?callable $onOutpu
         return ['ok' => false, 'error' => sudo_error($out, $code)];
     }
     audit('mail.setup');
+    // Record the hostname so later steps (webmail) use the name that actually
+    // has a certificate rather than re-deriving one from the running MTA.
+    $state = mail_state();
+    $state['hostname'] = $hostname;
+    mail_save($state);
     // Push whatever is already configured so the maps exist immediately.
     mail_apply();
     return ['ok' => true];
@@ -733,11 +742,33 @@ function mail_webmail_installed(): bool
     return is_array($w) && !empty($w['dir']) && is_dir($w['dir']) && is_file($w['dir'] . '/index.php');
 }
 
+/**
+ * The hostname the mail stack was set up with. Falls back to the live MTA value
+ * for stacks configured before the panel started recording it.
+ */
+function mail_hostname(): string
+{
+    $recorded = (string) (mail_state()['hostname'] ?? '');
+    if ($recorded !== '') {
+        return $recorded;
+    }
+    $status = mail_status();
+    return !empty($status['installed']) ? (string) ($status['hostname'] ?? '') : '';
+}
+
 /** Install the webmail client. Roundcube is the only supported client. */
 function mail_webmail_install(string $kind = 'roundcube', ?callable $onOutput = null): array
 {
     if ($kind !== 'roundcube') {
         return ['ok' => false, 'error' => 'Roundcube is the only webmail client this panel installs.'];
+    }
+    // Webmail talks to IMAP/SMTP over verified TLS, so it cannot be installed
+    // before the mail stack owns a hostname with a certificate. Catching it here
+    // gives a fixable message instead of a bare failure from the installer.
+    $hostname = mail_hostname();
+    if ($hostname === '') {
+        return ['ok' => false, 'error' => 'Set up the mail stack first — webmail needs a mail hostname with a TLS '
+                                        . 'certificate before it can connect to IMAP and SMTP.'];
     }
     if (!helper_available()) {
         return ['ok' => false, 'error' => 'Privileged helper not installed.'];
@@ -747,7 +778,7 @@ function mail_webmail_install(string $kind = 'roundcube', ?callable $onOutput = 
     }
     $name = 'webmail-' . bin2hex(random_bytes(4));
     $target = dirname(APP_ROOT) . '/' . $name;
-    $args = $kind . '-install ' . escapeshellarg($target);
+    $args = $kind . '-install ' . escapeshellarg($target) . ' ' . escapeshellarg($hostname);
     [$code, $out] = $onOutput ? helper_cmd_stream($args, $onOutput, 900) : helper_cmd($args, 900);
     if ($code !== 0) {
         $err = trim($out);

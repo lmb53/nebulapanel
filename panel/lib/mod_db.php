@@ -18,6 +18,103 @@ function db_available(): bool
     return has_cmd('mysql');
 }
 
+/**
+ * State of the database *server*, which is what every query actually needs.
+ *
+ * The `mysql` client arrives as a dependency of unrelated packages (php-mysql
+ * pulls in the client libraries, and mariadb-client is a common transitive
+ * dep), so a client-only check reports the Databases page as fully working on
+ * a server that has no mysqld at all. Every query then fails with the raw
+ * "ERROR 2002 ... /var/run/mysqld/mysqld.sock" text, which says nothing about
+ * the actual remedy.
+ *
+ * Returns state ∈ ready|stopped|absent|no-client, plus a message describing the
+ * fix in the panel's own terms.
+ */
+function db_server_status(): array
+{
+    if (!db_available()) {
+        return [
+            'state'  => 'no-client',
+            'unit'   => null,
+            'ready'  => false,
+            'message' => 'No MySQL/MariaDB client is installed. Install MariaDB from Install Apps, then reload this page.',
+        ];
+    }
+    // mariadb and mysql ship mutually exclusive units; whichever is loaded wins.
+    // A running unit is proof enough on its own. For "installed but stopped" we
+    // additionally require a server binary, because service_status() cannot
+    // tell a stopped unit from a missing one when systemctl is unavailable
+    // (containers, non-systemd hosts) and would report absent servers stopped.
+    $serverInstalled = has_cmd('mysqld') || has_cmd('mariadbd');
+    $unit = null;
+    $state = 'absent';
+    foreach (['mariadb', 'mysql'] as $candidate) {
+        $status = service_status($candidate);
+        if ($status === 'active') {
+            $unit = $candidate;
+            $state = 'ready';
+            break;
+        }
+        if ($unit === null && $serverInstalled && $status !== 'not-installed' && $status !== 'unknown') {
+            $unit = $candidate;
+            $state = 'stopped';
+        }
+    }
+    if ($unit === null && $serverInstalled) {
+        // Present on disk but systemd knows nothing about it.
+        $unit = 'mariadb';
+        $state = 'stopped';
+    }
+    if ($unit === null) {
+        return [
+            'state'  => 'absent',
+            'unit'   => null,
+            'ready'  => false,
+            'message' => 'The MySQL/MariaDB client is present but no database server is installed on this machine. '
+                       . 'Install MariaDB from Install Apps, then reload this page.',
+        ];
+    }
+    if ($state !== 'ready') {
+        return [
+            'state'  => 'stopped',
+            'unit'   => $unit,
+            'ready'  => false,
+            'message' => 'The ' . $unit . ' service is installed but not running, so the panel cannot reach the '
+                       . 'database socket. Start it from Services, then reload this page.',
+        ];
+    }
+    return ['state' => 'ready', 'unit' => $unit, 'ready' => true, 'message' => ''];
+}
+
+/**
+ * Turn a raw mysql client failure into something a panel user can act on.
+ * Connection errors are reported by the *client*, so they surface as ordinary
+ * command output rather than a helper/sudo problem.
+ */
+function db_error(string $out, int $code): string
+{
+    $raw = trim($out);
+    $connectionFailure = stripos($raw, 'ERROR 2002') !== false
+        || stripos($raw, 'ERROR 2003') !== false
+        || stripos($raw, "Can't connect to local") !== false
+        || stripos($raw, "Can't connect to MySQL server") !== false;
+    if ($connectionFailure) {
+        $status = db_server_status();
+        // Fall back to the generic phrasing only when the unit looks healthy —
+        // that combination means the socket path or bind address is wrong.
+        return $status['ready']
+            ? 'Could not connect to the database server even though ' . ($status['unit'] ?? 'it')
+              . ' is running. Check its socket path and bind-address, then retry. Server said: ' . $raw
+            : $status['message'];
+    }
+    if (stripos($raw, 'ERROR 1045') !== false || stripos($raw, 'Access denied') !== false) {
+        return 'The database server refused the panel\'s root socket login. '
+             . 'Confirm unix_socket authentication is enabled for root, then retry.';
+    }
+    return sudo_error($out, $code);
+}
+
 /** Strict identifier whitelist (db / user names). */
 function db_ident_ok(string $s): bool
 {
@@ -52,7 +149,7 @@ function db_list(): array
         . "GROUP BY s.schema_name,s.default_collation_name;";
     [$c, $o] = db_run($sql);
     if ($c !== 0) {
-        return ['ok' => false, 'error' => sudo_error($o, $c), 'databases' => []];
+        return ['ok' => false, 'error' => db_error($o, $c), 'databases' => []];
     }
     $databases = [];
     foreach (preg_split('/\r?\n/', trim($o)) as $line) {
@@ -170,7 +267,7 @@ function db_users(): array
 {
     [$c, $o] = db_run("SELECT User,Host FROM mysql.user ORDER BY User;");
     if ($c !== 0) {
-        return ['ok' => false, 'error' => sudo_error($o, $c), 'users' => []];
+        return ['ok' => false, 'error' => db_error($o, $c), 'users' => []];
     }
     $users = [];
     foreach (preg_split('/\r?\n/', trim($o)) as $line) {
@@ -194,7 +291,7 @@ function db_create(string $name): array
     }
     [$c, $o] = db_run("CREATE DATABASE `$name`");
     if ($c !== 0) {
-        return ['ok' => false, 'error' => sudo_error($o, $c)];
+        return ['ok' => false, 'error' => db_error($o, $c)];
     }
     audit('db.create', $name);
     return ['ok' => true];
@@ -211,7 +308,7 @@ function db_drop(string $name): array
     }
     [$c, $o] = db_run("DROP DATABASE `$name`");
     if ($c !== 0) {
-        return ['ok' => false, 'error' => sudo_error($o, $c)];
+        return ['ok' => false, 'error' => db_error($o, $c)];
     }
     audit('db.drop', $name);
     $links = db_links();
@@ -242,7 +339,7 @@ function db_create_user(string $user, string $host, string $password, string $gr
     $sql .= " FLUSH PRIVILEGES;";
     [$c, $o] = db_run($sql);
     if ($c !== 0) {
-        return ['ok' => false, 'error' => sudo_error($o, $c)];
+        return ['ok' => false, 'error' => db_error($o, $c)];
     }
     audit('db.user.create', $user . '@' . $host);
     return ['ok' => true];
@@ -259,7 +356,7 @@ function db_drop_user(string $user, string $host): array
     }
     [$c, $o] = db_run("DROP USER '" . $user . "'@'" . $host . "';");
     if ($c !== 0) {
-        return ['ok' => false, 'error' => sudo_error($o, $c)];
+        return ['ok' => false, 'error' => db_error($o, $c)];
     }
     audit('db.user.drop', $user . '@' . $host);
     return ['ok' => true];

@@ -2,7 +2,10 @@
 require_once APP_ROOT . '/lib/mod_db.php';
 require_once APP_ROOT . '/lib/mod_sites.php';
 require_once APP_ROOT . '/lib/mod_pma.php';
-$available = db_available();
+// The page is only usable when the database *server* is reachable, not merely
+// when the client binary exists — otherwise every action fails at the socket.
+$dbStatus = db_server_status();
+$available = $dbStatus['ready'];
 $sites = sites_list();
 $pmaInstalled = pma_installed();
 $selectedWebsite = (string) ($_GET['website'] ?? '');
@@ -21,10 +24,25 @@ $selectedWebsite = (string) ($_GET['website'] ?? '');
 </div>
 
 <?php if (!$available): ?>
+  <?php
+  $dbHeadline = [
+      'no-client' => 'MySQL/MariaDB client not found',
+      'absent'    => 'No database server installed',
+      'stopped'   => 'Database server is not running',
+  ][$dbStatus['state']] ?? 'Database server unavailable';
+  ?>
   <div class="card"><div class="empty-state">
     <div class="es-icon"><i data-lucide="database"></i></div>
-    <div style="font-weight:600;color:var(--text-secondary)">MySQL/MariaDB client not found</div>
-    <div style="font-size:13px;margin-top:4px">Install MariaDB or MySQL, then reload this page.</div>
+    <div style="font-weight:600;color:var(--text-secondary)"><?= e($dbHeadline) ?></div>
+    <div style="font-size:13px;margin-top:4px;max-width:60ch;margin-left:auto;margin-right:auto"><?= e($dbStatus['message']) ?></div>
+    <div style="margin-top:14px;display:flex;gap:8px;justify-content:center;flex-wrap:wrap">
+      <?php if ($dbStatus['state'] === 'stopped'): ?>
+        <a class="btn btn-primary btn-sm" href="<?= e(url('services')) ?>"><i data-lucide="server-cog"></i>Open Services</a>
+      <?php else: ?>
+        <a class="btn btn-primary btn-sm" href="<?= e(url('apps')) ?>"><i data-lucide="package-plus"></i>Install MariaDB</a>
+      <?php endif; ?>
+      <a class="btn btn-secondary btn-sm" href="<?= e(url('databases')) ?>"><i data-lucide="refresh-cw"></i>Re-check</a>
+    </div>
   </div></div>
 <?php else: ?>
   <div class="card hidden" id="dbCreateCard" style="margin-bottom:16px">

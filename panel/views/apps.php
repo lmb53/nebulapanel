@@ -89,6 +89,17 @@ document.addEventListener('DOMContentLoaded', () => {
   const logCard = document.getElementById('appLogCard');
   const logEl = document.getElementById('appLog');
   function resetLog() { logCard.classList.remove('hidden'); logEl.textContent = ''; }
+  // This page is server-rendered: installed badges, the PHP version list and the
+  // sidebar's service entries are all decided at render time. After a package
+  // changes, only a reload reflects it — carry the output across so the log
+  // still "remains here" as promised.
+  const LOG_KEY = 'nebula.appLog';
+  const carried = sessionStorage.getItem(LOG_KEY);
+  if (carried) { sessionStorage.removeItem(LOG_KEY); appendLog(carried); }
+  function reloadWithLog() {
+    try { sessionStorage.setItem(LOG_KEY, logEl.textContent); } catch (e) { /* private mode */ }
+    setTimeout(() => location.reload(), 900);
+  }
   function appendLog(text) {
     if (!text) return;
     logCard.classList.remove('hidden');
@@ -107,7 +118,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }); }
     catch (e) { toast('Request failed', 'error'); btn.disabled = false; btn.innerHTML = orig; return; }
     if (res.output && !logEl.textContent.trim()) appendLog(res.output + '\n');
-    if (res.ok) { toast('Done — output will remain here', 'success'); btn.innerHTML = '<i data-lucide="check"></i>Done'; if (window.lucide) lucide.createIcons(); }
+    if (res.ok) { toast('Done — refreshing status', 'success'); btn.innerHTML = '<i data-lucide="check"></i>Done'; if (window.lucide) lucide.createIcons(); reloadWithLog(); }
     else { toast(res.error || 'Failed', 'error'); if (res.error && !logEl.textContent.includes(String(res.error).trim())) appendLog('\n' + res.error + '\n'); btn.disabled = false; btn.innerHTML = orig; }
   }
 

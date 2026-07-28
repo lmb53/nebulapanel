@@ -32,6 +32,20 @@ an address. Nebula deliberately does not infer a public address from
 - Compose application ports must bind to loopback. Pi-hole is omitted because it
   conflicts with the panel-managed BIND service.
 
+### Reaching a Compose app
+
+App Store stacks publish on `127.0.0.1` only, so `http://<server-ip>:<port>`
+never responds — nothing listens on the public interface, and opening the
+firewall does not change that. Publish the stack instead:
+
+1. Point a hostname's DNS at this server.
+2. Docker → Stacks → **Publish on a hostname**, choosing the container port.
+   This writes an Nginx vhost proxying the name to the loopback port
+   (websocket upgrade included, which Uptime Kuma, code-server and n8n need).
+3. Add HTTPS from Websites → SSL for that hostname.
+
+Removing a stack also removes the proxy vhosts it owns.
+
 ## Data
 
 Panel state lives in the installed panel's `data/` directory and is private to
