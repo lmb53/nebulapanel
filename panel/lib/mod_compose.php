@@ -402,6 +402,111 @@ function compose_proxy_file(): string
     return DATA_DIR . '/proxies.json';
 }
 
+function compose_settings_file(): string
+{
+    return DATA_DIR . '/compose-settings.json';
+}
+
+/**
+ * Base domain new stacks are published under automatically. Empty disables
+ * auto-publishing, in which case stacks stay loopback-only until a hostname is
+ * added by hand.
+ */
+function compose_proxy_domain(): string
+{
+    $raw = json_decode((string) @file_get_contents(compose_settings_file()), true);
+    $domain = is_array($raw) ? (string) ($raw['proxy_domain'] ?? '') : '';
+    return domain_name_ok($domain) ? $domain : '';
+}
+
+function compose_set_proxy_domain(string $domain): array
+{
+    $domain = strtolower(rtrim(trim($domain), '.'));
+    if ($domain !== '' && !domain_name_ok($domain)) {
+        return ['ok' => false, 'error' => 'Enter a valid base domain such as apps.example.com, or clear the field to disable auto-publishing.'];
+    }
+    if (!write_json_file(compose_settings_file(), ['proxy_domain' => $domain], 0600)) {
+        return ['ok' => false, 'error' => 'Could not save the compose settings.'];
+    }
+    audit('compose.proxy-domain', $domain !== '' ? $domain : '(disabled)');
+    return ['ok' => true, 'proxy_domain' => $domain];
+}
+
+/**
+ * Ports worth putting an HTTP reverse proxy in front of.
+ *
+ * An Nginx vhost only speaks HTTP, so auto-publishing every published port
+ * would put a broken web front end on things like Gitea's SSH port or a
+ * database. Manual publishing still allows any port — that is the operator's
+ * call — but automatic publishing sticks to ports that plausibly serve HTTP.
+ */
+function compose_http_ports(string $stack): array
+{
+    $nonHttp = [22, 2222, 25, 53, 110, 143, 465, 587, 993, 995,
+                1433, 3306, 5432, 5433, 6379, 9000, 11211, 27017];
+    return array_values(array_filter(
+        compose_stack_ports($stack),
+        static fn(int $port): bool => !in_array($port, $nonHttp, true)
+    ));
+}
+
+/**
+ * Hostname a stack's port is auto-published under. The first (lowest HTTP) port
+ * owns the bare <stack>.<base> name; any additional port is suffixed so a
+ * multi-port stack cannot collide with itself. Underscores are legal in stack
+ * names but not in hostnames.
+ */
+function compose_proxy_hostname(string $stack, int $port, bool $primary): string
+{
+    $label = str_replace('_', '-', $stack);
+    if (!$primary) { $label .= '-' . $port; }
+    return $label . '.' . compose_proxy_domain();
+}
+
+/** Proxies for this stack whose target port the compose file no longer publishes. */
+function compose_stale_proxies(string $stack): array
+{
+    $ports = compose_stack_ports($stack);
+    return array_values(array_filter(
+        compose_stack_proxies($stack),
+        static fn(array $proxy): bool => !in_array((int) $proxy['port'], $ports, true)
+    ));
+}
+
+/**
+ * Publish every port a stack exposes, and drop proxies whose port it no longer
+ * exposes. Never fails the caller: a stack that deployed fine must not be
+ * reported as broken because DNS or Nginx was not ready for the proxy.
+ */
+function compose_autoproxy(string $stack): array
+{
+    $result = ['created' => [], 'removed' => [], 'errors' => []];
+    if (!compose_name_ok($stack)) { return $result; }
+
+    // Drop proxies pointing at ports the stack no longer publishes, whether or
+    // not auto-publishing is still enabled — those vhosts are dead either way.
+    foreach (compose_stale_proxies($stack) as $stale) {
+        $removed = compose_proxy_remove((string) $stale['domain']);
+        if (!empty($removed['ok'])) { $result['removed'][] = $stale['domain']; }
+        else { $result['errors'][] = $stale['domain'] . ': ' . (string) ($removed['error'] ?? 'could not remove'); }
+    }
+
+    $httpPorts = compose_http_ports($stack);
+    if (compose_proxy_domain() === '' || !$httpPorts) { return $result; }
+    $claimed = [];
+    foreach (compose_stack_proxies($stack) as $existing) {
+        $claimed[(int) $existing['port']] = true;
+    }
+    foreach ($httpPorts as $index => $port) {
+        if (isset($claimed[$port])) { continue; }
+        $host = compose_proxy_hostname($stack, $port, $index === 0);
+        $created = compose_proxy_create($host, $stack, $port);
+        if (!empty($created['ok'])) { $result['created'][] = $host; }
+        else { $result['errors'][] = $host . ': ' . (string) ($created['error'] ?? 'failed'); }
+    }
+    return $result;
+}
+
 /** domain => ['stack' => name, 'port' => int, 'created' => ISO8601] */
 function compose_proxies(): array
 {

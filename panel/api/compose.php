@@ -2,6 +2,30 @@
 /** api/compose — GET stacks + app catalog; POST compose lifecycle actions. */
 require APP_ROOT . '/lib/mod_compose.php';
 
+/**
+ * Auto-publish a stack's ports and describe the outcome in the install log.
+ * Proxy problems are reported but never turn a successful deploy into a
+ * failure — the containers are up either way.
+ */
+function compose_report_autoproxy(string $stack, ?callable $emit): array
+{
+    $proxy = compose_autoproxy($stack);
+    if (!$emit) { return $proxy; }
+    foreach ($proxy['removed'] as $domain) {
+        $emit("Removed stale hostname $domain\n", 'stdout');
+    }
+    foreach ($proxy['created'] as $domain) {
+        $emit("Published on http://$domain/ (point this name's DNS at this server)\n", 'stdout');
+    }
+    foreach ($proxy['errors'] as $error) {
+        $emit("Could not publish $error\n", 'stderr');
+    }
+    if (!$proxy['created'] && !$proxy['errors'] && compose_proxy_domain() === '' && compose_stack_ports($stack)) {
+        $emit("Ports bind to loopback only. Set a base domain in Docker \u2192 Stacks to publish stacks automatically.\n", 'stdout');
+    }
+    return $proxy;
+}
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     require_post();
     csrf_check();
@@ -49,6 +73,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if (empty($created['ok'])) { $res = $created; break; }
             $res = compose_action($created['name'], 'up', $emit);
             $res['name'] = $created['name'];
+            if (!empty($res['ok'])) { $res['proxy'] = compose_report_autoproxy($created['name'], $emit); }
             break;
         case 'up':
         case 'down':
@@ -57,6 +82,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         case 'restart':
         case 'pull':
             $res = compose_action($name, $action, $emit);
+            // Deploying is also when a hand-edited stack's ports change, so
+            // reconcile its proxies against what it now publishes.
+            if ($action === 'up' && !empty($res['ok'])) { $res['proxy'] = compose_report_autoproxy($name, $emit); }
             break;
         case 'remove':
             $res = compose_remove($name, (bool) ($body['volumes'] ?? false), $emit);
@@ -66,6 +94,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             break;
         case 'proxy-remove':
             $res = compose_proxy_remove((string) ($body['domain'] ?? ''));
+            break;
+        case 'proxy-domain':
+            $res = compose_set_proxy_domain((string) ($body['domain'] ?? ''));
             break;
         default:
             $res = ['ok' => false, 'error' => 'Unknown action.'];
@@ -87,5 +118,6 @@ json_out([
     'reason'      => $avail['reason'],
     'bin'         => $avail['bin'],
     'stacks'      => $avail['available'] ? compose_list() : [],
+    'proxyDomain' => compose_proxy_domain(),
     'catalog'     => compose_catalog_list(),
 ]);

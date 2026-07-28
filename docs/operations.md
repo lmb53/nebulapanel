@@ -36,15 +36,28 @@ an address. Nebula deliberately does not infer a public address from
 
 App Store stacks publish on `127.0.0.1` only, so `http://<server-ip>:<port>`
 never responds — nothing listens on the public interface, and opening the
-firewall does not change that. Publish the stack instead:
+firewall does not change that. Reach them through a proxy vhost instead.
 
-1. Point a hostname's DNS at this server.
-2. Docker → Stacks → **Publish on a hostname**, choosing the container port.
-   This writes an Nginx vhost proxying the name to the loopback port
-   (websocket upgrade included, which Uptime Kuma, code-server and n8n need).
-3. Add HTTPS from Websites → SSL for that hostname.
+**Automatic.** Set a base domain in Docker → Stacks → *Auto-publish under*
+(for example `apps.example.com`) and point a wildcard `*.apps.example.com`
+at this server. Every stack deployed afterwards is published on deploy:
 
-Removing a stack also removes the proxy vhosts it owns.
+- The stack's lowest HTTP port gets `<stack>.<base>`; further HTTP ports get
+  `<stack>-<port>.<base>`. Underscores in a stack name become dashes.
+- Known non-HTTP ports (SSH, SMTP, MySQL, PostgreSQL, Redis, Mongo …) are
+  skipped — an HTTP vhost in front of them would not work. Gitea therefore
+  publishes 3000 and leaves 2222 alone.
+- Proxies are reconciled on every deploy: a port removed from the compose
+  file takes its vhost with it, and removing the stack removes all of them.
+- A proxy that cannot be created never fails the deploy; the reason is
+  printed in the install output.
+
+**Manual.** Leave the base domain empty (or publish an extra name) with
+Docker → Stacks → **Publish on a hostname**, choosing any container port.
+Manual publishing is not restricted to HTTP ports.
+
+Either way the vhost includes the websocket upgrade map that Uptime Kuma,
+code-server and n8n need. Add HTTPS from Websites → SSL for the hostname.
 
 ## Data
 

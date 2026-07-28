@@ -395,6 +395,56 @@ $check(empty(compose_proxy_create('app.example.com', 'no-such-stack', 8080)['ok'
 $check(empty(compose_proxy_create('not a hostname', 'whatever', 8080)['ok']),
     'a proxy accepts an invalid hostname');
 
+// Auto-publishing: a stack's ports become proxy vhosts on deploy, and stop
+// being them when the stack no longer publishes them (or is removed).
+$check(function_exists('compose_autoproxy') && function_exists('compose_http_ports')
+    && function_exists('compose_proxy_domain'), 'automatic stack publishing is missing');
+$stackDir = DATA_DIR . '/stacks/smoke-gitea';
+@mkdir($stackDir, 0700, true);
+file_put_contents($stackDir . '/docker-compose.yml',
+    "services:\n  gitea:\n    image: gitea/gitea:1.22.6\n    ports:\n      - \"127.0.0.1:3000:3000\"\n      - \"127.0.0.1:2222:22\"\n");
+$check(compose_stack_ports('smoke-gitea') === [2222, 3000], 'loopback port parsing failed');
+// An HTTP vhost in front of Gitea's SSH port would be broken, so it is skipped
+// and the bare hostname goes to the web port rather than the numerically lowest.
+$check(compose_http_ports('smoke-gitea') === [3000], 'auto-publishing would proxy a non-HTTP port');
+$check(compose_set_proxy_domain('')['ok'] && compose_proxy_domain() === '',
+    'clearing the auto-publish domain failed');
+$check(empty(compose_set_proxy_domain('not a domain')['ok']),
+    'the auto-publish base domain accepts an invalid value');
+$check(compose_autoproxy('smoke-gitea') === ['created' => [], 'removed' => [], 'errors' => []],
+    'stacks are auto-published even with auto-publishing disabled');
+$check(!empty(compose_set_proxy_domain('apps.example.test')['ok']), 'saving the auto-publish domain failed');
+$check(compose_proxy_hostname('smoke-gitea', 3000, true) === 'smoke-gitea.apps.example.test'
+    && compose_proxy_hostname('smoke-gitea', 2222, false) === 'smoke-gitea-2222.apps.example.test'
+    && compose_proxy_hostname('my_stack', 80, true) === 'my-stack.apps.example.test',
+    'auto-published hostname derivation is wrong (underscores are illegal in hostnames)');
+// Ports that vanish from the compose file must not leave a vhost behind.
+write_json_file(compose_proxy_file(), [
+    'stale.apps.example.test' => ['stack' => 'smoke-gitea', 'port' => 9999, 'created' => date('c')],
+], 0600);
+$stale = compose_stale_proxies('smoke-gitea');
+$check(count($stale) === 1 && $stale[0]['domain'] === 'stale.apps.example.test',
+    'a proxy for a port the stack no longer publishes is not detected as stale');
+// Removal needs the privileged helper; without it the vhost record is kept and
+// the failure reported rather than silently dropped.
+$pruned = compose_autoproxy('smoke-gitea');
+$check($pruned['errors'] !== [] || $pruned['removed'] === ['stale.apps.example.test'],
+    'a stale proxy is neither removed nor reported');
+compose_set_proxy_domain('');
+@unlink(compose_proxy_file());
+@unlink(compose_settings_file());
+@unlink($stackDir . '/docker-compose.yml');
+@rmdir($stackDir);
+@rmdir(DATA_DIR . '/stacks');
+$composeApi = (string) file_get_contents(APP_ROOT . '/api/compose.php');
+$check(strpos($composeApi, 'compose_report_autoproxy') !== false
+    && strpos($composeApi, "case 'proxy-domain':") !== false,
+    'the compose API does not auto-publish stacks after a deploy');
+$check(preg_match('/\$action === \'up\' && !empty\(\$res\[\'ok\'\]\)/', $composeApi) === 1,
+    'deploying a stack does not reconcile its proxies');
+$check(strpos($dockerView, 'dkProxyDomain') !== false && stripos($dockerView, 'Auto-publish under') !== false,
+    'there is no UI to set the auto-publish base domain');
+
 // ---------------------------------------------------------------------------
 // Databases: the page needs a reachable *server*, not just the mysql client.
 // ---------------------------------------------------------------------------
