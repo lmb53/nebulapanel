@@ -47,10 +47,13 @@ function theme_boot_script(): string
         . '{document.documentElement.classList.add("light");}}catch(e){}})();</script>';
 }
 
-/** HTML-escape. */
+/**
+ * HTML-escape. Invalid UTF-8 (e.g. a Latin-1 file name) is substituted rather
+ * than collapsing the whole string to '' as plain ENT_QUOTES would.
+ */
 function e($s): string
 {
-    return htmlspecialchars((string) $s, ENT_QUOTES, 'UTF-8');
+    return htmlspecialchars((string) $s, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
 }
 
 /** Validate an ASCII DNS name label-by-label (IDNA must be supplied as A-labels). */
@@ -244,6 +247,28 @@ function attachment_header(string $filename): string
     return 'attachment; filename="' . $fallback . '"; filename*=UTF-8\'\'' . rawurlencode($filename);
 }
 
+/**
+ * Stream a file as an attachment. The session lock is released first: a
+ * multi-gigabyte download would otherwise block every other request from the
+ * same browser session until the transfer finished.
+ */
+function send_download(string $abs, string $type): void
+{
+    if (session_status() === PHP_SESSION_ACTIVE) {
+        session_write_close();
+    }
+    @set_time_limit(0);
+    while (ob_get_level() > 0) { @ob_end_clean(); }
+    clearstatcache(true, $abs);
+    header('Content-Type: ' . $type);
+    header('Content-Disposition: ' . attachment_header(basename($abs)));
+    $size = @filesize($abs);
+    if ($size !== false) {
+        header('Content-Length: ' . $size);
+    }
+    readfile($abs);
+}
+
 /** Small shared cache for expensive read-only system snapshots. */
 function cache_remember(string $key, int $ttl, callable $producer)
 {
@@ -272,18 +297,50 @@ function cache_remember(string $key, int $ttl, callable $producer)
     }
 }
 
-/** Read a JSON request body. API endpoints intentionally reject form bodies. */
-function read_json_body(): array
+/** Parse a php.ini size value such as "50M" into bytes (0 when unset). */
+function ini_size_bytes(string $value): int
+{
+    $value = trim($value);
+    if ($value === '' || !preg_match('/^(\d+)\s*([KMG]?)/i', $value, $m)) {
+        return 0;
+    }
+    $bytes = (int) $m[1];
+    switch (strtoupper($m[2])) {
+        case 'G': $bytes *= 1024;
+        // no break
+        case 'M': $bytes *= 1024;
+        // no break
+        case 'K': $bytes *= 1024;
+    }
+    return $bytes;
+}
+
+/**
+ * Read a JSON request body. API endpoints intentionally reject form bodies.
+ * The cap is enforced on the bytes actually read, not only on the declared
+ * Content-Length, so chunked requests cannot bypass it.
+ */
+function read_json_body(int $maxBytes = 1048576): array
 {
     $type = strtolower(trim(explode(';', (string) ($_SERVER['CONTENT_TYPE'] ?? ''))[0]));
     if ($type !== 'application/json') {
         json_out(['ok' => false, 'error' => 'Content-Type must be application/json.'], 415);
     }
+    $tooLarge = 'Request body is too large (limit ' . human_bytes($maxBytes) . ').';
     $length = (int) ($_SERVER['CONTENT_LENGTH'] ?? 0);
-    if ($length > 1024 * 1024) {
-        json_out(['ok' => false, 'error' => 'Request body is too large.'], 413);
+    if ($length > $maxBytes) {
+        json_out(['ok' => false, 'error' => $tooLarge], 413);
     }
-    $raw = (string) file_get_contents('php://input');
+    // PHP discards a body larger than post_max_size before this code runs,
+    // which would otherwise surface as a baffling "malformed JSON" error.
+    $postMax = ini_size_bytes((string) ini_get('post_max_size'));
+    if ($postMax > 0 && $length > $postMax) {
+        json_out(['ok' => false, 'error' => 'Request body exceeds PHP post_max_size (' . ini_get('post_max_size') . ').'], 413);
+    }
+    $raw = (string) file_get_contents('php://input', false, null, 0, $maxBytes + 1);
+    if (strlen($raw) > $maxBytes) {
+        json_out(['ok' => false, 'error' => $tooLarge], 413);
+    }
     try {
         $j = json_decode($raw, true, 32, JSON_THROW_ON_ERROR);
     } catch (JsonException $e) {
@@ -301,6 +358,39 @@ function require_post(): void
     if (($_SERVER['REQUEST_METHOD'] ?? 'GET') !== 'POST') {
         json_out(['ok' => false, 'error' => 'POST required'], 405);
     }
+}
+
+const AUDIT_LOG_MAX_BYTES = 20 * 1024 * 1024;
+
+/**
+ * Return the last $lines lines of a (possibly large) text file without
+ * reading the whole file into memory.
+ */
+function file_tail(string $path, int $lines, int $maxBytes = 4194304): string
+{
+    $lines = max(1, $lines);
+    $handle = @fopen($path, 'rb');
+    if ($handle === false) {
+        return '';
+    }
+    $size = (int) (@filesize($path) ?: 0);
+    $chunk = 65536;
+    $buffer = '';
+    $pos = $size;
+    while ($pos > 0 && substr_count($buffer, "\n") <= $lines && strlen($buffer) < $maxBytes) {
+        $read = min($chunk, $pos);
+        $pos -= $read;
+        fseek($handle, $pos);
+        $buffer = (string) fread($handle, $read) . $buffer;
+    }
+    fclose($handle);
+    $rows = preg_split('/\r?\n/', rtrim($buffer, "\r\n")) ?: [];
+    if ($pos > 0 && count($rows) > $lines) {
+        // The first row may be a partial line cut by the seek position.
+        array_shift($rows);
+    }
+    $rows = array_values(array_filter($rows, static fn($row) => $row !== ''));
+    return implode("\n", array_slice($rows, -$lines));
 }
 
 /** Append an entry to the audit log. */
@@ -329,7 +419,23 @@ function audit(string $action, string $detail = ''): void
         'detail' => $detail,
         'request_id' => request_id(),
     ];
-    @file_put_contents(DATA_DIR . '/audit.log', json_encode($event, JSON_UNESCAPED_SLASHES) . "\n", FILE_APPEND | LOCK_EX);
+    $log = DATA_DIR . '/audit.log';
+    // Keep one rotated generation so the log cannot grow without bound. A
+    // rename is atomic, so concurrent writers land in one file or the other.
+    $size = @filesize($log);
+    if ($size !== false && $size > AUDIT_LOG_MAX_BYTES) {
+        $lock = @fopen($log . '.lock', 'c');
+        if ($lock !== false && @flock($lock, LOCK_EX)) {
+            // Re-check under the lock: another request may have rotated it.
+            clearstatcache(true, $log);
+            if ((int) @filesize($log) > AUDIT_LOG_MAX_BYTES) {
+                @rename($log, $log . '.1');
+            }
+            @flock($lock, LOCK_UN);
+        }
+        if (is_resource($lock)) { fclose($lock); }
+    }
+    @file_put_contents($log, json_encode($event, JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE) . "\n", FILE_APPEND | LOCK_EX);
     if (function_exists('openlog') && function_exists('syslog')) {
         openlog('nebula-panel', LOG_PID, LOG_AUTHPRIV);
         syslog(LOG_NOTICE, json_encode($event, JSON_UNESCAPED_SLASHES));

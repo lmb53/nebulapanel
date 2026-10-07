@@ -110,6 +110,9 @@ function f2b_action(string $op, string $jail, string $ip): array
     if (!filter_var($ip, FILTER_VALIDATE_IP)) {
         return ['ok' => false, 'error' => 'Enter a valid IP address.'];
     }
+    if ($op === 'ban' && @inet_pton($ip) === @inet_pton(client_ip())) {
+        return ['ok' => false, 'error' => 'Refusing to ban ' . $ip . ': it is the address you are connected from, so the ban would lock you out.'];
+    }
     if (!helper_available()) {
         return ['ok' => false, 'error' => 'Privileged helper not installed.'];
     }

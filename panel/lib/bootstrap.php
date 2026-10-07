@@ -6,6 +6,8 @@
 
 define('APP_ROOT', dirname(__DIR__));
 define('DATA_DIR', APP_ROOT . '/data');
+// Seconds a rotated-away session ID stays valid for in-flight requests.
+const SESSION_ROTATION_GRACE = 60;
 
 $config = require APP_ROOT . '/config.php';
 
@@ -95,14 +97,27 @@ if (!empty($_SESSION['uid'])) {
     $timeout = (int) ($config['session_timeout'] ?? 1800);
     $absolute = max($timeout, (int) ($config['session_absolute_timeout'] ?? 43200));
     $created = (int) ($_SESSION['created_at'] ?? time());
-    if ((isset($_SESSION['last_seen']) && (time() - $_SESSION['last_seen']) > $timeout)
+    $obsoleteAt = (int) ($_SESSION['obsolete_at'] ?? 0);
+    if ($obsoleteAt > 0 && time() - $obsoleteAt > SESSION_ROTATION_GRACE) {
+        // A rotated-away ID used after its grace window. Drop it server-side
+        // only: logout_user() would also expire the browser cookie, which by
+        // now holds the replacement ID and must keep working.
+        $_SESSION = [];
+        session_destroy();
+    } elseif ((isset($_SESSION['last_seen']) && (time() - $_SESSION['last_seen']) > $timeout)
         || time() - $created > $absolute) {
         logout_user();
     } else {
         $_SESSION['created_at'] = $created;
         $rotate = max(300, (int) ($config['session_rotate_interval'] ?? 900));
-        if (time() - (int) ($_SESSION['rotated_at'] ?? $created) >= $rotate) {
-            session_regenerate_id(true);
+        if ($obsoleteAt === 0 && time() - (int) ($_SESSION['rotated_at'] ?? $created) >= $rotate) {
+            // Requests issued concurrently with this one (metrics polling,
+            // page actions) still carry the old cookie. Deleting the old
+            // session outright would log them out, so keep it readable for a
+            // short grace window, marked obsolete, instead.
+            $_SESSION['obsolete_at'] = time();
+            session_regenerate_id(false);
+            unset($_SESSION['obsolete_at']);
             $_SESSION['rotated_at'] = time();
         }
         $_SESSION['last_seen'] = time();

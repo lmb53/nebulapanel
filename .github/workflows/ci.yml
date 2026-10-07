@@ -14,4 +14,6 @@ jobs:
       - name: Shell syntax
         run: bash -n install.sh panel/bin/nebula-helper
       - name: Smoke and security regressions
-        run: php tests/smoke.php && php tests/security.php && bash tests/helper-contracts.sh
+        run: php tests/smoke.php && php tests/security.php && php tests/robustness.php && bash tests/helper-contracts.sh
+      - name: End-to-end session lifecycle
+        run: php tests/session-lifecycle.php
