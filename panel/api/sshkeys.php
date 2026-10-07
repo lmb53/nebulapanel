@@ -4,7 +4,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     require_post(); csrf_check(); $body = read_json_body();
     $action = (string) ($body['action'] ?? '');
     if ($action === 'add') { $res = sshkey_add((string) ($body['user'] ?? ''), (string) ($body['key'] ?? '')); }
-    elseif ($action === 'delete') { $res = sshkey_delete((string) ($body['user'] ?? ''), (int) ($body['number'] ?? 0)); }
+    elseif ($action === 'delete') { $res = sshkey_delete((string) ($body['user'] ?? ''), (int) ($body['number'] ?? 0), (string) ($body['expect'] ?? '')); }
     else { $res = ['ok' => false, 'error' => 'Unknown action.']; }
     json_out($res, $res['ok'] ? 200 : 400);
 }

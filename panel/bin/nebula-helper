@@ -139,7 +139,11 @@ mail_cert_dir() {
   done
   return 1
 }
-valid_component(){ [[ "$1" != "." && "$1" != ".." && "$1" =~ ^[A-Za-z0-9._\ -]{1,255}$ ]] || die "invalid path component"; }
+# Keep in sync with fm_valid_name() in lib/files.php.
+valid_component(){
+  local re='^[A-Za-z0-9._ ()+,@=~-]{1,255}$'
+  [[ "$1" != "." && "$1" != ".." && "$1" =~ $re ]] || die "invalid path component"
+}
 valid_docker_id(){ [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,127}$ ]] || die "invalid Docker identifier"; }
 valid_docker_name(){ [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$ ]] || die "invalid Docker name"; }
 valid_pinned_image() {
@@ -245,6 +249,28 @@ fm_confined_path() {
   [[ "$target" == "$root" || "$target" == "$root"/* ]] || die "path is outside file manager root"
   panel_root="$(realpath "$(head -n 1 "$PANEL_ROOT_FILE" 2>/dev/null)" 2>/dev/null || true)"
   [[ -z "$panel_root" || ( "$target" != "$panel_root" && "$target" != "$panel_root"/* ) ]] || die "panel-private path is not allowed"
+  # Acting on a parent of the panel (archive, move, chmod) would reach its
+  # private data too. Only possible when FM_ROOT contains the installation.
+  [[ -z "$panel_root" || "$panel_root" != "$target"/* ]] || die "path contains the panel installation"
+  printf '%s\n' "$target"
+}
+
+# Resolve an existing entry WITHOUT following a final symlink: deleting a
+# link must remove the link, never the file or directory it points to.
+fm_confined_entry() {
+  local requested="$1" root parent base target panel_root
+  [[ -r "$FM_ROOT_FILE" ]] || die "file manager root is not configured; re-run install.sh"
+  root="$(realpath "$(head -n 1 "$FM_ROOT_FILE")" 2>/dev/null || true)"
+  parent="$(realpath "$(dirname "$requested")" 2>/dev/null || true)"
+  base="$(basename "$requested")"
+  [[ -n "$root" && -n "$parent" ]] || die "path not found"
+  [[ "$base" != "." && "$base" != ".." && "$base" != "/" && -n "$base" ]] || die "invalid path component"
+  [[ "$parent" == "$root" || "$parent" == "$root"/* ]] || die "path is outside file manager root"
+  target="$parent/$base"
+  [[ -e "$target" || -L "$target" ]] || die "path not found"
+  panel_root="$(realpath "$(head -n 1 "$PANEL_ROOT_FILE" 2>/dev/null)" 2>/dev/null || true)"
+  [[ -z "$panel_root" || ( "$target" != "$panel_root" && "$target" != "$panel_root"/* ) ]] || die "panel-private path is not allowed"
+  [[ -L "$target" || -z "$panel_root" || "$panel_root" != "$target"/* ]] || die "path contains the panel installation"
   printf '%s\n' "$target"
 }
 
@@ -731,13 +757,14 @@ case "$CMD" in
 
   # file-delete <path> — move an entry to root-owned recovery trash.
   file-delete)
-    TARGET="$(fm_confined_path "${1:-}")"
+    TARGET="$(fm_confined_entry "${1:-}")"
     ROOT="$(realpath "$(head -n 1 "$FM_ROOT_FILE")")"
     [[ -n "$ROOT" && "$TARGET" != "$ROOT" ]] || die "refusing to delete the file manager root"
     install -d -m 0700 -o root -g root "$FILE_TRASH"
     TRASH_NAME="$(date +%Y%m%d-%H%M%S)-$(basename "$TARGET")-$(od -An -N4 -tx1 /dev/urandom | tr -d '[:space:]')"
     mv -- "$TARGET" "$FILE_TRASH/$TRASH_NAME"
-    chown -R root:root "$FILE_TRASH/$TRASH_NAME"
+    # -h: re-own a trashed symlink itself, never whatever it points to.
+    chown -hR root:root "$FILE_TRASH/$TRASH_NAME"
     echo "archived=$FILE_TRASH/$TRASH_NAME"
     ;;
 
@@ -1087,9 +1114,13 @@ EOF
     valid_domain "$DOMAIN"
     [[ "$PORT" =~ ^[0-9]{1,5}$ ]] && (( PORT >= 1 && PORT <= 65535 )) || die "invalid port"
     [[ -d "$NGINX_AV" ]] || die "nginx is not installed"
+    PROXY_BACKUP=""
     if [[ -e "$NGINX_AV/$DOMAIN" ]]; then
       grep -q '^# Managed by Nebula Panel. Reverse proxy' "$NGINX_AV/$DOMAIN" 2>/dev/null \
         || die "$DOMAIN already has an nginx configuration that this panel did not create as a proxy"
+      # Keep the working proxy so a rejected rewrite can be rolled back.
+      PROXY_BACKUP="$(mktemp)"; trap 'rm -f "$PROXY_BACKUP"' EXIT
+      cp -a "$NGINX_AV/$DOMAIN" "$PROXY_BACKUP"
     fi
     cat > "$NGINX_AV/$DOMAIN" <<EOF
 # Managed by Nebula Panel. Reverse proxy -> 127.0.0.1:${PORT}
@@ -1132,8 +1163,11 @@ EOF
     fi
     ln -sfn "$NGINX_AV/$DOMAIN" "$NGINX_EN/$DOMAIN"
     if ! nginx -t >/dev/null 2>&1; then
+      if [[ -n "$PROXY_BACKUP" ]]; then
+        cp -a "$PROXY_BACKUP" "$NGINX_AV/$DOMAIN"
+        die "nginx rejected the generated proxy configuration; the previous proxy was restored"
+      fi
       rm -f "$NGINX_EN/$DOMAIN" "$NGINX_AV/$DOMAIN"
-      nginx -t >/dev/null 2>&1 || true
       die "nginx rejected the generated proxy configuration"
     fi
     systemctl reload nginx || die "nginx reload failed"

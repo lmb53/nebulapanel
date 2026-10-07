@@ -524,6 +524,10 @@ security.limit_extensions = .php
 rlimit_files = 4096
 php_admin_value[session.save_path] = ${DEST}/data/sessions
 php_admin_value[upload_tmp_dir] = ${DEST}/data/tmp
+; File Manager uploads are capped at 50 MB by config.php; leave headroom for
+; multipart framing. Keep in step with client_max_body_size below.
+php_admin_value[upload_max_filesize] = 64M
+php_admin_value[post_max_size] = 72M
 EOF
 cat > "/etc/php/${PHP_VER}/fpm/pool.d/nebula-webapps.conf" <<EOF
 [nebula-webapps]
@@ -605,6 +609,8 @@ ${PANEL_HTTP_REDIRECT}
     server_name ${SERVER_NAME};
     root ${WEBROOT};
     index index.php index.html;
+    # nginx defaults to 1 MB, which rejects most File Manager uploads.
+    client_max_body_size 72m;
 
     # Never serve the panel's private directories.
     location ~ ^/${PANEL_PREFIX}/(api|data|lib|views|bin)/ { deny all; return 404; }

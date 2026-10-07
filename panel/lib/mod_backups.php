@@ -98,17 +98,33 @@ function backup_verify(string $file): array
     if ($abs === null) {
         return ['ok' => false, 'error' => 'Not found.'];
     }
-    [$code, $out, $err] = run_cmd('tar -tzf ' . escapeshellarg($abs), 120);
-    $entries = $out === '' ? 0 : count(preg_split('/\r?\n/', trim($out)));
+    // Inspect the listing as it streams. Buffered output is capped at 2 MB,
+    // so a large archive's later entries would otherwise go unchecked.
+    $entries = 0;
+    $unsafe = false;
+    $pending = '';
+    $inspect = static function (string $entry) use (&$entries, &$unsafe): void {
+        $entry = rtrim($entry, "\r");
+        if ($entry === '') { return; }
+        $entries++;
+        if (str_starts_with($entry, '/') || preg_match('#(^|/)\.\.(/|$)#', $entry)) { $unsafe = true; }
+    };
+    [$code, , $err] = run_cmd_stream('tar -tzf ' . escapeshellarg($abs), static function (string $chunk, string $channel) use (&$pending, $inspect): void {
+        if ($channel !== 'stdout') { return; }
+        $pending .= $chunk;
+        while (($newline = strpos($pending, "\n")) !== false) {
+            $inspect(substr($pending, 0, $newline));
+            $pending = substr($pending, $newline + 1);
+        }
+    }, 300);
+    $inspect($pending);
     audit('backup.verify', basename($abs) . ' (exit ' . $code . ', entries ' . $entries . ')');
     if ($code !== 0) {
-        return ['ok' => false, 'error' => trim($out . ' ' . $err) ?: 'Archive integrity check failed.'];
+        return ['ok' => false, 'error' => trim($err) ?: 'Archive integrity check failed.'];
     }
     if ($entries > 100000) return ['ok'=>false,'error'=>'Archive exceeds the 100,000-entry safety limit.'];
-    foreach (preg_split('/\r?\n/', trim($out)) as $entry) {
-        if ($entry === '' || str_starts_with($entry, '/') || preg_match('#(^|/)\.\.(/|$)#', $entry)) {
-            return ['ok'=>false,'error'=>'Archive contains an unsafe path.'];
-        }
+    if ($unsafe) {
+        return ['ok'=>false,'error'=>'Archive contains an unsafe path.'];
     }
     $manifest = json_decode((string) @file_get_contents($abs . '.manifest.json'), true);
     $actualHash = hash_file('sha256', $abs);

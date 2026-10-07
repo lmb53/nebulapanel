@@ -28,9 +28,13 @@ function upd_list(): array
         if ($line === '' || stripos($line, 'Listing...') === 0) {
             continue;
         }
-        $parts = preg_split('/\s+/', $line);
-        $package = explode('/', $parts[0])[0];
-        $candidate = $parts[1] ?? '';
+        // Only "name/suite version arch [upgradable from: x]" rows describe a
+        // package; apt can interleave notices ("N: ...", "WARNING: ...").
+        if (!preg_match('#^([a-z0-9][a-z0-9+.-]*)/\S+\s+(\S+)#i', $line, $row)) {
+            continue;
+        }
+        $package = $row[1];
+        $candidate = $row[2];
         $current = '';
         if (preg_match('/upgradable from:\s*([^\]]*)\]/', $line, $m)) {
             $current = trim($m[1]);

@@ -17,7 +17,7 @@ $scheduled = array_values(array_filter($jobs, fn($j) => ($j['type'] ?? '') === '
   <div class="card-header"><h3>Scheduled jobs</h3><span class="muted"><?= count($scheduled) ?> jobs</span></div>
   <div class="table-wrap"><table class="data-table"><thead><tr><th>Schedule</th><th>Command</th><th>User</th><th>Status</th><th style="text-align:right">Actions</th></tr></thead><tbody>
   <?php foreach ($scheduled as $job): $enabled = ($job['enabled'] ?? true) === true; ?>
-    <tr class="<?= $enabled ? '' : 'cron-disabled' ?>">
+    <tr class="<?= $enabled ? '' : 'cron-disabled' ?>" data-cron-raw="<?= e($job['raw'] ?? '') ?>">
       <td><div class="mono" style="font-weight:600;color:var(--blue-400)"><?= e($job['schedule']) ?></div></td>
       <td class="mono" style="word-break:break-all"><?= e($job['command']) ?></td>
       <td class="mono text-tertiary"><?= e($whoami) ?></td>
@@ -81,8 +81,13 @@ document.addEventListener('DOMContentLoaded', () => {
     });
     hint.textContent = keyword ? 'This @keyword preset does not use individual time fields.' : 'The dropdowns update the five-part cron expression below.';
   };
+  // The raw crontab line each action was taken from, so the server can
+  // refuse when the crontab changed underneath this page.
+  const rawOf = (button) => button.closest('[data-cron-raw]')?.dataset.cronRaw ?? '';
+  let editRaw = '';
   const open = (job = null) => {
     idx.value = job?.index ?? '';
+    editRaw = job?.raw ?? '';
     schedule.value = job?.schedule || '0 2 * * *';
     command.value = job?.command || '';
     document.getElementById('cronDrawerTitle').textContent = job ? 'Edit Cron Job' : 'New Cron Job';
@@ -94,20 +99,20 @@ document.addEventListener('DOMContentLoaded', () => {
   parts.forEach((select) => select.addEventListener('change', () => { schedule.value = parts.map((field) => field.value).join(' '); syncBuilder(); }));
   schedule.addEventListener('input', syncBuilder);
   document.querySelectorAll('[data-cron-preset]').forEach((button) => button.onclick = () => { schedule.value = button.dataset.cronPreset; syncBuilder(); });
-  document.querySelectorAll('[data-cron-edit]').forEach((button) => button.onclick = () => open({ index:+button.dataset.cronEdit, schedule:button.dataset.schedule, command:button.dataset.command }));
+  document.querySelectorAll('[data-cron-edit]').forEach((button) => button.onclick = () => open({ index:+button.dataset.cronEdit, schedule:button.dataset.schedule, command:button.dataset.command, raw:rawOf(button) }));
   document.getElementById('cronSave').onclick = async () => {
-    const result = await apiPost('cron', { action:idx.value ? 'update' : 'add', index:+idx.value, schedule:schedule.value, command:command.value });
+    const result = await apiPost('cron', { action:idx.value ? 'update' : 'add', index:+idx.value, schedule:schedule.value, command:command.value, expect:editRaw });
     toast(result.ok ? 'Cron job saved' : (result.error || 'Save failed'), result.ok ? 'success' : 'error');
     if (result.ok) setTimeout(() => location.reload(), 350);
   };
   document.querySelectorAll('[data-cron-toggle]').forEach((button) => button.onclick = async () => {
     button.disabled = true;
-    const result = await apiPost('cron', { action:'toggle', index:+button.dataset.cronToggle, enabled:button.dataset.enabled !== '1' });
+    const result = await apiPost('cron', { action:'toggle', index:+button.dataset.cronToggle, enabled:button.dataset.enabled !== '1', expect:rawOf(button) });
     toast(result.ok ? `Cron job ${button.dataset.enabled === '1' ? 'disabled' : 'enabled'}` : (result.error || 'Update failed'), result.ok ? 'success' : 'error');
     if (result.ok) setTimeout(() => location.reload(), 250); else button.disabled = false;
   });
-  document.querySelectorAll('[data-cron-del]').forEach((button) => button.onclick = async () => { if (!confirm('Delete this cron job?')) return; const result=await apiPost('cron',{action:'delete',index:+button.dataset.cronDel}); toast(result.ok?'Cron job deleted':(result.error||'Delete failed'),result.ok?'success':'error'); if(result.ok)setTimeout(()=>location.reload(),300); });
-  document.querySelectorAll('[data-cron-run]').forEach((button) => button.onclick = async () => { button.disabled=true;const result=await apiPost('cron',{action:'run',index:+button.dataset.cronRun});button.disabled=false;toast(result.ok?'Cron command completed':(result.error||'Command failed'),result.ok?'success':'error');setTimeout(()=>location.reload(),500); });
+  document.querySelectorAll('[data-cron-del]').forEach((button) => button.onclick = async () => { if (!confirm('Delete this cron job?')) return; const result=await apiPost('cron',{action:'delete',index:+button.dataset.cronDel,expect:rawOf(button)}); toast(result.ok?'Cron job deleted':(result.error||'Delete failed'),result.ok?'success':'error'); if(result.ok)setTimeout(()=>location.reload(),300); });
+  document.querySelectorAll('[data-cron-run]').forEach((button) => button.onclick = async () => { button.disabled=true;const result=await apiPost('cron',{action:'run',index:+button.dataset.cronRun,expect:rawOf(button)});button.disabled=false;toast(result.ok?'Cron command completed':(result.error||'Command failed'),result.ok?'success':'error');setTimeout(()=>location.reload(),500); });
 });
 </script>
 <?php endif; ?>

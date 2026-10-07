@@ -8,7 +8,7 @@ if ($abs === null || !is_dir($abs)) {
 }
 $root_ok = fm_root() !== '';
 $rel = $abs ? fm_rel($abs) : '';
-$listing = $abs ? fm_list($abs) : ['dirs' => [], 'files' => []];
+$listing = $abs ? fm_list($abs) : ['dirs' => [], 'files' => [], 'total' => 0, 'truncated' => false];
 $breadcrumbs = fm_breadcrumbs($rel);
 $fmState = fm_state();
 $pinnedEntries = fm_state_entries('pinned');
@@ -233,6 +233,11 @@ if ($rel !== '') {
           <button class="tab" type="button" data-fm-tab="recent"><i data-lucide="history"></i>Recent <span class="badge badge-slate"><?= count($recentEntries) ?></span></button>
         </div>
         <div class="fm-tab-panel" data-fm-panel="browse">
+        <?php if (!empty($listing['truncated'])): ?>
+          <div class="text-tertiary" style="padding:10px 16px;font-size:12px">
+            Showing the first <?= (int) FM_LIST_LIMIT ?> of <?= (int) $listing['total'] ?> entries (folders first, then files, by name). Use the Terminal for very large folders.
+          </div>
+        <?php endif; ?>
 
         <!-- List view -->
         <div class="table-wrap" id="fmListView">
@@ -509,7 +514,15 @@ document.addEventListener('DOMContentLoaded', () => {
         headers: { 'X-CSRF-Token': csrf() },
         body: fd,
       });
-      const res = await r.json();
+      // nginx answers an oversized body with an HTML 413 page, not JSON.
+      const text = await r.text();
+      let res;
+      try { res = JSON.parse(text); }
+      catch (e) {
+        res = { ok: false, error: r.status === 413
+          ? `${file.name} is larger than the web server accepts. Re-run install.sh to apply the panel's upload limits.`
+          : `Upload failed: ${file.name} (HTTP ${r.status})` };
+      }
       if (res.ok) { toast(`${res.overwritten ? 'Replaced' : 'Uploaded'} ${file.name}`, 'success'); return true; }
       if (res.conflict) {
         if (confirm(`"${file.name}" already exists. Replace it with the uploaded file?`)) {

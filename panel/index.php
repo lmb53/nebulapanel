@@ -30,7 +30,8 @@ switch ($route) {
                 $_POST['bootstrap_token'] ?? ''
             );
             if ($res['ok']) {
-                attempt_login($_POST['username'], $_POST['password']);
+                // create_admin() stores the trimmed name; log in with the same.
+                attempt_login(trim((string) $_POST['username']), (string) $_POST['password']);
                 redirect('setup-wizard');
             }
             $error = $res['error'];
@@ -95,7 +96,7 @@ if (strpos($route, 'api/') === 0
         json_out(['ok' => false, 'error' => 'Invalid or expired bearer token.'], 401);
 }
 
-require_auth();
+require_auth(strpos($route, 'api/') === 0);
 
 // --------------------------------------------------------------------------
 // First-run provisioning wizard (standalone full-screen, auth required).
@@ -171,10 +172,7 @@ if ($route === 'file-download') {
     }
     fm_record_recent(fm_rel($abs));
     audit('file.download', fm_rel($abs));
-    header('Content-Type: application/octet-stream');
-    header('Content-Disposition: ' . attachment_header(basename($abs)));
-    header('Content-Length: ' . filesize($abs));
-    readfile($abs);
+    send_download($abs, 'application/octet-stream');
     return;
 }
 
@@ -187,10 +185,7 @@ if ($route === 'backup-download') {
         exit('Not found');
     }
     audit('backup.download', basename($abs));
-    header('Content-Type: application/gzip');
-    header('Content-Disposition: ' . attachment_header(basename($abs)));
-    header('Content-Length: ' . filesize($abs));
-    readfile($abs);
+    send_download($abs, 'application/gzip');
     return;
 }
 

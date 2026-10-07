@@ -136,17 +136,28 @@ function dns_save_records(string $domain, array $records): array
     }
     return $published;
 }
+/** Zones are stored under the canonical lower-case name without a trailing dot. */
+function dns_canonical_domain(string $domain): string
+{
+    return strtolower(rtrim(trim($domain), '.'));
+}
+
 function dns_record_add(string $domain, array $input): array
 {
+    // Read and write under the same key: reading records for "Example.com"
+    // but saving to "example.com" would replace the zone with one record.
+    $domain=dns_canonical_domain($domain);
     $valid=dns_validate_record($input);if(empty($valid['ok']))return $valid;$records=dns_zone_records($domain);$records[]=$valid['record'];$res=dns_save_records($domain,$records);if(!empty($res['ok']))audit('dns.record.add',$domain.' '.($valid['record']['type']??''));return $res;
 }
 function dns_record_delete(string $domain, string $id): array
 {
+    $domain=dns_canonical_domain($domain);
     $records=dns_zone_records($domain);$next=array_values(array_filter($records,fn($r)=>(string)($r['id']??'')!==$id));if(count($next)===count($records))return ['ok'=>false,'error'=>'Record not found.'];$res=dns_save_records($domain,$next);if(!empty($res['ok']))audit('dns.record.delete',$domain.' '.$id);return $res;
 }
 
 function dns_forget_zone(string $domain): void
 {
+    $domain=dns_canonical_domain($domain);
     $zones=dns_zones();if(!isset($zones[$domain]))return;unset($zones[$domain]);write_json_file(dns_store_file(),['version'=>1,'zones'=>$zones]);
     if(helper_available())helper_cmd('dns-zone-delete '.escapeshellarg($domain),30);
     audit('dns.zone.delete',$domain);

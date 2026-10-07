@@ -27,13 +27,39 @@ function ssl_domain_ok($d): bool
 
 function ssl_custom_file(): string
 {
-    return APP_ROOT . '/data/custom-certificates.json';
+    return DATA_DIR . '/custom-certificates.json';
 }
 
 function ssl_custom_list(): array
 {
     $items = @json_decode((string) @file_get_contents(ssl_custom_file()), true);
-    return is_array($items) ? array_values($items) : [];
+    if (!is_array($items)) {
+        return [];
+    }
+    // Days-left and validity were stored once at upload time and then never
+    // changed; derive them from the expiry on every read instead.
+    $now = time();
+    foreach ($items as &$item) {
+        if (!is_array($item)) { continue; }
+        $expires = (int) ($item['expires_at'] ?? 0);
+        if ($expires <= 0) {
+            $parsed = strtotime((string) ($item['expiry'] ?? ''));
+            $expires = $parsed === false ? 0 : $parsed;
+        }
+        if ($expires > 0) {
+            $item['expires_at'] = $expires;
+            $item['days'] = max(0, (int) floor(($expires - $now) / 86400));
+            $item['valid'] = $expires > $now;
+        }
+    }
+    unset($item);
+    return array_values(array_filter($items, 'is_array'));
+}
+
+/** Certificate names and hostnames are compared in canonical lower case. */
+function ssl_canonical(string $name): string
+{
+    return strtolower(rtrim(trim($name), '.'));
 }
 
 /**
@@ -100,6 +126,7 @@ function ssl_list(): array
 /** Validate and install a user-supplied PEM certificate/private-key pair. */
 function ssl_upload(string $domain, string $certificate, string $privateKey, string $chain = ''): array
 {
+    $domain = ssl_canonical($domain);
     if (!ssl_domain_ok($domain)) { return ['ok' => false, 'error' => 'Invalid domain.']; }
     foreach ([$certificate, $privateKey, $chain] as $pem) {
         if (strlen($pem) > 65536) { return ['ok' => false, 'error' => 'Each PEM file must be smaller than 64 KB.']; }
@@ -139,6 +166,7 @@ function ssl_upload(string $domain, string $certificate, string $privateKey, str
         'name' => $domain,
         'domains' => $domain,
         'expiry' => date('Y-m-d H:i:s O', $expiry),
+        'expires_at' => $expiry,
         'days' => max(0, (int) floor(($expiry - time()) / 86400)),
         'valid' => true,
         'issuer' => $issuer,
@@ -155,6 +183,8 @@ function ssl_upload(string $domain, string $certificate, string $privateKey, str
 /** Issue a Let's Encrypt certificate for an existing nginx site. */
 function ssl_issue(string $domain, string $email = ''): array
 {
+    $domain = ssl_canonical($domain);
+    $email = trim($email);
     if (!ssl_domain_ok($domain)) {
         return ['ok' => false, 'error' => 'Invalid domain.'];
     }
@@ -173,6 +203,7 @@ function ssl_issue(string $domain, string $email = ''): array
 /** Renew all certificates, or a single named one. */
 function ssl_renew(string $name = ''): array
 {
+    $name = ssl_canonical($name);
     if ($name !== '' && !ssl_domain_ok($name)) {
         return ['ok' => false, 'error' => 'Invalid certificate name.'];
     }
@@ -188,6 +219,7 @@ function ssl_renew(string $name = ''): array
 /** Delete a certificate by name. */
 function ssl_delete(string $name): array
 {
+    $name = ssl_canonical($name);
     if (!ssl_domain_ok($name)) {
         return ['ok' => false, 'error' => 'Invalid certificate name.'];
     }

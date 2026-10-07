@@ -99,9 +99,6 @@ function audit_tail(int $lines = 100): string
     if (!is_file($f)) {
         return '';
     }
-    $data = @file($f, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
-    if (!$data) {
-        return '';
-    }
-    return implode("\n", array_slice($data, -$lines));
+    // The audit log can be tens of megabytes; read only its tail.
+    return file_tail($f, $lines);
 }

@@ -1,21 +1,26 @@
 <?php
 /** POST api/file-delete {path} — delete a file or directory within FM_ROOT.
- * Directories are removed recursively. When the web user cannot remove a
- * target (root-owned files, or a non-empty directory it doesn't fully own)
- * the privileged helper does it as root, still confined to the FM root. */
+ * The privileged helper moves the entry into root-owned recovery trash, still
+ * confined to the FM root. Without the helper (development installs) the web
+ * user removes what it can, recursively. */
 require APP_ROOT . '/lib/files.php';
 require_post();
 csrf_check();
 
 $body = read_json_body();
-$abs = fm_resolve((string) ($body['path'] ?? ''), false);
-if ($abs === null || !file_exists($abs)) {
+// Resolve the entry itself: deleting a symlink removes the link, never the
+// file or folder it points to. The File Manager root is never deletable.
+$abs = fm_resolve_entry((string) ($body['path'] ?? ''));
+if ($abs === null) {
     json_out(['ok' => false, 'error' => 'Path not found or not allowed.'], 400);
 }
 
 /** Best-effort recursive delete as the web user. */
 $deleteTree = static function (string $path) use (&$deleteTree): bool {
-    if (is_dir($path) && !is_link($path)) {
+    if (is_link($path)) {
+        return @unlink($path);
+    }
+    if (is_dir($path)) {
         foreach (scandir($path) ?: [] as $entry) {
             if ($entry === '.' || $entry === '..') { continue; }
             if (!$deleteTree($path . '/' . $entry)) { return false; }
@@ -25,17 +30,24 @@ $deleteTree = static function (string $path) use (&$deleteTree): bool {
     return @unlink($path);
 };
 
-$ok = $deleteTree($abs);
-
-// Fall back to the privileged helper for anything the web user can't remove
-// (e.g. root-owned deploy artifacts, or a leftover website docroot).
-if (!$ok && file_exists($abs) && helper_available()) {
-    [$code] = helper_cmd('file-delete ' . escapeshellarg($abs), 60);
-    $ok = $code === 0 && !file_exists($abs);
+// The UI promises a recoverable delete, so prefer the helper, which moves the
+// entry into root-owned recovery trash in one rename. Deleting as the web
+// user first could also remove half of a mixed-ownership tree permanently
+// before failing on a root-owned file.
+$exists = static fn(string $path): bool => file_exists($path) || is_link($path);
+$ok = false;
+$reason = '';
+if (helper_available()) {
+    [$code, $out] = helper_cmd('file-delete ' . escapeshellarg($abs), 60);
+    clearstatcache();
+    $ok = $code === 0 && !$exists($abs);
+    $reason = $ok ? '' : trim($out);
+} elseif ($exists($abs)) {
+    $ok = $deleteTree($abs);
 }
 
 audit('file.delete', fm_rel($abs) . ($ok ? '' : ' FAILED'));
 json_out(
-    $ok ? ['ok' => true] : ['ok' => false, 'error' => 'Delete failed (permission denied, or the item is in use).'],
+    $ok ? ['ok' => true] : ['ok' => false, 'error' => 'Delete failed: ' . ($reason !== '' ? $reason : 'permission denied, or the item is in use.')],
     $ok ? 200 : 400
 );

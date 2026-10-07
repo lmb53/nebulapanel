@@ -129,10 +129,13 @@ function panel_user_create(string $username, string $password, string $role): ar
 function panel_user_update(int $id, string $role, bool $enabled, string $password = ''): array
 {
     if (!isset(panel_roles()[$role])) return ['ok' => false, 'error' => 'Invalid role.'];
-    if ($password !== '' && ($passwordError = panel_password_error($password)) !== null) return ['ok' => false, 'error' => $passwordError];
     return with_panel_users_lock(function() use($id,$role,$enabled,$password){
-        $users=panel_users();$found=false;foreach($users as &$user){if((int)($user['id']??0)!==$id)continue;if((int)($_SESSION['uid']??0)===$id&&(!$enabled||$role!=='admin'))return ['ok'=>false,'error'=>'You cannot disable or demote your own active administrator account.'];$changed=($user['role']??'')!==$role||(bool)($user['enabled']??true)!==$enabled||$password!=='';$user['role']=$role;$user['enabled']=$enabled;if($password!=='')$user['hash']=panel_password_hash($password);if($changed)$user['session_version']=max(1,(int)($user['session_version']??1))+1;$found=true;break;}unset($user);
-        if(!$found)return ['ok'=>false,'error'=>'Panel user not found.'];if(!save_panel_users($users))return ['ok'=>false,'error'=>'Could not save the panel user.'];audit('panel_user.update','id '.$id.' ('.$role.', '.($enabled?'enabled':'disabled').')');return ['ok'=>true];
+        $users=panel_users();$found=false;foreach($users as &$user){if((int)($user['id']??0)!==$id)continue;if((int)($_SESSION['uid']??0)===$id&&(!$enabled||$role!=='admin'))return ['ok'=>false,'error'=>'You cannot disable or demote your own active administrator account.'];if($password!==''&&($passwordError=panel_password_error($password,(string)($user['username']??'')))!==null)return ['ok'=>false,'error'=>$passwordError];$changed=($user['role']??'')!==$role||(bool)($user['enabled']??true)!==$enabled||$password!=='';$user['role']=$role;$user['enabled']=$enabled;if($password!=='')$user['hash']=panel_password_hash($password);if($changed)$user['session_version']=max(1,(int)($user['session_version']??1))+1;$found=true;break;}unset($user);
+        if(!$found)return ['ok'=>false,'error'=>'Panel user not found.'];
+        // A bearer token has no session account, so the self-demotion guard
+        // above cannot protect the last administrator on its own.
+        if(!array_filter($users,fn($user)=>($user['role']??'')==='admin'&&!empty($user['enabled'])))return ['ok'=>false,'error'=>'At least one enabled administrator is required.'];
+        if(!save_panel_users($users))return ['ok'=>false,'error'=>'Could not save the panel user.'];audit('panel_user.update','id '.$id.' ('.$role.', '.($enabled?'enabled':'disabled').')');return ['ok'=>true];
     });
 }
 
@@ -261,6 +264,14 @@ function login_attempts_file(): string
     return DATA_DIR . '/login_attempts.json';
 }
 
+/** Each address may make this many times the per-account attempt budget. */
+const LOGIN_IP_ATTEMPT_MULTIPLIER = 4;
+
+function login_ip_key(string $ip): string
+{
+    return 'ip:' . hash('sha256', $ip);
+}
+
 /** Return seconds until another login is allowed (0 means allowed). */
 function login_retry_after(?string $ip = null, string $username = ''): int
 {
@@ -304,8 +315,17 @@ function reserve_login_attempt(?string $ip = null, string $username = ''): int
     }
     $attempts = $data[$key] ?? [];
     $retry = count($attempts) >= $max ? max(1, ((int) $attempts[0] + $window) - time()) : 0;
+    // A second, looser per-address budget stops one client from cycling
+    // through usernames to escape the per-account limit.
+    $ipKey = login_ip_key($ip);
+    $ipAttempts = $data[$ipKey] ?? [];
+    $ipMax = $max * LOGIN_IP_ATTEMPT_MULTIPLIER;
+    if ($retry === 0 && count($ipAttempts) >= $ipMax) {
+        $retry = max(1, ((int) $ipAttempts[count($ipAttempts) - $ipMax] + $window) - time());
+    }
     if ($retry === 0) {
         $data[$key][] = time();
+        $data[$ipKey][] = time();
     }
     ftruncate($handle, 0);
     rewind($handle);
@@ -340,6 +360,13 @@ function record_login_attempt(bool $success, ?string $ip = null, string $usernam
     }
     if ($success) {
         unset($data[$key]);
+        // Only failures should count against the shared per-address budget;
+        // give back the slot reserve_login_attempt() took for this login.
+        $ipKey = login_ip_key($ip);
+        if (!empty($data[$ipKey])) {
+            array_pop($data[$ipKey]);
+            if (!$data[$ipKey]) { unset($data[$ipKey]); }
+        }
     } else {
         $data[$key][] = time();
     }
@@ -454,13 +481,22 @@ function is_logged_in(): bool
         || (function_exists('is_api_token_authenticated') && is_api_token_authenticated());
 }
 
-/** Guard: require an authenticated session or bounce to login/setup. */
-function require_auth(): void
+/**
+ * Guard: require an authenticated session or bounce to login/setup. API
+ * callers get a JSON 401 instead of an HTML login page they cannot parse.
+ */
+function require_auth(bool $json = false): void
 {
     if (!is_setup_complete()) {
+        if ($json) {
+            json_out(['ok' => false, 'error' => 'Panel setup has not been completed.', 'login' => url('setup')], 401);
+        }
         redirect('setup');
     }
     if (!is_logged_in()) {
+        if ($json) {
+            json_out(['ok' => false, 'error' => 'Your session has expired. Sign in again.', 'login' => url('login')], 401);
+        }
         redirect('login');
     }
 }

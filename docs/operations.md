@@ -15,8 +15,25 @@ workflow requires making setup publicly reachable.
 
 File-manager deletion moves entries to root-owned
 `/var/lib/nebula-panel/file-trash`; only a server administrator can inspect or
-restore them. Website deletion moves the full site tree to
-`/srv/nebula/trash`.
+restore them. Deleting, renaming or moving a symlink acts on the link itself,
+never on the file or folder it points to. Website deletion moves the full site
+tree to `/srv/nebula/trash`.
+
+## Limits and housekeeping
+
+- File Manager uploads are capped at 50 MB (`max_upload_bytes`). The installer
+  sets the matching Nginx `client_max_body_size` and PHP-FPM
+  `upload_max_filesize`/`post_max_size`; re-run it on installations created
+  before those settings existed, or larger uploads fail with HTTP 413.
+- The inline editor opens UTF-8 text files up to 500 KB. Files in another
+  encoding are offered for download instead, because a browser round-trip
+  would rewrite them.
+- Folders with more than 2,000 entries list the first 2,000 (folders first).
+- `data/audit.log` rotates to `data/audit.log.1` at 20 MB; every event is also
+  sent to syslog (`LOG_AUTHPRIV`) for long-term retention.
+- Enabling UFW from the panel first allows the SSH port(s) from
+  `sshd_config` and the port the panel is being used on, so switching the
+  firewall on cannot lock the operator out.
 
 Set `PUBLIC_IP` when running the installer if mail/DNS guidance should publish
 an address. Nebula deliberately does not infer a public address from

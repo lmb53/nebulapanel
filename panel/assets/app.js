@@ -20,8 +20,24 @@
     document.documentElement.classList.add('light');
   }
 
+  // A 401 means the panel session ended (idle timeout, password change, or
+  // the account was disabled). Say so once instead of failing every poll with
+  // a cryptic error, and stop background polling so the toast stays readable.
+  let sessionLost = false;
+  function noteSessionExpired(status) {
+    if (status !== 401 || sessionLost) return;
+    sessionLost = true;
+    toast('Your session has expired. Reload the page to sign in again. Unsaved editor drafts are kept in this tab.', 'error');
+  }
+
   async function apiGet(endpoint) {
-    const r = await fetch(api(endpoint), { headers: { Accept: 'application/json' } });
+    let r;
+    try {
+      r = await fetch(api(endpoint), { headers: { Accept: 'application/json' } });
+    } catch (e) {
+      throw new Error('Network request failed — check your connection to the server.');
+    }
+    noteSessionExpired(r.status);
     const type = (r.headers.get('content-type') || '').toLowerCase();
     const text = await r.text();
     let data;
@@ -43,6 +59,7 @@
         headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': CSRF, Accept: 'application/json' },
         body: JSON.stringify(body || {}),
       });
+      noteSessionExpired(r.status);
       const type = (r.headers.get('content-type') || '').toLowerCase();
       const text = await r.text();
       if (!type.includes('application/json')) {
@@ -71,6 +88,7 @@
         headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': CSRF, Accept: 'application/x-ndjson' },
         body: JSON.stringify(body || {}),
       });
+      noteSessionExpired(r.status);
       if (!r.body || !r.body.getReader) return await r.json();
       const reader = r.body.getReader();
       const decoder = new TextDecoder();
@@ -112,10 +130,12 @@
   }
 
   function fmtBytes(b) {
-    if (!b) return '0 B';
-    const u = ['B', 'KB', 'MB', 'GB', 'TB'];
-    const i = Math.floor(Math.log(b) / Math.log(1024));
-    return (b / Math.pow(1024, i)).toFixed(1) + ' ' + u[i];
+    b = Number(b);
+    if (!Number.isFinite(b) || b <= 0) return '0 B';
+    const u = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
+    // Clamp: values under 1 byte would index -1, and huge values past PB.
+    const i = Math.max(0, Math.min(u.length - 1, Math.floor(Math.log(b) / Math.log(1024))));
+    return (b / Math.pow(1024, i)).toFixed(i === 0 ? 0 : 1) + ' ' + u[i];
   }
 
   // ---- CodeMirror theming -------------------------------------------------
@@ -291,7 +311,7 @@
 
   let metricsTimer = null, metricsBusy = false;
   async function pollMetrics() {
-    if (metricsBusy || document.hidden) return;
+    if (metricsBusy || document.hidden || sessionLost) return;
     metricsBusy = true;
     try { applyMetrics(await apiGet('metrics')); } catch (e) { /* silent */ }
     finally { metricsBusy = false; }
@@ -406,7 +426,7 @@
         }
         items.forEach((item) => {
           const row = document.createElement('div'); row.className = 'notification-menu-item' + (item.read ? '' : ' unread');
-          const icon = document.createElement('a'); icon.className = 'notif-icon'; icon.href = `${BASE}/?r=${encodeURIComponent(item.route || 'dashboard')}`; icon.innerHTML = `<i data-lucide="${item.icon || 'bell'}"></i>`; icon.style.color = color(item.level);
+          const icon = document.createElement('a'); icon.className = 'notif-icon'; icon.href = `${BASE}/?r=${encodeURIComponent(item.route || 'dashboard')}`; icon.innerHTML = `<i data-lucide="${/^[a-z0-9-]+$/.test(item.icon || '') ? item.icon : 'bell'}"></i>`; icon.style.color = color(item.level);
           const copy = document.createElement('a'); copy.className = 'notification-menu-copy'; copy.href = icon.href;
           const title = document.createElement('strong'); title.textContent = item.title || '';
           const detail = document.createElement('span'); detail.textContent = item.detail || '';
