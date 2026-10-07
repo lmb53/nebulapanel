@@ -13,7 +13,9 @@ function top_processes(int $limit = 20): array
     if (!has_cmd('ps')) {
         return [];
     }
-    [$code, $out] = run_cmd('ps -eo pid,user,pcpu,pmem,rss,comm --sort=-pcpu');
+    // user:32 avoids numeric UIDs for long names; full args give the real
+    // program name (comm is truncated to 15 characters by the kernel).
+    [$code, $out] = run_cmd('ps -eo pid,user:32,pcpu,pmem,rss,args --sort=-pcpu');
     if ($code !== 0 || $out === '') {
         return [];
     }
@@ -35,7 +37,7 @@ function top_processes(int $limit = 20): array
             'cpu'     => (float) $p[2],
             'mem'     => (float) $p[3],
             'rss'     => (int) $p[4] * 1024, // ps reports RSS in KB
-            'command' => $p[5],
+            'command' => process_display_name($p[5]),
         ];
         if (count($rows) >= $limit) {
             break;
@@ -56,3 +58,16 @@ function process_count(): int
     }
     return count(preg_split('/\r?\n/', trim($out)));
 }
+
+/** A short program name from a full command line ("/usr/sbin/nginx -g …" → "nginx"). */
+function process_display_name(string $args): string
+{
+    $args = trim($args);
+    if ($args === '') { return '?'; }
+    if ($args[0] === '[') { return trim($args, '[]'); } // kernel thread
+    $first = strtok($args, ' ');
+    $name = basename((string) $first);
+    $name = rtrim($name, ':');
+    return $name !== '' ? $name : $args;
+}
+

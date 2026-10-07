@@ -6,7 +6,9 @@ require_once APP_ROOT . '/lib/mod_pma.php';
 $catalog = app_catalog();
 $phpAvailable = php_installable_versions();
 $phpInstalled = php_installed_versions();
-$phpLatest = $phpAvailable ? end($phpAvailable) : null;
+// Always recommend the newest supported release rather than "the newest one
+// not yet installed", which would offer an older version once 8.5 is present.
+$phpLatest = in_array(php_latest_version(), $phpAvailable, true) ? php_latest_version() : null;
 $recommended = ['mariadb', 'certbot', 'fail2ban'];
 
 // Build the component list the wizard renders.
@@ -23,7 +25,7 @@ foreach (['mariadb', 'apache2', 'redis', 'memcached', 'docker', 'fail2ban', 'cer
         continue;
     }
     $c = $catalog[$k];
-    $items[] = ['key' => $k, 'label' => $c['label'], 'desc' => $c['desc'], 'icon' => $c['icon'], 'installed' => app_installed($k), 'rec' => in_array($k, $recommended, true)];
+    $items[] = ['key' => $k, 'label' => $c['label'], 'desc' => $c['desc'], 'icon' => $c['icon'], 'logo' => $c['logo'] ?? '', 'installed' => app_installed($k), 'rec' => in_array($k, $recommended, true)];
 }
 $items[] = ['key' => 'phpmyadmin', 'label' => 'phpMyAdmin', 'desc' => 'Web-based MySQL/MariaDB admin', 'icon' => 'table-properties', 'installed' => pma_installed(), 'rec' => true];
 ?>
@@ -44,7 +46,7 @@ $items[] = ['key' => 'phpmyadmin', 'label' => 'phpMyAdmin', 'desc' => 'Web-based
   <div style="width:760px;max-width:100%">
 
     <div style="display:flex;align-items:center;gap:12px;margin-bottom:6px">
-      <div class="logo-mark" style="width:38px;height:38px;border-radius:11px;background:linear-gradient(135deg,var(--blue-500),var(--purple-500));display:flex;align-items:center;justify-content:center;box-shadow:var(--shadow-glow-blue)">
+      <div class="logo-mark" style="width:38px;height:38px;border-radius:12px;background:linear-gradient(135deg,var(--blue-500),var(--purple-500));display:flex;align-items:center;justify-content:center;box-shadow:var(--shadow-glow-blue)">
         <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5" style="width:20px;height:20px"><path d="M13 2 3 14h7l-1 8 10-12h-7l1-8z"/></svg>
       </div>
       <div>
@@ -58,27 +60,28 @@ $items[] = ['key' => 'phpmyadmin', 'label' => 'phpMyAdmin', 'desc' => 'Web-based
       <div class="card-pad" style="display:flex;flex-direction:column;gap:8px">
         <?php foreach ($items as $it): $installed = !empty($it['installed']); $lock = !empty($it['lock']) || $installed; ?>
           <label class="service-row" style="cursor:<?= $lock ? 'default' : 'pointer' ?>">
-            <div class="svc-icon"><i data-lucide="<?= e($it['icon']) ?>" style="color:var(--blue-400)"></i></div>
+            <div class="svc-icon svc-icon-logo"><?php if (!empty($it['logo'])): ?><img src="<?= e(asset($it['logo'])) ?>" alt="" loading="lazy"><?php else: ?><i data-lucide="<?= e($it['icon']) ?>" aria-hidden="true"></i><?php endif; ?></div>
             <div style="flex:1;min-width:0">
               <div style="font-weight:600;font-size:13px"><?= e($it['label']) ?></div>
-              <div style="font-size:11.5px;color:var(--text-tertiary)"><?= e($it['desc']) ?></div>
+              <div style="font-size:12px;color:var(--text-tertiary)"><?= e($it['desc']) ?></div>
             </div>
             <span class="wiz-status" data-status style="font-size:12px;color:var(--text-tertiary);margin-right:6px"></span>
             <?php if ($installed): ?>
               <span class="badge badge-emerald"><span class="bdot"></span>Installed</span>
             <?php else: ?>
-              <input type="checkbox" class="row-check" data-key="<?= e($it['key']) ?>" <?= !empty($it['rec']) ? 'checked' : '' ?>>
+              <input type="checkbox" class="row-check" data-key="<?= e($it['key']) ?>" aria-label="Install <?= e($it['label']) ?>" <?= !empty($it['rec']) ? 'checked' : '' ?>>
             <?php endif; ?>
           </label>
         <?php endforeach; ?>
       </div>
     </div>
 
+    <?php if (!helper_available()): ?><div class="notice notice-warning" style="margin-bottom:16px"><i data-lucide="triangle-alert"></i><div><strong>Installs are unavailable</strong><div>The privileged helper is not installed. Re-run <span class="mono">install.sh</span>, or skip for now and add software later from Install Apps.</div></div></div><?php endif; ?>
     <div class="flex items-center" style="justify-content:space-between;gap:12px">
       <a href="<?= e(url('dashboard')) ?>" class="btn btn-ghost" id="wizSkip">Skip for now</a>
       <div class="flex gap-2">
-        <button class="btn btn-secondary" id="wizFinish" style="display:none"><i data-lucide="check"></i>Finish &amp; go to dashboard</button>
-        <button class="btn btn-primary" id="wizInstall"><i data-lucide="download-cloud"></i>Install selected</button>
+        <button class="btn btn-secondary" type="button" id="wizFinish" style="display:none"><i data-lucide="check"></i>Finish &amp; go to dashboard</button>
+        <button class="btn btn-primary" type="button" id="wizInstall"<?= helper_available() ? '' : ' disabled title="The privileged helper is not installed"' ?>><i data-lucide="download-cloud"></i>Install selected</button>
       </div>
     </div>
 
@@ -87,7 +90,7 @@ $items[] = ['key' => 'phpmyadmin', 'label' => 'phpMyAdmin', 'desc' => 'Web-based
       <pre class="mono" id="wizLog" style="margin:0;padding:16px;font-size:12px;line-height:1.6;white-space:pre-wrap;max-height:36vh;overflow:auto"></pre>
     </div>
 
-    <p style="text-align:center;font-size:11.5px;color:var(--text-tertiary);margin-top:18px">
+    <p style="text-align:center;font-size:12px;color:var(--text-tertiary);margin-top:18px">
       Installs run as root via the panel's privileged helper &amp; apt. This can take a few minutes.
     </p>
   </div>

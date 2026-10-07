@@ -8,14 +8,13 @@ $initialLoad = load_avg();
 $initialMemPct = $initialMem ? round($initialMem['used'] / max(1, $initialMem['total']) * 100, 1) : null;
 $initialDiskPct = $initialDisk ? round($initialDisk['used'] / max(1, $initialDisk['total']) * 100, 1) : null;
 ?>
-<?php if (!empty($permissionError)): ?><div class="notice notice-warning" style="margin-bottom:16px"><i data-lucide="shield-alert"></i><div><strong>Access restricted</strong><div>Your role does not have permission to open that area.</div></div></div><?php endif; ?>
 <div class="page-header">
   <div>
     <h1 class="page-title">Dashboard</h1>
-    <p class="page-subtitle"><?= e($facts['hostname']) ?> · <?= e($facts['os']) ?> · Uptime <?= e($facts['uptime']) ?></p>
+    <p class="page-subtitle"><?= e($facts['hostname']) ?> · <?= e($facts['os']) ?> · Up <?= e($facts['uptime']) ?></p>
   </div>
   <div class="page-actions">
-    <button class="btn btn-secondary" id="refreshBtn"><i data-lucide="refresh-cw"></i>Refresh</button>
+    <button class="btn btn-secondary" type="button" id="refreshBtn"><i data-lucide="refresh-cw"></i>Refresh all</button>
   </div>
 </div>
 
@@ -24,43 +23,43 @@ $initialDiskPct = $initialDisk ? round($initialDisk['used'] / max(1, $initialDis
     <div class="stat-top">
       <div class="stat-icon" style="background:rgba(59,130,246,.12)"><i data-lucide="cpu" style="color:var(--blue-400)"></i></div>
     </div>
-    <div class="stat-val" data-stat="cpu"><?= e($initialCpu ?? 'n/a') ?><span style="font-size:14px;color:var(--text-tertiary)">%</span></div>
+    <div class="stat-val" data-stat="cpu"><?= e($initialCpu ?? 'n/a') ?><span class="unit">%</span></div>
     <div class="stat-label" data-stat="load">CPU · Load <?= e(implode(', ', array_map(fn($n) => number_format((float) $n, 2), $initialLoad))) ?></div>
-    <div class="progress" style="margin-top:10px"><div data-stat-bar="cpu" style="width:<?= e($initialCpu ?? 0) ?>%;background:var(--blue-500)"></div></div>
+    <div class="progress" role="progressbar" aria-label="CPU usage" aria-valuemin="0" aria-valuemax="100"><div data-stat-bar="cpu" style="width:<?= e($initialCpu ?? 0) ?>%;background:<?= e(meter_color($initialCpu)) ?>"></div></div>
   </div>
   <div class="stat-card">
     <div class="stat-top">
       <div class="stat-icon" style="background:rgba(245,158,11,.12)"><i data-lucide="memory-stick" style="color:var(--orange-400)"></i></div>
     </div>
-    <div class="stat-val" data-stat="mem"><?= e($initialMemPct ?? 'n/a') ?><span style="font-size:14px;color:var(--text-tertiary)">%</span></div>
+    <div class="stat-val" data-stat="mem"><?= e($initialMemPct ?? 'n/a') ?><span class="unit">%</span></div>
     <div class="stat-label" data-stat="mem-detail"><?= $initialMem ? e(human_bytes($initialMem['used']) . ' / ' . human_bytes($initialMem['total'])) : 'Memory unavailable' ?></div>
-    <div class="progress" style="margin-top:10px"><div data-stat-bar="mem" style="width:<?= e($initialMemPct ?? 0) ?>%;background:var(--orange-500)"></div></div>
+    <div class="progress" role="progressbar" aria-label="Memory usage" aria-valuemin="0" aria-valuemax="100"><div data-stat-bar="mem" style="width:<?= e($initialMemPct ?? 0) ?>%;background:<?= e(meter_color($initialMemPct)) ?>"></div></div>
   </div>
   <div class="stat-card">
     <div class="stat-top">
       <div class="stat-icon" style="background:rgba(168,85,247,.12)"><i data-lucide="hard-drive" style="color:var(--purple-400)"></i></div>
     </div>
-    <div class="stat-val" data-stat="disk"><?= e($initialDiskPct ?? 'n/a') ?><span style="font-size:14px;color:var(--text-tertiary)">%</span></div>
+    <div class="stat-val" data-stat="disk"><?= e($initialDiskPct ?? 'n/a') ?><span class="unit">%</span></div>
     <div class="stat-label" data-stat="disk-detail"><?= $initialDisk ? e(human_bytes($initialDisk['used']) . ' / ' . human_bytes($initialDisk['total'])) : 'Disk unavailable' ?></div>
-    <div class="progress" style="margin-top:10px"><div data-stat-bar="disk" style="width:<?= e($initialDiskPct ?? 0) ?>%;background:var(--purple-500)"></div></div>
+    <div class="progress" role="progressbar" aria-label="Disk usage" aria-valuemin="0" aria-valuemax="100"><div data-stat-bar="disk" style="width:<?= e($initialDiskPct ?? 0) ?>%;background:<?= e(meter_color($initialDiskPct)) ?>"></div></div>
   </div>
   <div class="stat-card">
     <div class="stat-top">
       <div class="stat-icon" style="background:rgba(16,185,129,.12)"><i data-lucide="server" style="color:var(--emerald-400)"></i></div>
       <span class="badge badge-emerald"><span class="bdot"></span>Online</span>
     </div>
-    <div class="stat-val" style="font-size:20px"><?= e($facts['cpu_cores'] ?: '?') ?><span style="font-size:14px;color:var(--text-tertiary)"> vCPU</span></div>
+    <div class="stat-val"><?= e($facts['cpu_cores'] ?: '?') ?><span class="unit">vCPU</span></div>
     <div class="stat-label"><?= e($facts['kernel']) ?> · <?= e($facts['arch']) ?></div>
   </div>
 </div>
 
-<div class="grid" style="grid-template-columns:2fr 1fr;margin-bottom:16px">
+<div class="grid grid-main-side" style="margin-bottom:16px">
   <div class="card">
-    <div class="card-header"><h3>Live resources</h3><span class="muted">Sampled every 3s</span></div>
-    <div class="card-pad"><canvas id="liveChart" height="200"></canvas></div>
+    <div class="card-header"><h3>Live resources</h3><span class="muted">Sampled every 5 seconds</span></div>
+    <div class="card-pad"><div class="chart-box"><canvas id="liveChart" data-cpu="<?= e($initialCpu ?? 0) ?>" data-mem="<?= e($initialMemPct ?? 0) ?>" aria-label="CPU and memory usage over time" role="img"></canvas></div></div>
   </div>
   <div class="card">
-    <div class="card-header"><h3>Services</h3><a href="<?= e(url('services')) ?>" class="btn btn-ghost btn-sm">Manage</a></div>
+    <div class="card-header"><h3>Services</h3><a href="<?= e(url('services')) ?>" class="btn btn-secondary btn-sm">Manage<i data-lucide="arrow-right"></i></a></div>
     <div class="card-pad dashboard-services" id="svcSummary">
       <div class="text-tertiary" style="font-size:13px">Loading…</div>
     </div>
@@ -68,8 +67,8 @@ $initialDiskPct = $initialDisk ? round($initialDisk['used'] / max(1, $initialDis
 </div>
 
 <div class="card" style="margin-bottom:16px">
-  <div class="card-header"><div><h3>Top processes</h3><span class="muted"><span id="procCount">–</span> processes running · sorted by CPU</span></div><button class="btn btn-secondary btn-sm" id="procRefresh"><i data-lucide="refresh-cw"></i>Refresh</button></div>
-  <div class="table-wrap"><table class="data-table"><thead><tr><th>Process</th><th>User</th><th style="text-align:right">CPU %</th><th style="text-align:right">Memory %</th><th style="text-align:right">RSS</th><th style="text-align:right">PID</th></tr></thead><tbody id="procBody"><tr><td colspan="6" class="text-tertiary" style="text-align:center;padding:24px">Loading…</td></tr></tbody></table></div>
+  <div class="card-header"><div><h3>Top processes</h3><span class="muted"><span id="procCount">–</span> processes running · top 20 by CPU</span></div><button class="btn btn-secondary btn-sm" type="button" id="procRefresh"><i data-lucide="refresh-cw"></i>Refresh</button></div>
+  <div class="table-wrap"><table class="data-table"><thead><tr><th>Process</th><th>User</th><th class="num">CPU %</th><th class="num">Memory %</th><th class="num">RSS</th><th class="num">PID</th></tr></thead><tbody id="procBody"><tr class="empty-row"><td colspan="6">Loading…</td></tr></tbody></table></div>
 </div>
 
 <div class="card" style="margin-bottom:16px">
@@ -92,7 +91,7 @@ document.addEventListener('DOMContentLoaded', () => {
     warning: ['badge-orange', 'Needs attention', 'var(--orange-400)'],
     healthy: ['badge-emerald', 'Healthy', 'var(--emerald-400)'],
   };
-  apiGet('health').then((res) => {
+  const loadHealth = () => apiGet('health').then((res) => {
     const [cls, label] = levelMap[res.status] || ['badge-slate', 'Unknown'];
     status.className = 'badge ' + cls;
     status.innerHTML = '<span class="bdot"></span>';
@@ -108,7 +107,7 @@ document.addEventListener('DOMContentLoaded', () => {
       res.items.forEach((item) => {
         const row = document.createElement('a');
         row.className = 'service-row'; row.href = <?= json_encode(base_url() . '/?r=') ?> + encodeURIComponent(item.route);
-        row.style.textDecoration = 'none'; row.style.marginBottom = '8px';
+        row.style.marginBottom = '8px';
         const iconWrap = document.createElement('div'); iconWrap.className = 'svc-icon';
         const icon = document.createElement('i'); icon.dataset.lucide = item.icon; icon.style.color = (levelMap[item.level] || [null, null, 'var(--blue-400)'])[2];
         iconWrap.appendChild(icon);
@@ -116,7 +115,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const title = document.createElement('div'); title.style.fontWeight = '600'; title.style.fontSize = '13px'; title.textContent = item.title;
         const detail = document.createElement('div'); detail.className = 'text-tertiary'; detail.style.fontSize = '12px'; detail.style.marginTop = '2px'; detail.textContent = item.detail;
         copy.append(title, detail);
-        const arrow = document.createElement('i'); arrow.dataset.lucide = 'chevron-right'; arrow.style.color = 'var(--text-tertiary)';
+        const arrow = document.createElement('i'); arrow.dataset.lucide = 'chevron-right'; arrow.style.color = 'var(--text-tertiary)'; arrow.setAttribute('aria-hidden', 'true');
         row.append(iconWrap, copy, arrow); box.appendChild(row);
       });
     }
@@ -125,6 +124,8 @@ document.addEventListener('DOMContentLoaded', () => {
     status.className = 'badge badge-red'; status.textContent = 'Check failed';
     box.textContent = error.message || 'Could not load system health.';
   });
+  loadHealth();
+  window.Nebula.registerRefresh(loadHealth);
 
   const procBody = document.getElementById('procBody');
   let processBusy = false, processTimer = null;
@@ -139,17 +140,18 @@ document.addEventListener('DOMContentLoaded', () => {
         const tr = document.createElement('tr');
         [row.command, row.user, (+row.cpu).toFixed(1), (+row.mem).toFixed(1), fmtBytes(row.rss), row.pid].forEach((value, index) => {
           const td = document.createElement('td'); td.textContent = value;
-          if (index > 1) { td.className = 'mono'; td.style.textAlign = 'right'; }
-          if (index === 0) td.style.fontWeight = '600';
+          if (index > 1) td.className = 'mono num';
+          if (index === 0) { td.style.fontWeight = '600'; td.title = row.command; }
           tr.appendChild(td);
         });
         procBody.appendChild(tr);
       });
-      if (!procBody.children.length) { const tr=document.createElement('tr');const td=document.createElement('td');td.colSpan=6;td.className='text-tertiary';td.style.cssText='text-align:center;padding:24px';td.textContent='No process data available.';tr.appendChild(td);procBody.appendChild(tr); }
+      if (!procBody.children.length) { const tr=document.createElement('tr');const td=document.createElement('td');tr.className='empty-row';td.colSpan=6;td.textContent='No process data available.';tr.appendChild(td);procBody.appendChild(tr); }
     } catch (error) { /* Keep the dashboard usable if process inspection is unavailable. */ }
     finally { processBusy = false; }
   }
   document.getElementById('procRefresh')?.addEventListener('click', loadProcesses);
+  window.Nebula.registerRefresh(loadProcesses);
   const scheduleProcesses=async()=>{await loadProcesses();clearTimeout(processTimer);processTimer=setTimeout(scheduleProcesses,8000);};
   scheduleProcesses();document.addEventListener('visibilitychange',()=>{if(document.hidden)clearTimeout(processTimer);else{clearTimeout(processTimer);scheduleProcesses();}});
 });

@@ -17,14 +17,14 @@ $helper = helper_available();
 // Build check rows: [label, status(ok|bad|na|info), detail]
 $rows = [];
 $rows[] = ['Panel PHP identity', $whoami === 'nebula-panel' ? 'ok' : 'info',
-    $whoami . ' / PHP ' . PHP_VERSION . ($whoami === 'www-data' ? ' — re-run install.sh to enable the dedicated pool' : '')];
+    'Runs as ' . $whoami . ' on PHP ' . PHP_VERSION . ($whoami === 'www-data' ? ' — re-run install.sh to enable the dedicated pool' : '')];
 $rows[] = ['data/ writable', is_writable(DATA_DIR) ? 'ok' : 'bad',
-    is_writable(DATA_DIR) ? DATA_DIR : DATA_DIR . ' is not writable by the panel account'];
+    is_writable(DATA_DIR) ? DATA_DIR : DATA_DIR . ' is not writable by the panel account', true];
 
 $rows[] = ['Command runner', function_exists('proc_open') ? 'ok' : 'bad',
     function_exists('proc_open') ? 'proc_open is available for the bounded helper client' : 'proc_open is disabled; privileged features cannot run'];
 $rows[] = ['Privileged helper', $helper ? 'ok' : 'bad',
-    $helper ? NEBULA_HELPER : 'Not installed — re-run install.sh from a reviewed commit'];
+    $helper ? NEBULA_HELPER : 'Not installed — re-run install.sh from a reviewed commit', $helper];
 
 if ($helper) {
     [$hc] = helper_cmd('php-versions', 20);
@@ -35,11 +35,12 @@ if ($helper) {
 // Tool presence.
 $tools = ['nginx', 'php', 'tar', 'certbot', 'crontab', 'rsync', 'curl'];
 $present = array_filter($tools, 'has_cmd');
-$rows[] = ['Core tools', count($present) === count($tools) ? 'ok' : 'info',
-    'present: ' . (implode(', ', $present) ?: 'none')];
+$missing = array_diff($tools, $present);
+$rows[] = ['Core tools', $missing ? 'info' : 'ok',
+    $missing ? 'Missing: ' . implode(', ', $missing) . ' — some features are unavailable until these are installed' : 'All present: ' . implode(', ', $tools)];
 
 $phpv = php_installed_versions();
-$rows[] = ['PHP-FPM versions', $phpv ? 'ok' : 'info', $phpv ? implode(', ', $phpv) : 'none detected'];
+$rows[] = ['PHP-FPM versions', $phpv ? 'ok' : 'info', $phpv ? 'Installed: PHP ' . implode(', ', $phpv) : 'None detected'];
 
 $badge = [
     'ok'   => ['badge-emerald', 'OK'],
@@ -52,36 +53,26 @@ $problems = count(array_filter($rows, fn($r) => $r[1] === 'bad'));
 <div class="page-header">
   <div>
     <h1 class="page-title">Diagnostics</h1>
-    <p class="page-subtitle">Environment &amp; privilege checks — resolve anything marked “Action needed”</p>
+    <p class="page-subtitle">Environment and privilege checks · <span class="<?= $problems ? 'text-red' : 'text-emerald' ?>" style="font-weight:600"><?= $problems ? ($problems . ' item' . ($problems === 1 ? '' : 's') . ' need action') : 'Everything looks good' ?></span></p>
   </div>
-  <div class="page-actions">
-    <span class="badge <?= $problems ? 'badge-red' : 'badge-emerald' ?>"><span class="bdot"></span><?= $problems ? ($problems . ' issue' . ($problems === 1 ? '' : 's')) : 'All good' ?></span>
-  </div>
+  <div class="page-actions"><a class="btn btn-secondary" href="<?= e(url('diagnostics')) ?>"><i data-lucide="refresh-cw"></i>Re-run checks</a></div>
 </div>
 
 <?php if ($problems): ?>
-<div class="card" style="margin-bottom:16px;border-color:rgba(245,158,11,.25)">
-  <div class="card-pad flex items-center gap-3" style="color:var(--orange-400)">
-    <i data-lucide="info"></i>
-    <div style="font-size:13px;color:var(--text-secondary)">
-      Most privilege issues are fixed by re-running the installer, which writes <span class="mono">/etc/sudoers.d/nebula-panel</span>
-      and the helper: check out a reviewed tag or commit, then run <span class="mono">sudo ./install.sh</span>
-    </div>
-  </div>
-</div>
+<div class="notice notice-warning" style="margin-bottom:16px"><i data-lucide="triangle-alert"></i><div><strong>How to fix privilege issues</strong><div>Re-run the installer from a reviewed tag or commit (<span class="mono">sudo ./install.sh</span>). It rewrites <span class="mono">/etc/sudoers.d/nebula-panel</span> and reinstalls the helper.</div></div></div>
 <?php endif; ?>
 
 <div class="card">
   <div class="card-header"><h3>Checks</h3><span class="muted"><?= count($rows) ?> checks</span></div>
   <div class="table-wrap">
     <table class="data-table">
-      <thead><tr><th style="width:280px">Check</th><th style="width:130px">Status</th><th>Detail</th></tr></thead>
+      <thead><tr><th style="width:240px">Check</th><th style="width:150px">Status</th><th>Detail</th></tr></thead>
       <tbody>
         <?php foreach ($rows as $r): [$cls, $label] = $badge[$r[1]]; ?>
           <tr>
             <td style="font-weight:600"><?= e($r[0]) ?></td>
             <td><span class="badge <?= e($cls) ?>"><span class="bdot"></span><?= e($label) ?></span></td>
-            <td class="mono text-tertiary" style="font-size:12px;word-break:break-word"><?= e($r[2]) ?></td>
+            <td class="text-secondary<?= !empty($r[3]) ? ' mono' : '' ?>" style="font-size:<?= !empty($r[3]) ? '12px' : '13px' ?>;word-break:break-word"><?= e($r[2]) ?></td>
           </tr>
         <?php endforeach; ?>
       </tbody>

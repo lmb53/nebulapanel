@@ -18,7 +18,7 @@ function app_catalog(): array
         'apache2'     => ['label' => 'Apache',      'pkg' => 'apache2',        'unit' => 'apache2',      'icon' => 'server',       'logo' => 'logos/apache.svg',      'desc' => 'Apache HTTP server'],
         'mariadb'     => ['label' => 'MariaDB',     'pkg' => 'mariadb-server', 'unit' => 'mariadb',      'icon' => 'database-zap', 'logo' => 'logos/mariadb.svg',     'desc' => 'MariaDB database server'],
         'redis'       => ['label' => 'Redis',       'pkg' => 'redis-server',   'unit' => 'redis-server', 'icon' => 'zap',          'logo' => 'logos/redis.svg',       'desc' => 'In-memory data store & cache'],
-        'memcached'   => ['label' => 'Memcached',   'pkg' => 'memcached',      'unit' => 'memcached',    'icon' => 'zap',          'logo' => '',                      'desc' => 'Distributed memory cache'],
+        'memcached'   => ['label' => 'Memcached',   'pkg' => 'memcached',      'unit' => 'memcached',    'icon' => 'memory-stick',          'logo' => '',                      'desc' => 'Distributed memory cache'],
         'docker'      => ['label' => 'Docker',      'pkg' => 'docker.io',      'unit' => 'docker',       'icon' => 'container',    'logo' => 'logos/docker.svg',      'desc' => 'Container runtime'],
         'fail2ban'    => ['label' => 'Fail2Ban',    'pkg' => 'fail2ban',       'unit' => 'fail2ban',     'icon' => 'shield-ban',   'logo' => '',                      'desc' => 'Brute-force / intrusion prevention'],
         'modsecurity' => ['label' => 'ModSecurity', 'pkg' => 'libnginx-mod-http-modsecurity', 'unit' => '', 'icon' => 'shield-alert', 'logo' => 'logos/modsecurity.svg', 'desc' => 'Nginx web application firewall (OWASP CRS)', 'helper' => 'modsec'],
@@ -142,10 +142,22 @@ function php_installed_versions(): array
     return $v;
 }
 
+/** PHP versions the panel can install, oldest first. */
+function php_supported_versions(): array
+{
+    return ['8.2', '8.3', '8.4', '8.5'];
+}
+
+/** The newest supported PHP release (the default for new installs). */
+function php_latest_version(): string
+{
+    $all = php_supported_versions();
+    return (string) end($all);
+}
+
 function php_installable_versions(): array
 {
-    $all = ['8.2', '8.3', '8.4', '8.5'];
-    return array_values(array_diff($all, php_installed_versions()));
+    return array_values(array_diff(php_supported_versions(), php_installed_versions()));
 }
 
 function php_install(string $ver, ?callable $onOutput = null): array

@@ -438,7 +438,36 @@ function service_status(string $name): string
     if (trim($load) === 'not-found') {
         return 'not-installed';
     }
+    // systemctl gave no answer (no systemd, or no permission): fall back to the
+    // unit files on disk so a missing service is never reported as "Stopped".
+    if (trim($load) === '') {
+        foreach (['/lib/systemd/system', '/etc/systemd/system', '/usr/lib/systemd/system'] as $dir) {
+            if (is_file("$dir/$name.service")) {
+                return 'inactive';
+            }
+        }
+        return 'not-installed';
+    }
     return 'inactive';
+}
+
+/** Human display name for a systemd unit ("php8.3-fpm" → "PHP 8.3-FPM"). */
+function service_display_name(string $unit): string
+{
+    $unit = preg_replace('/\.service$/', '', $unit) ?? $unit;
+    $known = [
+        'nginx' => 'Nginx', 'apache2' => 'Apache', 'mariadb' => 'MariaDB', 'mysql' => 'MySQL',
+        'redis-server' => 'Redis', 'redis' => 'Redis', 'memcached' => 'Memcached', 'docker' => 'Docker',
+        'ssh' => 'SSH', 'sshd' => 'SSH', 'cron' => 'Cron', 'ufw' => 'UFW', 'fail2ban' => 'Fail2Ban',
+        'postfix' => 'Postfix', 'dovecot' => 'Dovecot', 'opendkim' => 'OpenDKIM', 'named' => 'BIND', 'bind9' => 'BIND',
+    ];
+    if (isset($known[$unit])) {
+        return $known[$unit];
+    }
+    if (preg_match('/^php([0-9.]+)-fpm$/', $unit, $m)) {
+        return 'PHP ' . $m[1] . '-FPM';
+    }
+    return ucfirst($unit);
 }
 
 /** Statuses for the whitelist. */
@@ -446,7 +475,7 @@ function services_overview(array $whitelist): array
 {
     $rows = [];
     foreach ($whitelist as $svc) {
-        $rows[] = ['name' => $svc, 'status' => service_status($svc), 'enabled' => service_enabled($svc)];
+        $rows[] = ['name' => $svc, 'label' => service_display_name($svc), 'status' => service_status($svc), 'enabled' => service_enabled($svc)];
     }
     return $rows;
 }

@@ -23,7 +23,7 @@ $statusBadge = static function (string $status): array {
 <div class="page-header">
   <div>
     <h1 class="page-title">Services</h1>
-    <p class="page-subtitle"><?= count($instances) ?> installed instance<?= count($instances) === 1 ? '' : 's' ?> · manage status, boot behaviour, websites and logs</p>
+    <p class="page-subtitle"><?= count($instances) ?> installed service<?= count($instances) === 1 ? '' : 's' ?> · status, boot behaviour, websites and logs</p>
   </div>
   <div class="page-actions">
     <?php if (role_route_allowed('apps')): ?><a class="btn btn-secondary" href="<?= e(url('apps')) ?>"><i data-lucide="package-plus"></i>Install service</a><?php endif; ?>
@@ -35,7 +35,7 @@ $statusBadge = static function (string $status): array {
   <div class="tabs service-instance-tabs" data-service-tabs>
     <button class="tab active" type="button" data-tab-target="svc-overview" data-tab-panel-group="#servicePanels"><i data-lucide="layout-grid"></i>Overview</button>
     <?php foreach ($instances as $instance): ?>
-      <button class="tab" type="button" data-tab-target="svc-<?= e(preg_replace('/[^a-z0-9]+/i', '-', $instance['unit'])) ?>" data-tab-panel-group="#servicePanels">
+      <button class="tab" type="button" data-tab-target="svc-<?= e(preg_replace('/[^a-z0-9]+/i', '-', $instance['unit'])) ?>" data-tab-hash="<?= e($instance['unit']) ?>" data-tab-panel-group="#servicePanels">
         <i data-lucide="<?= e($instance['icon']) ?>"></i><?= e($instance['label']) ?>
       </button>
     <?php endforeach; ?>
@@ -55,20 +55,20 @@ $statusBadge = static function (string $status): array {
 
       <div class="table-wrap">
         <table class="data-table">
-          <thead><tr><th>Service</th><th>Instance</th><th>Status</th><th>Start at boot</th><th style="text-align:right">Quick actions</th></tr></thead>
+          <thead><tr><th>Service</th><th>Unit</th><th>Status</th><th>Start at boot</th><th class="actions-col">Actions</th></tr></thead>
           <tbody>
-          <?php foreach ($services as $svc): [$cls, $label] = $statusBadge($svc['status']); $controllable = $svc['status'] !== 'not-installed' && is_linux(); ?>
+          <?php foreach ($services as $svc): [$cls, $label] = $statusBadge($svc['status']); $controllable = $svc['status'] !== 'not-installed' && is_linux() && role_can('services.control'); $running = $svc['status'] === 'active'; $display = service_display_name($svc['name']); ?>
             <tr>
-              <td style="font-weight:600"><?= e(ucwords(str_replace(['-', '.service'], [' ', ''], $svc['name']))) ?></td>
+              <td style="font-weight:600"><?= e($display) ?></td>
               <td class="mono text-tertiary"><?= e($svc['name']) ?></td>
               <td><span class="badge <?= e($cls) ?>"><span class="bdot"></span><?= e($label) ?></span></td>
               <td><span class="badge <?= $svc['enabled'] === true ? 'badge-blue' : 'badge-slate' ?>"><?= $svc['enabled'] === true ? 'Enabled' : ($svc['enabled'] === false ? 'Disabled' : 'N/A') ?></span></td>
-              <td style="text-align:right">
+              <td class="actions-col">
                 <?php if ($controllable): ?>
-                  <button class="btn btn-secondary btn-sm" data-service-action="start" data-service-name="<?= e($svc['name']) ?>"><i data-lucide="play"></i></button>
-                  <button class="btn btn-secondary btn-sm" data-service-action="restart" data-service-name="<?= e($svc['name']) ?>"><i data-lucide="rotate-cw"></i></button>
-                  <button class="btn btn-danger btn-sm" data-service-action="stop" data-service-name="<?= e($svc['name']) ?>"><i data-lucide="square"></i></button>
-                <?php else: ?><span class="text-tertiary">—</span><?php endif; ?>
+                  <button class="btn btn-secondary btn-sm btn-icon" type="button" data-service-action="start" data-service-name="<?= e($svc['name']) ?>" title="Start <?= e($display) ?>" aria-label="Start <?= e($display) ?>"<?= $running ? ' disabled' : '' ?>><i data-lucide="play"></i></button>
+                  <button class="btn btn-secondary btn-sm btn-icon" type="button" data-service-action="restart" data-service-name="<?= e($svc['name']) ?>" title="Restart <?= e($display) ?>" aria-label="Restart <?= e($display) ?>"<?= $running ? '' : ' disabled' ?>><i data-lucide="rotate-cw"></i></button>
+                  <button class="btn btn-danger btn-sm btn-icon" type="button" data-service-action="stop" data-service-name="<?= e($svc['name']) ?>" title="Stop <?= e($display) ?>" aria-label="Stop <?= e($display) ?>"<?= $running ? '' : ' disabled' ?>><i data-lucide="square"></i></button>
+                <?php else: ?><span class="text-tertiary"><?= role_can('services.control') ? '—' : 'Read only' ?></span><?php endif; ?>
               </td>
             </tr>
           <?php endforeach; ?>
@@ -102,22 +102,23 @@ $statusBadge = static function (string $status): array {
         <div id="<?= e($panelId) ?>-panels">
           <div id="<?= e($panelId) ?>-status" data-tab-panel class="card-pad">
             <div class="grid grid-3" style="margin-bottom:18px">
-              <div class="stat-card"><div class="stat-label">Current status</div><div class="stat-val" style="font-size:22px"><?= e($label) ?></div></div>
-              <div class="stat-card"><div class="stat-label">Start at boot</div><div class="stat-val" style="font-size:22px"><?= $enabled ? 'Enabled' : 'Disabled' ?></div></div>
-              <div class="stat-card"><div class="stat-label">Systemd instance</div><div class="stat-val mono" style="font-size:17px"><?= e($unit) ?></div></div>
+              <div class="stat-card"><div class="stat-label">Current status</div><div class="stat-val text"><?= e($label) ?></div></div>
+              <div class="stat-card"><div class="stat-label">Start at boot</div><div class="stat-val text"><?= $enabled === null ? 'N/A' : ($enabled ? 'Enabled' : 'Disabled') ?></div></div>
+              <div class="stat-card"><div class="stat-label">systemd unit</div><div class="stat-val text mono" style="font-size:18px"><?= e($unit) ?></div></div>
             </div>
             <div class="flex gap-2" style="flex-wrap:wrap">
               <?php if (role_can('services.control')): ?>
-                <button class="btn btn-secondary" data-service-action="start" data-service-name="<?= e($unit) ?>"><i data-lucide="play"></i>Start</button>
-                <button class="btn btn-primary" data-service-action="restart" data-service-name="<?= e($unit) ?>"><i data-lucide="rotate-cw"></i>Restart</button>
-                <button class="btn btn-danger" data-service-action="stop" data-service-name="<?= e($unit) ?>"><i data-lucide="square"></i>Stop</button>
+                <?php $running = $status === 'active'; ?>
+                <button class="btn <?= $running ? 'btn-secondary' : 'btn-primary' ?>" type="button" data-service-action="start" data-service-name="<?= e($unit) ?>"<?= $running ? ' disabled' : '' ?>><i data-lucide="play"></i>Start</button>
+                <button class="btn <?= $running ? 'btn-primary' : 'btn-secondary' ?>" type="button" data-service-action="restart" data-service-name="<?= e($unit) ?>"<?= $running ? '' : ' disabled' ?>><i data-lucide="rotate-cw"></i>Restart</button>
+                <button class="btn btn-danger" type="button" data-service-action="stop" data-service-name="<?= e($unit) ?>"<?= $running ? '' : ' disabled' ?>><i data-lucide="square"></i>Stop</button>
               <?php else: ?><span class="muted">Read only</span><?php endif; ?>
-              <?php if ($enabled !== null): ?><button class="btn btn-secondary" data-service-action="<?= $enabled ? 'disable' : 'enable' ?>" data-service-name="<?= e($unit) ?>"><i data-lucide="power"></i><?= $enabled ? 'Disable at boot' : 'Enable at boot' ?></button><?php endif; ?>
+              <?php if ($enabled !== null && role_can('services.control')): ?><button class="btn btn-secondary" type="button" data-service-action="<?= $enabled ? 'disable' : 'enable' ?>" data-service-name="<?= e($unit) ?>"><i data-lucide="power"></i><?= $enabled ? 'Disable at boot' : 'Enable at boot' ?></button><?php endif; ?>
             </div>
           </div>
           <?php if ($isWeb): ?>
             <div id="<?= e($panelId) ?>-sites" data-tab-panel class="hidden table-wrap"><table class="data-table"><thead><tr><th>Domain</th><th>Document root</th><th>PHP</th><th>SSL</th></tr></thead><tbody>
-              <?php if (!$sites): ?><tr><td colspan="4" class="text-tertiary" style="text-align:center;padding:24px">No panel-managed websites.</td></tr><?php endif; ?>
+              <?php if (!$sites): ?><tr class="empty-row"><td colspan="4">No panel-managed websites.</td></tr><?php endif; ?>
               <?php foreach ($sites as $site): ?><tr><td><a href="<?= e(url('websites')) ?>"><?= e($site['domain'] ?? '') ?></a></td><td class="mono"><?= e($site['docroot'] ?? '') ?></td><td class="mono"><?= e($site['php'] ?? '') ?></td><td><span class="badge <?= !empty($site['ssl']) ? 'badge-emerald' : 'badge-slate' ?>"><?= !empty($site['ssl']) ? 'Enabled' : 'HTTP' ?></span></td></tr><?php endforeach; ?>
             </tbody></table></div>
           <?php endif; ?>
@@ -141,6 +142,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const res = await apiPost('services', { name: btn.dataset.serviceName, action: btn.dataset.serviceAction });
     btn.disabled = false;
     if (res.ok) { toast(`${btn.dataset.serviceName}: ${btn.dataset.serviceAction} complete`, 'success'); setTimeout(() => location.reload(), 350); }
+    else if (res.error) btn.disabled = false;
     else toast(res.error || 'Service action failed', 'error');
   }));
 });

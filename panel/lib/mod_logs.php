@@ -14,14 +14,16 @@ function log_sources(): array
     $sources = [];
 
     foreach (($config['services'] ?? []) as $svc) {
-        $sources[] = ['id' => 'unit:' . $svc, 'label' => $svc . ' (journal)'];
+        // Only offer journals for services that exist on this server.
+        if (service_status($svc) === 'not-installed') { continue; }
+        $sources[] = ['id' => 'unit:' . $svc, 'label' => service_display_name($svc), 'detail' => 'journal · ' . $svc];
     }
 
     $files = ['/var/log/syslog', '/var/log/auth.log', '/var/log/kern.log', '/var/log/dpkg.log'];
     $files = array_merge($files, glob('/var/log/nginx/*.log') ?: [], glob('/var/log/apache2/*.log') ?: []);
     foreach ($files as $path) {
         if (file_exists($path)) {
-            $sources[] = ['id' => 'file:' . $path, 'label' => $path];
+            $sources[] = ['id' => 'file:' . $path, 'label' => basename($path), 'detail' => $path];
         }
     }
 

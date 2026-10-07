@@ -16,44 +16,40 @@ $apacheStatus = service_status('apache2');
   </div>
   <?php if ($available): ?>
   <div class="page-actions">
-    <button class="btn btn-primary" id="wsToggle"><i data-lucide="plus"></i>Add Website</button>
+    <button class="btn btn-primary" type="button" id="wsToggle" aria-expanded="false" aria-controls="wsForm"><i data-lucide="plus"></i>Add website</button>
   </div>
   <?php endif; ?>
 </div>
 
 <?php if (!$available): ?>
-  <div class="card"><div class="empty-state">
-    <div class="es-icon"><i data-lucide="globe"></i></div>
-    <div style="font-weight:600;color:var(--text-secondary)">Privileged helper not installed</div>
-    <div style="font-size:13px;margin-top:4px">Re-run <span class="mono">install.sh</span> to enable website management.</div>
-  </div></div>
+  <?= helper_missing_state('website management') ?>
 <?php else: ?>
   <div class="grid grid-3" style="margin-bottom:16px">
     <a class="stat-card" href="<?= e(url('service', ['name' => 'nginx'])) ?>" style="color:inherit">
       <div class="stat-top"><div class="stat-icon" style="background:rgba(16,185,129,.12)"><i data-lucide="server-cog" style="color:var(--emerald-400)"></i></div><span class="badge <?= $nginxStatus === 'active' ? 'badge-emerald' : 'badge-slate' ?>"><span class="bdot"></span><?= e(ucfirst($nginxStatus)) ?></span></div>
-      <div class="stat-val" style="font-size:18px">Nginx</div><div class="stat-label">Underlying reverse proxy / web server</div>
+      <div class="stat-val text">Nginx</div><div class="stat-label">Underlying reverse proxy / web server</div>
     </a>
     <a class="stat-card" href="<?= e(url('service', ['name' => 'apache2'])) ?>" style="color:inherit">
       <div class="stat-top"><div class="stat-icon" style="background:rgba(245,158,11,.12)"><i data-lucide="server" style="color:var(--orange-400)"></i></div><span class="badge <?= $apacheStatus === 'active' ? 'badge-emerald' : 'badge-slate' ?>"><span class="bdot"></span><?= e(ucfirst($apacheStatus)) ?></span></div>
-      <div class="stat-val" style="font-size:18px">Apache</div><div class="stat-label">Available underlying HTTP service</div>
+      <div class="stat-val text">Apache</div><div class="stat-label">Available underlying HTTP service</div>
     </a>
     <div class="stat-card">
       <div class="stat-top"><div class="stat-icon" style="background:rgba(59,130,246,.12)"><i data-lucide="hard-drive" style="color:var(--blue-400)"></i></div></div>
-      <div class="stat-val" style="font-size:18px"><?= e(human_bytes(array_sum(array_map(fn($site) => (int) ($site['disk_used'] ?? 0), $sites)))) ?></div><div class="stat-label">Disk used by tracked document roots</div>
+      <div class="stat-val text"><?= e(human_bytes(array_sum(array_map(fn($site) => (int) ($site['disk_used'] ?? 0), $sites)))) ?></div><div class="stat-label">Disk used by tracked document roots</div>
     </div>
   </div>
 
   <div class="card hidden" id="wsForm" style="margin-bottom:16px">
     <div class="card-header"><h3>Add website</h3></div>
     <div class="card-pad">
-      <div class="grid" style="grid-template-columns:1fr auto auto auto;gap:12px;align-items:end">
+      <form class="form-grid" id="wsCreateForm" style="--cols:minmax(0,1fr) 160px minmax(0,240px) auto" novalidate>
         <div>
-          <label class="field-label">Domain</label>
-          <input class="input mono" id="wsDomain" placeholder="example.com">
+          <label class="field-label" for="wsDomain">Domain<span class="req" aria-hidden="true">*</span></label>
+          <input class="input mono" id="wsDomain" required placeholder="example.com" pattern="^(?=.{1,253}$)([A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$" autocomplete="off" data-pattern-message="Enter a domain name such as example.com (no http:// or paths).">
         </div>
         <div>
-          <label class="field-label">PHP</label>
-          <select class="input" id="wsPhp">
+          <label class="field-label" for="wsPhp">PHP version</label>
+          <select class="select" id="wsPhp" required>
             <?php if (!$phpv): ?>
               <option value="" disabled selected>no PHP-FPM found</option>
             <?php else: ?>
@@ -64,28 +60,28 @@ $apacheStatus = service_status('apache2');
           </select>
         </div>
         <div>
-          <label class="field-label">SSL email</label>
-          <input class="input mono" id="wsEmail" placeholder="optional">
+          <label class="field-label" for="wsEmail">Certificate email <span class="text-tertiary" style="font-weight:400">(optional)</span></label>
+          <input class="input" id="wsEmail" type="email" placeholder="admin@example.com" autocomplete="email">
         </div>
-        <button class="btn btn-primary" id="wsCreate"><i data-lucide="plus"></i>Add Website</button>
-      </div>
-      <div style="font-size:12px;color:var(--text-tertiary);margin-top:10px">
+        <button class="btn btn-primary" type="submit" id="wsCreate"><i data-lucide="plus"></i>Create website</button>
+      </form>
+      <div class="field-help" style="margin-top:10px">
         Each website receives an immutable ID, a confined document root, and a dedicated PHP-FPM identity.
       </div>
     </div>
   </div>
 
   <div class="flex items-center gap-2" style="margin-bottom:16px;flex-wrap:wrap">
-    <span class="chip active" data-ws-filter="all">All · <?= count($sites) ?></span>
-    <span class="chip" data-ws-filter="ssl">HTTPS · <?= count(array_filter($sites, fn($s) => !empty($s['ssl']))) ?></span>
-    <span class="chip" data-ws-filter="nossl">No SSL · <?= count(array_filter($sites, fn($s) => empty($s['ssl']))) ?></span>
+    <button type="button" class="chip active" aria-pressed="true" data-ws-filter="all">All · <?= count($sites) ?></button>
+    <button type="button" class="chip" aria-pressed="false" data-ws-filter="ssl">HTTPS · <?= count(array_filter($sites, fn($s) => !empty($s['ssl']))) ?></button>
+    <button type="button" class="chip" aria-pressed="false" data-ws-filter="nossl">No SSL · <?= count(array_filter($sites, fn($s) => empty($s['ssl']))) ?></button>
   </div>
 
   <?php if (!$sites): ?>
     <div class="card"><div class="empty-state" id="wsEmpty">
       <div class="es-icon"><i data-lucide="globe"></i></div>
-      <div style="font-weight:600;color:var(--text-secondary)">No sites yet</div>
-      <div style="font-size:13px;margin-top:4px">Click <span class="mono">Add Website</span> to create your first site.</div>
+      <div class="es-title">No websites yet</div>
+      <div class="es-body">Create your first site with <strong>Add website</strong>.</div>
     </div></div>
   <?php else: ?>
     <div class="grid grid-3" id="wsGrid" style="margin-bottom:24px">
@@ -105,7 +101,7 @@ $apacheStatus = service_status('apache2');
         ?>
         <div class="card" data-ws-card data-ws-ssl-state="<?= $ssl ? 'ssl' : 'nossl' ?>" style="padding:16px">
           <div class="flex items-center gap-3" style="margin-bottom:12px">
-            <div style="width:36px;height:36px;border-radius:9px;background:rgba(59,130,246,.12);display:flex;align-items:center;justify-content:center;flex-shrink:0"><i data-lucide="globe" style="width:17px;height:17px;color:var(--blue-400)"></i></div>
+            <div style="width:36px;height:36px;border-radius:8px;background:rgba(59,130,246,.12);display:flex;align-items:center;justify-content:center;flex-shrink:0"><i data-lucide="globe" style="width:17px;height:17px;color:var(--blue-400)"></i></div>
             <div style="flex:1;min-width:0">
               <div style="font-weight:700;font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
                 <a href="<?= e($url) ?>" target="_blank" rel="noopener"><?= e($domain) ?></a>
@@ -114,7 +110,7 @@ $apacheStatus = service_status('apache2');
           </div>
           <div class="flex gap-2" style="margin-bottom:14px;flex-wrap:wrap">
             <?php if ($php !== ''): ?><span class="badge badge-slate">PHP <?= e($php) ?></span><?php endif; ?>
-            <span class="badge <?= $service === 'active' ? 'badge-emerald' : 'badge-slate' ?>"><span class="bdot"></span><?= e($server === 'apache2' ? 'Apache' : 'Nginx') ?> · <?= e($service) ?></span>
+            <span class="badge <?= $service === 'active' ? 'badge-emerald' : 'badge-slate' ?>"><span class="bdot"></span><?= e($server === 'apache2' ? 'Apache' : 'Nginx') ?> · <?= e(['active' => 'running', 'inactive' => 'stopped', 'failed' => 'failed'][$service] ?? $service) ?></span>
             <?php if ($ssl): ?>
               <span class="badge badge-emerald"><span class="bdot"></span>HTTPS</span>
             <?php else: ?>
@@ -124,9 +120,9 @@ $apacheStatus = service_status('apache2');
               <span class="badge badge-purple" title="<?= e((string) ($s['git']['url'] ?? '')) ?>"><i data-lucide="git-branch" style="width:11px;height:11px;vertical-align:-1px"></i> <?= e((string) ($s['git']['branch'] ?? 'git')) ?></span>
             <?php endif; ?>
           </div>
-          <div style="font-size:11.5px;color:var(--text-tertiary);margin-bottom:4px">Disk used · <?= e(human_bytes($diskUsed)) ?><?= $diskTotal ? ' of ' . e(human_bytes($diskTotal)) . ' filesystem' : '' ?></div>
+          <div style="font-size:12px;color:var(--text-tertiary);margin-bottom:4px">Disk used · <?= e(human_bytes($diskUsed)) ?><?= $diskTotal ? ' of ' . e(human_bytes($diskTotal)) . ' filesystem' : '' ?></div>
           <div class="progress" style="margin-bottom:8px"><div style="width:<?= e(number_format($diskPct, 1, '.', '')) ?>%;background:var(--blue-500)"></div></div>
-          <div class="flex items-center gap-3" style="font-size:11.5px;color:var(--text-tertiary);margin-bottom:12px"><span><i data-lucide="files" style="width:12px;height:12px;vertical-align:-2px"></i> <?= (int) ($s['file_count'] ?? 0) ?> files</span><?php if ($diskTotal): ?><span><?= e(human_bytes((int) ($s['disk_free'] ?? 0))) ?> free</span><?php endif; ?></div>
+          <div class="flex items-center gap-3" style="font-size:12px;color:var(--text-tertiary);margin-bottom:12px"><span><i data-lucide="files" style="width:12px;height:12px;vertical-align:-2px"></i> <?= (int) ($s['file_count'] ?? 0) ?> files</span><?php if ($diskTotal): ?><span><?= e(human_bytes((int) ($s['disk_free'] ?? 0))) ?> free</span><?php endif; ?></div>
           <div class="flex items-center gap-1" style="border-top:1px solid var(--border-subtle);padding-top:10px">
             <a class="icon-btn" href="<?= e($url) ?>" target="_blank" rel="noopener" title="Visit"><i data-lucide="external-link"></i></a>
             <?php if ($filesPath !== null): ?>
@@ -140,17 +136,17 @@ $apacheStatus = service_status('apache2');
               <button class="icon-btn" data-ws-git="<?= e($domain) ?>"<?= !empty($s['git']) ? ' style="color:var(--purple-400)"' : '' ?> title="Git deployment"><i data-lucide="git-branch"></i></button>
             <?php endif; ?>
             <?php if (!$ssl): ?>
-              <button class="icon-btn" data-ws-ssl="<?= e($domain) ?>" title="Issue SSL"><i data-lucide="shield"></i></button>
+              <button class="icon-btn" type="button" data-ws-ssl="<?= e($domain) ?>" title="Issue SSL certificate" aria-label="Issue SSL certificate for <?= e($domain) ?>"><i data-lucide="shield-plus"></i></button>
             <?php endif; ?>
             <div class="topbar-spacer" style="flex:1"></div>
-            <button class="icon-btn" data-ws-del="<?= e($domain) ?>" title="Delete"><i data-lucide="trash-2"></i></button>
+            <button class="icon-btn danger" type="button" data-ws-del="<?= e($domain) ?>" title="Delete website" aria-label="Delete <?= e($domain) ?>"><i data-lucide="trash-2"></i></button>
           </div>
         </div>
       <?php endforeach; ?>
     </div>
     <div class="card hidden" id="wsNoMatch"><div class="empty-state">
       <div class="es-icon"><i data-lucide="globe"></i></div>
-      <div style="font-weight:600;color:var(--text-secondary)">No matching sites</div>
+      <div class="es-title">No sites match this filter</div>
     </div></div>
   <?php endif; ?>
 
@@ -159,15 +155,18 @@ $apacheStatus = service_status('apache2');
     const { apiPost, streamPost, toast } = window.Nebula;
 
     const form = document.getElementById('wsForm');
-    document.getElementById('wsToggle')?.addEventListener('click', () => {
+    document.getElementById('wsToggle')?.addEventListener('click', (event) => {
       form?.classList.toggle('hidden');
-      if (form && !form.classList.contains('hidden')) document.getElementById('wsDomain')?.focus();
+      const open = form && !form.classList.contains('hidden');
+      event.currentTarget.setAttribute('aria-expanded', open ? 'true' : 'false');
+      if (open) document.getElementById('wsDomain')?.focus();
     });
+    if (location.hash === '#add') document.getElementById('wsToggle')?.click();
 
     document.querySelectorAll('[data-ws-filter]').forEach((chip) => {
       chip.addEventListener('click', () => {
         const f = chip.getAttribute('data-ws-filter');
-        document.querySelectorAll('[data-ws-filter]').forEach((c) => c.classList.toggle('active', c === chip));
+        document.querySelectorAll('[data-ws-filter]').forEach((c) => { c.classList.toggle('active', c === chip); c.setAttribute('aria-pressed', c === chip ? 'true' : 'false'); });
         let visible = 0;
         document.querySelectorAll('[data-ws-card]').forEach((card) => {
           const state = card.getAttribute('data-ws-ssl-state');
@@ -179,20 +178,23 @@ $apacheStatus = service_status('apache2');
       });
     });
 
-    document.getElementById('wsCreate')?.addEventListener('click', async () => {
-      const domain = document.getElementById('wsDomain').value.trim();
-      const php = document.getElementById('wsPhp').value;
-      if (!domain) { toast('Enter a domain', 'warning'); return; }
-      if (!php) { toast('No PHP version available', 'warning'); return; }
-      const res = await apiPost('sites', { action: 'create', domain, php });
-      if (res.ok) { toast('Website added', 'success'); setTimeout(() => location.reload(), 500); }
-      else toast(res.error || 'Failed', 'error');
+    document.getElementById('wsCreateForm')?.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const domainInput = document.getElementById('wsDomain');
+      domainInput.value = domainInput.value.trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/.*$/, '');
+      if (!window.Nebula.validateForm(event.currentTarget)) return;
+      const button = document.getElementById('wsCreate');
+      window.Nebula.setBusy(button, true);
+      const res = await apiPost('sites', { action: 'create', domain: domainInput.value, php: document.getElementById('wsPhp').value });
+      window.Nebula.setBusy(button, false);
+      if (res.ok) { toast('Website created', 'success'); setTimeout(() => location.reload(), 500); }
+      else toast(res.error || 'Could not create the website', 'error');
     });
 
     document.querySelectorAll('[data-ws-ssl]').forEach((btn) => {
       btn.addEventListener('click', async () => {
         const domain = btn.getAttribute('data-ws-ssl');
-        if (!confirm('Issue a Let’s Encrypt certificate for ' + domain + '?')) return;
+        if (!await window.Nebula.confirm({ title: 'Issue a certificate for ' + domain + '?', message: 'Let’s Encrypt must be able to reach this domain over HTTP.', icon: 'shield-check', confirmLabel: 'Issue certificate' })) return;
         const email = document.getElementById('wsEmail').value.trim();
         const original = btn.innerHTML;
         btn.disabled = true;
@@ -213,7 +215,7 @@ $apacheStatus = service_status('apache2');
     document.querySelectorAll('[data-ws-del]').forEach((btn) => {
       btn.addEventListener('click', async () => {
         const domain = btn.getAttribute('data-ws-del');
-        if (!confirm('Delete ' + domain + '?\n\nThis removes the Nginx config, the DNS zone, SSL certificates, AND the website folder with all its files. This cannot be undone.')) return;
+        if (!await window.Nebula.confirm({ title: 'Delete ' + domain + '?', message: 'This removes the Nginx config, the DNS zone, SSL certificates and the website folder with all its files. This cannot be undone.', danger: true, confirmLabel: 'Delete website' })) return;
         const res = await apiPost('sites', { action: 'delete', domain, purge: true });
         if (res.ok) { toast('Deleted', 'success'); btn.closest('[data-ws-card]').remove(); }
         else toast(res.error || 'Failed', 'error');
@@ -226,9 +228,9 @@ $apacheStatus = service_status('apache2');
   <div class="drawer-overlay hidden" id="wsGitDrawer"><div class="drawer" style="width:min(560px,96vw)">
     <div class="drawer-header"><div><strong id="wsGitTitle">Git deployment</strong><div class="muted mono" id="wsGitDomain" style="font-size:11px"></div></div><button class="icon-btn" data-close-git><i data-lucide="x"></i></button></div>
     <div class="drawer-body"><div class="form-stack">
-      <div id="wsGitStatus" class="muted" style="font-size:12.5px">Loading…</div>
-      <div><label class="field-label">Repository URL</label><input class="input mono" id="wsGitUrl" placeholder="https://github.com/user/repo.git" autocomplete="off"><div class="field-help">Public repositories work as-is. For a private repo embed a token: <span class="mono">https://user:token@host/repo.git</span></div></div>
-      <div><label class="field-label">Branch</label><input class="input mono" id="wsGitBranch" value="main" autocomplete="off"></div>
+      <div id="wsGitStatus" class="muted" style="font-size:13px">Loading…</div>
+      <div><label class="field-label" for="wsGitUrl">Repository URL</label><input class="input mono" id="wsGitUrl" placeholder="https://github.com/user/repo.git" autocomplete="off"><div class="field-help">Public repositories work as-is. For a private repo embed a token: <span class="mono">https://user:token@host/repo.git</span></div></div>
+      <div><label class="field-label" for="wsGitBranch">Branch</label><input class="input mono" id="wsGitBranch" value="main" autocomplete="off"></div>
       <div class="notice notice-warning" style="font-size:12px"><i data-lucide="alert-triangle"></i><div>Connecting or pulling force-updates tracked files in the document root to match the repository. Uncommitted local changes there are discarded.</div></div>
       <pre class="mono hidden" id="wsGitOut" style="margin:0;padding:12px;font-size:12px;line-height:1.5;white-space:pre-wrap;max-height:28vh;overflow:auto;background:var(--bg-surface-2);border-radius:8px"></pre>
     </div></div>
@@ -287,7 +289,7 @@ $apacheStatus = service_status('apache2');
     };
     $('wsGitPull').onclick = () => runStream({ action: 'pull', domain }, 'Pulled latest changes');
     $('wsGitDisconnect').onclick = async () => {
-      if (!confirm('Disconnect this repository? The files stay; only the .git link is removed.')) return;
+      if (!await window.Nebula.confirm({ title: 'Disconnect this repository?', message: 'The files stay; only the .git link is removed.', warning: true, icon: 'unlink', confirmLabel: 'Disconnect' })) return;
       const r = await apiPost('git', { action: 'disconnect', domain, remove: true });
       toast(r.ok ? 'Disconnected' : (r.error || 'Failed'), r.ok ? 'success' : 'error');
       if (r.ok) { try { renderStatus(await apiGet('git&domain=' + encodeURIComponent(domain))); } catch (e) {} }

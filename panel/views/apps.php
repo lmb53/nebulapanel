@@ -8,7 +8,7 @@ $helper = helper_available();
 <div class="page-header">
   <div>
     <h1 class="page-title">Install Apps</h1>
-    <p class="page-subtitle">Install server software and PHP versions — installed services appear in the sidebar for management</p>
+    <p class="page-subtitle">Install server software and PHP versions. Manage installed services from <a class="text-blue" href="<?= e(url('services')) ?>">Services</a>.</p>
   </div>
 </div>
 
@@ -19,22 +19,24 @@ $helper = helper_available();
       <?php foreach ($catalog as $key => $c): $installed = app_installed($key); ?>
         <div class="service-row" style="align-items:flex-start">
           <?php // Official brand mark where we ship one; the lucide glyph is the fallback. ?>
-          <div class="svc-icon<?= !empty($c['logo']) ? ' svc-icon-logo' : '' ?>">
+          <div class="svc-icon svc-icon-logo">
             <?php if (!empty($c['logo'])): ?>
               <img src="<?= e(asset($c['logo'])) ?>" alt="" loading="lazy" data-logo-fallback="<?= e($c['icon']) ?>">
             <?php else: ?>
-              <i data-lucide="<?= e($c['icon']) ?>" style="color:var(--blue-400)"></i>
+              <i data-lucide="<?= e($c['icon']) ?>" aria-hidden="true"></i>
             <?php endif; ?>
           </div>
           <div style="flex:1;min-width:0">
-            <div style="font-weight:600;font-size:13px"><?= e($c['label']) ?></div>
-            <div style="font-size:11.5px;color:var(--text-tertiary);margin-bottom:8px"><?= e($c['desc']) ?></div>
+            <div class="svc-name"><?= e($c['label']) ?></div>
+            <div class="text-tertiary" style="font-size:12px;margin-bottom:10px"><?= e($c['desc']) ?></div>
+            <div class="flex items-center gap-2">
             <?php if ($installed): ?>
-              <span class="badge badge-emerald" style="margin-right:6px"><span class="bdot"></span>Installed</span>
-              <button class="btn btn-danger btn-sm" data-app-uninstall="<?= e($key) ?>">Remove</button>
+              <span class="badge badge-emerald"><span class="bdot"></span>Installed</span>
+              <button class="btn btn-secondary btn-sm text-red" type="button" data-app-uninstall="<?= e($key) ?>" data-app-name="<?= e($c['label']) ?>">Remove</button>
             <?php else: ?>
-              <button class="btn btn-primary btn-sm" data-app-install="<?= e($key) ?>"><i data-lucide="download"></i>Install</button>
+              <button class="btn btn-primary btn-sm" type="button" data-app-install="<?= e($key) ?>"<?= $helper ? '' : ' disabled title="The privileged helper is not installed"' ?>><i data-lucide="download"></i>Install</button>
             <?php endif; ?>
+            </div>
           </div>
         </div>
       <?php endforeach; ?>
@@ -50,20 +52,24 @@ $helper = helper_available();
       <div class="flex gap-2" style="flex-wrap:wrap">
         <?php if (!$phpInstalled): ?><span class="text-tertiary" style="font-size:13px">None detected</span><?php endif; ?>
         <?php foreach ($phpInstalled as $v): ?>
-          <span class="badge badge-blue"><span class="bdot"></span>PHP <?= e($v) ?></span>
+          <span class="badge badge-blue">PHP <?= e($v) ?></span>
         <?php endforeach; ?>
       </div>
     </div>
     <div>
-      <div class="field-label">Install another version <span style="color:var(--text-tertiary);font-weight:400">(via ondrej PPA)</span></div>
+      <label class="field-label" for="phpVer">Install another version <span class="text-tertiary" style="font-weight:400">(from the ondrej/php PPA)</span></label>
+      <?php if (!$phpAvailable): ?>
+        <div class="text-tertiary" style="font-size:13px">Every supported PHP version is already installed.</div>
+      <?php else: ?>
       <div class="flex gap-2" style="flex-wrap:wrap;align-items:center">
-        <select class="select" id="phpVer" style="width:auto">
-          <?php foreach ($phpAvailable as $v): ?><option value="<?= e($v) ?>">PHP <?= e($v) ?></option><?php endforeach; ?>
+        <select class="select" id="phpVer" style="width:auto;min-width:160px">
+          <?php foreach (array_reverse($phpAvailable) as $v): ?><option value="<?= e($v) ?>"<?= $v === php_latest_version() ? ' selected' : '' ?>>PHP <?= e($v) ?><?= $v === php_latest_version() ? ' (latest)' : '' ?></option><?php endforeach; ?>
         </select>
-        <button class="btn btn-primary" id="phpInstall" <?= (!$helper || !$phpAvailable) ? 'disabled' : '' ?>><i data-lucide="download"></i>Install PHP</button>
+        <button class="btn btn-primary" type="button" id="phpInstall" <?= !$helper ? 'disabled' : '' ?>><i data-lucide="download"></i>Install PHP</button>
       </div>
+      <?php endif; ?>
       <?php if (!$helper): ?>
-        <div style="font-size:12px;color:var(--orange-400);margin-top:8px">Privileged helper not installed — re-run install.sh to enable PHP version installs.</div>
+        <div class="notice notice-warning" style="margin-top:12px"><i data-lucide="triangle-alert"></i><div><strong>Privileged helper not installed</strong><div>Re-run <span class="mono">install.sh</span> to enable package and PHP installs.</div></div></div>
       <?php endif; ?>
     </div>
   </div>
@@ -125,7 +131,7 @@ document.addEventListener('DOMContentLoaded', () => {
   document.querySelectorAll('[data-app-install]').forEach((b) =>
     b.addEventListener('click', () => run(b, { action: 'install', key: b.dataset.appInstall }, 'Installing')));
   document.querySelectorAll('[data-app-uninstall]').forEach((b) =>
-    b.addEventListener('click', () => { if (confirm('Remove this package?')) run(b, { action: 'uninstall', key: b.dataset.appUninstall }, 'Removing'); }));
+    b.addEventListener('click', async () => { if (await window.Nebula.confirm({ title: 'Remove ' + (b.dataset.appName || 'this package') + '?', message: 'The package is uninstalled with apt. Its configuration files may remain.', danger: true, confirmLabel: 'Remove' })) run(b, { action: 'uninstall', key: b.dataset.appUninstall }, 'Removing'); }));
   document.getElementById('phpInstall')?.addEventListener('click', function () {
     run(this, { action: 'php-install', version: document.getElementById('phpVer').value }, 'Installing');
   });

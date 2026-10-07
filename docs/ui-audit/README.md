@@ -1,5 +1,11 @@
 # Nebula Panel UI/UX audit, October 2026
 
+> **Status: all findings below have been addressed** on branch `claude/eager-lovelace-8w0vwo`
+> (see *Resolution* at the end). Decisions taken with the owner: file deletes go to a
+> recoverable trash with an option to skip it; the panel runs on PHP 8.5; narrow screens
+> use an off-canvas labelled sidebar instead of an icon rail; the editor window follows
+> theme changes made in the main window.
+
 **Method.** I ran a copy of `panel/` under PHP 8.3's built-in server with a seeded bootstrap token and a sandbox `NEBULA_FM_ROOT`. The sandbox included long file names, 30 files and an empty folder. I drove the panel with headless Chromium (Playwright) and visited all 27 registered routes plus `service`, `file-edit`, `setup`, `setup-wizard`, `login`, logout, lockout and an unknown route. Each route was captured at four viewports: 1600×1000, 1366×768, 820×1180 and 390×844.
 
 For every page I recorded console errors, failed requests, icons that never rendered, horizontal overflow, computed button, input, tab and header heights, form controls without a label, and icon-only controls without a name. I then opened the overlays, tabs, drawers, context menus and dropdowns, ran destructive flows such as delete and lockout, switched to the light theme and checked keyboard behaviour. Findings are tied to source lines where possible.
@@ -531,3 +537,22 @@ Docker tabs carry count badges; PHP and Users tabs do not.
 18. **Fix data and formatting defects:** the `→` escape, "MB configured", the `scan-clock` icon, service display names, the `nixbld` "Human" label and the Docker "– ·" subtitle (P2-9, P2-11, P2-12, P2-24, P3-2).
 19. **Render the audit log as a single filterable table** and remove the raw JSON block from Settings (P1-13).
 20. **Define and adopt a type scale and spacing tokens**, moving the about 600 inline styles into classes (P2-30).
+
+---
+
+## Resolution
+
+| Area | What changed |
+|---|---|
+| P0 delete | One handler (in `views/files.php`). Deletes move to a recoverable trash (`data/trash/files`, with restore/purge/empty in a new **Trash** tab); the delete dialog has a *Skip the trash and delete permanently* option; `api/file-delete.php` takes `permanent`, `api/file-trash.php` is new. |
+| Design system | Global form-control font reset; fixed control heights (`--control-h` 36px, `--control-h-sm` 28px); type scale (9 sizes) and radii (5 values); `:focus-visible` ring; themed checkboxes/radios/selects; shared modal, notice (info/warning/danger/success), stat-card, tab and `requirement_missing()` components. |
+| Accessibility | Light-theme status tokens and `--text-tertiary` meet WCAG AA in both themes; every label is associated with its control; icon-only controls get names and tooltips; search trigger is a button; tabs have roles and arrow-key support; drawers/modals trap focus, close on Esc/backdrop and restore focus; context menu is keyboard-operable. |
+| Responsive | Inline grids replaced with responsive classes; `body{overflow-x:hidden}` removed; drawers `min(420px,100vw)`; ≤900px uses an off-canvas, fully labelled sidebar with a menu button; search stays reachable on phones. |
+| Navigation | Nav label = H1 = `<title>` for every page; sub-pages highlight their parent; real 404/403 page; collapsible, persisted nav sections; persisted sidebar collapse; account menu with *My account* (password change for every role); command palette has keywords and a no-results state; Panel Updates merged into Updates. |
+| Data/state | Health thresholds from Settings drive every meter; disabled/explained actions when they cannot succeed; services report *Not installed* correctly with proper names; PHP settings show an unreadable state instead of a blank form; Docker surfaces daemon errors; one date format (`7 Oct 2026, 09:21`); natural sort; login-shell based *Login*/*System* account types; real process names. |
+| Dialogs | All 50 native `confirm()`/`prompt()` calls replaced by `Nebula.confirm` / `Nebula.prompt` / `Nebula.dialog` with inline validation. |
+| PHP 8.5 | `install.sh` runs the panel on `PANEL_PHP` (default 8.5 via the ondrej/php PPA, distro fallback, stale-pool cleanup); version pickers default to the latest release; the setup wizard always recommends 8.5. |
+| Tests | `tests/smoke.php` gained regressions for the double delete, native dialogs, trash round-trip, natural order, nav parity, account access, display names and the PHP 8.5 default. |
+
+
+After-fix screenshots are in [`after/`](after/).

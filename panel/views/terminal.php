@@ -5,30 +5,20 @@
   </div>
 </div>
 
-<div class="card" style="margin-bottom:16px;border-color:rgba(245,158,11,.25)">
-  <div class="card-pad flex items-center gap-3" style="color:var(--orange-400)">
-    <i data-lucide="alert-triangle"></i>
-    <div style="font-size:13px;color:var(--text-secondary)">
-      This executes real shell commands on the server. Commands run as the web user; state does not persist
-      between commands (each runs in a fresh shell). Every command is written to the audit log.
-    </div>
-  </div>
-</div>
+<div class="notice notice-warning" style="margin-bottom:16px"><i data-lucide="triangle-alert"></i><div><strong>Commands run for real on this server</strong><div>They run as the web user in a fresh, non-interactive shell (no state carries over between commands) and are written to the audit log.</div></div></div>
 
 <div class="term-window">
   <div class="term-titlebar">
-    <span class="term-dot" style="background:#ff5f56"></span>
-    <span class="term-dot" style="background:#ffbd2e"></span>
-    <span class="term-dot" style="background:#27c93f"></span>
-    <span style="margin-left:8px;color:var(--text-tertiary);font-size:12px">bash — web user</span>
+    <i data-lucide="square-terminal" aria-hidden="true"></i>
+    <span>bash · web user</span>
+    <span class="topbar-spacer"></span>
+    <button class="btn btn-ghost btn-sm term-clear" type="button" id="termClear"><i data-lucide="eraser"></i>Clear</button>
   </div>
-  <div class="term-body" id="termBody"></div>
-  <div class="flex items-center gap-2" style="padding:10px 14px;border-top:1px solid var(--border-subtle);background:#0e1117">
-    <span class="mono" style="color:var(--emerald-400)">$</span>
-    <input id="termInput" class="input mono" autocomplete="off" spellcheck="false"
-           placeholder="type a command and press Enter"
-           style="flex:1;background:transparent;border:none;padding:4px 0">
-  </div>
+  <div class="term-body" id="termBody" role="log" aria-live="polite" tabindex="0"><div class="term-hint">Type a command below and press Enter. Use ↑ and ↓ to recall previous commands.</div></div>
+  <form class="term-prompt" id="termForm">
+    <label for="termInput" class="mono term-sigil">$<span class="sr-only">Command</span></label>
+    <input id="termInput" class="mono" autocomplete="off" spellcheck="false" placeholder="Type a command and press Enter">
+  </form>
 </div>
 
 <script>
@@ -48,21 +38,25 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   async function run(cmd) {
-    line('$ ' + cmd, 'var(--text-secondary)');
+    line('$ ' + cmd, '#9fb0c3');
     let res;
     try { res = await apiPost('terminal', { command: cmd }); }
-    catch (e) { line('[request failed]', 'var(--red-400)'); return; }
-    if (!res.ok) { line(res.error || '[error]', 'var(--red-400)'); return; }
+    catch (e) { line('[request failed]', '#f87171'); return; }
+    if (!res.ok) { line(res.error || '[error]', '#f87171'); return; }
     if (res.stdout) line(res.stdout);
-    if (res.stderr) line(res.stderr, 'var(--red-400)');
-    if (res.code !== 0) line('[exit ' + res.code + ']', 'var(--text-tertiary)');
+    if (res.stderr) line(res.stderr, '#f87171');
+    if (res.code !== 0) line('[exit ' + res.code + ']', '#8296ab');
     body.scrollTop = body.scrollHeight;
   }
 
+  document.getElementById('termClear').addEventListener('click', () => { body.replaceChildren(); input.focus(); });
+  document.getElementById('termForm').addEventListener('submit', (e) => e.preventDefault());
   input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') {
+      e.preventDefault();
       const cmd = input.value.trim();
       if (!cmd) return;
+      body.querySelector('.term-hint')?.remove();
       history.push(cmd); hIndex = history.length;
       input.value = '';
       run(cmd);

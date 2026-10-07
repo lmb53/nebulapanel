@@ -140,7 +140,8 @@ function fm_list(string $absDir): array
         }
     }
     closedir($handle);
-    $byName = fn($a, $b) => strcasecmp($a['name'], $b['name']);
+    // Natural order: file2 before file10.
+    $byName = fn($a, $b) => strnatcasecmp($a['name'], $b['name']);
     usort($dirs, $byName);
     usort($files, $byName);
     return ['dirs' => $dirs, 'files' => $files];
@@ -620,3 +621,168 @@ function fm_upload(string $relDir, array $file, bool $overwrite = false): array
     audit($overwrite ? 'file.upload.overwrite' : 'file.upload', fm_rel($target));
     return ['ok' => true, 'overwritten' => $overwrite];
 }
+
+// ---------------------------------------------------------------------------
+// Recoverable trash. Deleted entries are moved under the panel's private data
+// directory (never browsable through FM_ROOT) together with a small manifest
+// recording where they came from, so they can be restored or purged later.
+// ---------------------------------------------------------------------------
+
+function fm_trash_dir(): string
+{
+    return DATA_DIR . '/trash/files';
+}
+
+/** Recursively remove a tree without following symlinks. */
+function fm_remove_tree(string $path): bool
+{
+    if (is_dir($path) && !is_link($path)) {
+        foreach (scandir($path) ?: [] as $entry) {
+            if ($entry === '.' || $entry === '..') { continue; }
+            if (!fm_remove_tree($path . '/' . $entry)) { return false; }
+        }
+        return @rmdir($path);
+    }
+    return @unlink($path);
+}
+
+/** Total size of a file or tree, capped to keep listings cheap. */
+function fm_tree_size(string $path, int &$budget = 20000): int
+{
+    if (is_link($path) || --$budget < 0) { return 0; }
+    if (!is_dir($path)) { return (int) (@filesize($path) ?: 0); }
+    $total = 0;
+    foreach (scandir($path) ?: [] as $entry) {
+        if ($entry === '.' || $entry === '..') { continue; }
+        $total += fm_tree_size($path . '/' . $entry, $budget);
+    }
+    return $total;
+}
+
+/** Move an entry inside FM_ROOT to the trash. */
+function fm_trash_move(string $abs): array
+{
+    $dir = fm_trash_dir();
+    if (!is_dir($dir) && !@mkdir($dir, 0700, true) && !is_dir($dir)) {
+        return ['ok' => false, 'error' => 'The trash folder could not be created.'];
+    }
+    $id = gmdate('YmdHis') . '-' . bin2hex(random_bytes(6));
+    $slot = $dir . '/' . $id;
+    if (!@mkdir($slot, 0700)) {
+        return ['ok' => false, 'error' => 'The trash folder is not writable.'];
+    }
+    $isDir = is_dir($abs) && !is_link($abs);
+    $meta = [
+        'id' => $id,
+        'name' => basename($abs),
+        'rel' => fm_rel($abs),
+        'is_dir' => $isDir,
+        'size' => fm_tree_size($abs),
+        'deleted_at' => time(),
+        'deleted_by' => (string) ($_SESSION['username'] ?? ''),
+    ];
+    $payload = $slot . '/payload';
+    // rename() is atomic on the same filesystem; across filesystems fall back
+    // to copy-then-remove so the original only disappears once it is safe.
+    $moved = @rename($abs, $payload);
+    if (!$moved && !is_link($abs)) {
+        $copied = $isDir ? fm_copy_recursive($abs, $payload) : @copy($abs, $payload);
+        if ($copied && fm_remove_tree($abs)) {
+            $moved = true;
+        } elseif (file_exists($payload)) {
+            fm_remove_tree($payload);
+        }
+    }
+    if (!$moved) {
+        @rmdir($slot);
+        return ['ok' => false, 'code' => 'trash_failed',
+            'error' => 'This item could not be moved to the trash (permission denied). You can delete it permanently instead.'];
+    }
+    write_json_file($slot . '/meta.json', $meta);
+    audit('file.trash', $meta['rel']);
+    return ['ok' => true, 'trashed' => true, 'id' => $id];
+}
+
+/** Trashed entries, newest first. */
+function fm_trash_list(): array
+{
+    $items = [];
+    foreach (glob(fm_trash_dir() . '/*/meta.json') ?: [] as $metaFile) {
+        $meta = json_decode((string) @file_get_contents($metaFile), true);
+        if (!is_array($meta) || !preg_match('/^[0-9]{14}-[a-f0-9]{12}$/', (string) ($meta['id'] ?? ''))) { continue; }
+        $items[] = [
+            'id' => $meta['id'],
+            'name' => (string) ($meta['name'] ?? ''),
+            'rel' => (string) ($meta['rel'] ?? ''),
+            'is_dir' => !empty($meta['is_dir']),
+            'size' => (int) ($meta['size'] ?? 0),
+            'deleted_at' => (int) ($meta['deleted_at'] ?? 0),
+            'deleted_by' => (string) ($meta['deleted_by'] ?? ''),
+        ];
+    }
+    usort($items, fn($a, $b) => $b['deleted_at'] <=> $a['deleted_at']);
+    return $items;
+}
+
+function fm_trash_slot(string $id): ?string
+{
+    if (!preg_match('/^[0-9]{14}-[a-f0-9]{12}$/', $id)) { return null; }
+    $slot = fm_trash_dir() . '/' . $id;
+    return is_file($slot . '/meta.json') ? $slot : null;
+}
+
+/** Restore a trashed entry to its original folder (renaming on conflict). */
+function fm_trash_restore(string $id): array
+{
+    $slot = fm_trash_slot($id);
+    if ($slot === null) { return ['ok' => false, 'error' => 'That item is no longer in the trash.']; }
+    $meta = json_decode((string) @file_get_contents($slot . '/meta.json'), true) ?: [];
+    $rel = (string) ($meta['rel'] ?? '');
+    $parentRel = str_replace('\\', '/', dirname($rel));
+    if ($parentRel === '.' || $parentRel === '/') { $parentRel = ''; }
+    $parent = fm_resolve($parentRel);
+    if ($parent === null || !is_dir($parent)) {
+        return ['ok' => false, 'error' => 'The original folder “' . ($parentRel ?: '/') . '” no longer exists. Recreate it, then restore again.'];
+    }
+    $name = basename($rel);
+    if (!fm_valid_name($name)) { return ['ok' => false, 'error' => 'The trashed item has an invalid name.']; }
+    $target = $parent . '/' . $name;
+    if (file_exists($target)) {
+        $ext = pathinfo($name, PATHINFO_EXTENSION);
+        $stem = $ext !== '' && empty($meta['is_dir']) ? substr($name, 0, -strlen($ext) - 1) : $name;
+        for ($i = 1; file_exists($target) && $i < 100; $i++) {
+            $target = $parent . '/' . $stem . ' (restored' . ($i > 1 ? ' ' . $i : '') . ')' . ($ext !== '' && empty($meta['is_dir']) ? '.' . $ext : '');
+        }
+    }
+    $payload = $slot . '/payload';
+    $ok = @rename($payload, $target);
+    if (!$ok) {
+        $ok = (is_dir($payload) ? fm_copy_recursive($payload, $target) : @copy($payload, $target)) && fm_remove_tree($payload);
+    }
+    if (!$ok) { return ['ok' => false, 'error' => 'Restore failed (permission denied in the destination folder).']; }
+    @unlink($slot . '/meta.json');
+    @rmdir($slot);
+    audit('file.restore', fm_rel($target));
+    return ['ok' => true, 'path' => fm_rel($target)];
+}
+
+/** Permanently delete one trashed entry. */
+function fm_trash_purge(string $id): array
+{
+    $slot = fm_trash_slot($id);
+    if ($slot === null) { return ['ok' => false, 'error' => 'That item is no longer in the trash.']; }
+    if (!fm_remove_tree($slot)) { return ['ok' => false, 'error' => 'The item could not be removed from the trash.']; }
+    audit('file.purge', $id);
+    return ['ok' => true];
+}
+
+/** Permanently delete everything in the trash. */
+function fm_trash_empty(): array
+{
+    $failed = 0;
+    foreach (fm_trash_list() as $item) {
+        if (empty(fm_trash_purge($item['id'])['ok'])) { $failed++; }
+    }
+    return $failed ? ['ok' => false, 'error' => "$failed item(s) could not be removed."] : ['ok' => true];
+}
+

@@ -8,12 +8,8 @@ foreach ($services as $s) {
 }
 ?>
 <?php if ($svc === null): ?>
-  <div class="page-header"><div><h1 class="page-title">Service</h1></div></div>
-  <div class="card"><div class="empty-state">
-    <div class="es-icon"><i data-lucide="server-off"></i></div>
-    <div style="font-weight:600;color:var(--text-secondary)">Unknown or unmanaged service</div>
-    <div style="font-size:13px;margin-top:4px">This service is not installed or not managed by the panel.</div>
-  </div></div>
+  <div class="page-header"><div><nav class="breadcrumb" aria-label="Breadcrumb"><a href="<?= e(url('services')) ?>">Services</a><i data-lucide="chevron-right" aria-hidden="true"></i><span><?= e($name) ?></span></nav><h1 class="page-title"><?= e($name !== '' ? service_display_name($name) : 'Service') ?></h1></div></div>
+  <?= requirement_missing('server-off', 'This service is not installed', 'The panel only manages services that are installed on this server.', [['label' => 'All services', 'href' => url('services'), 'icon' => 'arrow-left'], ['label' => 'Install Apps', 'href' => url('apps'), 'icon' => 'package-plus']]) ?>
 <?php else: ?>
   <?php
     $status = service_status($name);
@@ -30,25 +26,26 @@ foreach ($services as $s) {
   ?>
   <div class="page-header">
     <div>
-      <div class="breadcrumb"><a href="<?= e(url('services')) ?>"><i data-lucide="server-cog"></i>Services</a><i data-lucide="chevron-right"></i><span><?= e($svc['label']) ?></span></div>
-      <h1 class="page-title" style="display:flex;align-items:center;gap:10px"><i data-lucide="<?= e($svc['icon']) ?>"></i><?= e($svc['label']) ?></h1>
+      <nav class="breadcrumb" aria-label="Breadcrumb"><a href="<?= e(url('services')) ?>">Services</a><i data-lucide="chevron-right" aria-hidden="true"></i><span aria-current="page"><?= e($svc['label']) ?></span></nav>
+      <h1 class="page-title"><?= e($svc['label']) ?></h1>
       <p class="page-subtitle">systemd unit <span class="mono"><?= e($name) ?></span></p>
     </div>
     <div class="page-actions" data-svc="<?= e($name) ?>">
       <span class="badge <?= e($badge[0]) ?>" data-svc-badge style="align-self:center"><span class="bdot"></span><?= e($badge[1]) ?></span>
       <span class="badge <?= $enabled === true ? 'badge-blue' : 'badge-slate' ?>" data-svc-enabled><?= $enabled === true ? 'Boot enabled' : ($enabled === false ? 'Boot disabled' : 'Boot N/A') ?></span>
       <?php if (role_can('services.control')): ?>
-        <button class="btn btn-secondary" data-action="start"><i data-lucide="play"></i>Start</button>
-        <button class="btn btn-secondary" data-action="restart"><i data-lucide="rotate-cw"></i>Restart</button>
-        <button class="btn btn-danger" data-action="stop"><i data-lucide="square"></i>Stop</button>
+        <?php $running = $status === 'active'; ?>
+        <button class="btn btn-secondary" type="button" data-action="start"<?= $running ? ' disabled' : '' ?>><i data-lucide="play"></i>Start</button>
+        <button class="btn btn-secondary" type="button" data-action="restart"<?= $running ? '' : ' disabled' ?>><i data-lucide="rotate-cw"></i>Restart</button>
+        <button class="btn btn-danger" type="button" data-action="stop"<?= $running ? '' : ' disabled' ?>><i data-lucide="square"></i>Stop</button>
       <?php endif; ?>
-      <?php if ($enabled !== null): ?><button class="btn btn-secondary" data-action="<?= $enabled ? 'disable' : 'enable' ?>" data-enable-toggle><i data-lucide="power"></i><?= $enabled ? 'Disable at boot' : 'Enable at boot' ?></button><?php endif; ?>
+      <?php if ($enabled !== null && role_can('services.control')): ?><button class="btn btn-secondary" type="button" data-action="<?= $enabled ? 'disable' : 'enable' ?>" data-enable-toggle><i data-lucide="power"></i><?= $enabled ? 'Disable at boot' : 'Enable at boot' ?></button><?php endif; ?>
     </div>
   </div>
 
   <div class="card">
     <div class="card-header"><h3>Recent logs</h3><span class="muted">journalctl · last 80 lines</span></div>
-    <pre class="mono" style="margin:0;padding:16px;font-size:12px;line-height:1.55;white-space:pre-wrap;max-height:60vh;overflow:auto"><?= e($jout !== '' ? $jout : '(no journal output — may require a sudoers rule for journalctl)') ?></pre>
+    <pre class="mono log-pre"><?= e($jout !== '' ? $jout : '(no journal output — may require a sudoers rule for journalctl)') ?></pre>
   </div>
 
   <script>
@@ -61,12 +58,10 @@ foreach ($services as $s) {
       btn.addEventListener('click', async () => {
         btn.disabled = true;
         const res = await apiPost('services', { name, action: btn.dataset.action });
-        btn.disabled = false;
+        if (!res.ok) btn.disabled = false;
         if (res.ok) {
-          toast(name + ': ' + btn.dataset.action + ' ok', 'success');
-          const b = wrap.querySelector('[data-svc-badge]');
-          const [cls, label] = map[res.status] || ['badge-slate', res.status];
-          if (b) { b.className = 'badge ' + cls; b.replaceChildren(); const dot = document.createElement('span'); dot.className = 'bdot'; b.append(dot, document.createTextNode(label)); b.style.alignSelf = 'center'; }
+          toast(name + ': ' + btn.dataset.action + ' complete', 'success'); if (btn.dataset.enableToggle !== undefined) btn.disabled = false;
+          window.Nebula.updateSvcBadge(wrap, res.status);
           const boot = wrap.querySelector('[data-svc-enabled]');
           if (boot) { boot.className = 'badge ' + (res.enabled === true ? 'badge-blue' : 'badge-slate'); boot.textContent = res.enabled === true ? 'Boot enabled' : (res.enabled === false ? 'Boot disabled' : 'Boot N/A'); }
           const toggle = wrap.querySelector('[data-enable-toggle]');

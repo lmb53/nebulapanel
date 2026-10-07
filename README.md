@@ -52,7 +52,7 @@ bootstrap token. Use that token to create the administrator account and run the
 provisioning wizard. An unset `PANEL_PREFIX` reuses an existing active install and generates a
 random one only on the first run. Set `PANEL_PREFIX=random` to deliberately rotate
 the URL (runtime state is migrated), or use a fixed name. Options (env vars):
-`PANEL_PREFIX`, `WEBROOT`, `ADMIN_IP`, `DOMAIN`, `LOCAL_ONLY`, `FM_ROOT`, `REPO`, `REPO_REF`
+`PANEL_PREFIX`, `PANEL_PHP` (default `8.5`, or `system`), `WEBROOT`, `ADMIN_IP`, `DOMAIN`, `LOCAL_ONLY`, `FM_ROOT`, `REPO`, `REPO_REF`
 (see [install.sh](install.sh)).
 
 > The `main` one-liner is intentionally convenient and follows the current
@@ -82,13 +82,13 @@ the URL (runtime state is migrated), or use a fixed name. Options (env vars):
 | **phpMyAdmin** — one-click install + password-free, short-lived signed per-database signon | ✅ helper |
 | **Email** — one-click Postfix + Dovecot + OpenDKIM mail server, virtual mailboxes & aliases, per-domain **DKIM** keys, copy-ready **MX / SPF / DKIM / DMARC** records (auto-publish to panel DNS zones), a **statistics dashboard** (sent/received/bounced/rejected, per-day chart, top senders & recipients, mailbox storage) and one-click **Roundcube** webmail | ✅ helper |
 | **Docker** — create/control containers with their published ports, view container logs, pull/remove/prune images, manage volumes and networks, **Compose stacks (editable docker-compose.yml, deploy/pull/restart/logs, one-click Compose install when the CLI plugin is missing)** and a one-click **App Store** of popular self-hosted apps with official brand logos | ✅ sudo |
-| **File Manager** — expandable tree previews, browse/pinned/recent, archives, popup multi-tab editor, ownership, permissions and drag-drop upload | ✅ helper |
+| **File Manager** — expandable tree previews, browse/pinned/recent, recoverable trash (restore, delete permanently, empty), archives, popup multi-tab editor, ownership, permissions and drag-drop upload | ✅ helper |
 | **Diagnostics** — environment + per-privilege sudo checks with fix hints | ✅ |
 | **Backups** — create / verify / list / download / delete `.tar.gz` | ✅ |
 | **Terminal** — audited non-interactive command runner | ✅ |
 | **System Info** — OS, kernel, CPU, RAM, disk, network | ✅ |
-| **Panel Updates** — self-update from GitHub (check + apply) | ✅ |
-| **Settings** — panel name, timeout, change password, audit log | ✅ |
+| **Panel updates** — self-update from GitHub (check + apply), as the *Nebula Panel* tab of **Updates** | ✅ |
+| **Settings** — panel name, session timeout, health thresholds · **My account** — every role changes its own password · audit log under **Security** | ✅ |
 | **Notifications** — live operational inbox, top-bar dropdown, mark-read and delete state | ✅ |
 | **Bearer API** — named, role-bound, scoped, expiring, optionally IP-bound tokens under `api/v1` | ✅ |
 

@@ -12,24 +12,24 @@ $rows = [
     ['CPU cores',   (string) $facts['cpu_cores']],
     ['PHP version', $facts['php_version']],
     ['Uptime',      $facts['uptime']],
-    ['Server time', $facts['server_time']],
+    ['Server time', fmt_datetime(time()) . ' ' . date('T')],
 ];
 ?>
 <div class="page-header">
   <div>
     <h1 class="page-title">System Info</h1>
-    <p class="page-subtitle">Hardware, OS, and network details</p>
+    <p class="page-subtitle">Hardware, operating system and network details</p>
   </div>
 </div>
 
-<div class="grid" style="grid-template-columns:1.2fr 1fr">
+<div class="grid grid-split">
   <div class="card">
     <div class="card-header"><h3>Server</h3></div>
     <div class="table-wrap">
       <table class="data-table">
         <tbody>
           <?php foreach ($rows as $r): ?>
-            <tr><td class="text-tertiary" style="width:40%"><?= e($r[0]) ?></td><td style="font-weight:500"><?= e($r[1]) ?></td></tr>
+            <tr><th scope="row" class="text-tertiary" style="width:40%;font-weight:400;text-align:left;padding:12px 14px;border-bottom:1px solid var(--border-subtle)"><?= e($r[0]) ?></th><td style="font-weight:500"><?= e($r[1] !== '' ? $r[1] : '—') ?></td></tr>
           <?php endforeach; ?>
         </tbody>
       </table>
@@ -43,16 +43,18 @@ $rows = [
         <div>
           <div class="flex items-center" style="justify-content:space-between;font-size:13px;margin-bottom:6px">
             <span class="text-secondary">Memory</span>
-            <span class="mono text-tertiary"><?= $mem ? e(human_bytes($mem['used'])) . ' / ' . e(human_bytes($mem['total'])) : 'n/a' ?></span>
+            <span class="mono text-tertiary"><?= $mem ? e(human_bytes($mem['used'])) . ' / ' . e(human_bytes($mem['total'])) . ' · ' . (int) round($mem['used'] / max(1, $mem['total']) * 100) . '%' : 'n/a' ?></span>
           </div>
-          <div class="progress"><div style="width:<?= $mem ? round($mem['used'] / max(1, $mem['total']) * 100) : 0 ?>%;background:var(--orange-500)"></div></div>
+          <?php $memPct = $mem ? round($mem['used'] / max(1, $mem['total']) * 100) : null; ?>
+          <div class="progress" role="progressbar" aria-label="Memory usage" aria-valuemin="0" aria-valuemax="100" aria-valuenow="<?= (int) $memPct ?>"><div style="width:<?= (int) $memPct ?>%;background:<?= e(meter_color($memPct)) ?>"></div></div>
         </div>
         <div>
           <div class="flex items-center" style="justify-content:space-between;font-size:13px;margin-bottom:6px">
             <span class="text-secondary">Disk /</span>
-            <span class="mono text-tertiary"><?= $disk ? e(human_bytes($disk['used'])) . ' / ' . e(human_bytes($disk['total'])) : 'n/a' ?></span>
+            <span class="mono text-tertiary"><?= $disk ? e(human_bytes($disk['used'])) . ' / ' . e(human_bytes($disk['total'])) . ' · ' . (int) round($disk['used'] / max(1, $disk['total']) * 100) . '%' : 'n/a' ?></span>
           </div>
-          <div class="progress"><div style="width:<?= $disk ? round($disk['used'] / max(1, $disk['total']) * 100) : 0 ?>%;background:var(--purple-500)"></div></div>
+          <?php $diskPct = $disk ? round($disk['used'] / max(1, $disk['total']) * 100) : null; ?>
+          <div class="progress" role="progressbar" aria-label="Disk usage" aria-valuemin="0" aria-valuemax="100" aria-valuenow="<?= (int) $diskPct ?>"><div style="width:<?= (int) $diskPct ?>%;background:<?= e(meter_color($diskPct)) ?>"></div></div>
         </div>
       </div>
     </div>
@@ -64,7 +66,7 @@ $rows = [
           <thead><tr><th>Interface</th><th>IPv4</th></tr></thead>
           <tbody>
             <?php if (!$net): ?>
-              <tr><td colspan="2" class="text-tertiary" style="padding:18px;text-align:center">No interface data (Linux only)</td></tr>
+              <tr class="empty-row"><td colspan="2">Interface details are unavailable (the <span class="mono">ip</span> command returned nothing).</td></tr>
             <?php endif; ?>
             <?php foreach ($net as $n): ?>
               <tr><td style="font-weight:600"><?= e($n['name']) ?></td><td class="mono text-tertiary"><?= e($n['addr']) ?></td></tr>

@@ -34,9 +34,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     json_out($res, $res['ok'] ? 200 : 400);
 }
 
+$containers = dk_containers();
 json_out([
     'ok'         => true,
-    'containers' => dk_containers()['containers'] ?? [],
+    // Surface a daemon/helper failure so the page can explain it and disable
+    // actions instead of showing an empty, seemingly healthy engine.
+    'error'      => empty($containers['ok']) && isset($containers['error']) ? (string) $containers['error'] : null,
+    'containers' => $containers['containers'] ?? [],
     'images'     => dk_images()['images'] ?? [],
     'volumes'    => dk_volumes()['volumes'] ?? [],
     'networks'   => dk_networks()['networks'] ?? [],

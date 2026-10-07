@@ -27,6 +27,9 @@
 #   PUBLIC_IP=203.0.113.8    Explicit public address for mail/DNS guidance
 #   LOCAL_ONLY=1             Bind domainless installs to loopback instead of server IP
 #   WEBROOT=/var/www/html    Nginx document root
+#   PANEL_PHP=8.5            PHP version the panel itself runs on (8.2-8.5, or
+#                            "system" for the distro default). Newer than the
+#                            distro default comes from the ondrej/php PPA.
 #   PANEL_SRC=/path/to/src   Explicit path to the panel source dir (skips download)
 #
 set -euo pipefail
@@ -49,6 +52,8 @@ DOMAIN="${DOMAIN:-}"
 ADMIN_IP="${ADMIN_IP:-}"
 PUBLIC_IP="${PUBLIC_IP:-}"
 LOCAL_ONLY="${LOCAL_ONLY:-0}"
+PANEL_PHP="${PANEL_PHP:-8.5}"
+case "$PANEL_PHP" in system|8.2|8.3|8.4|8.5) ;; *) echo "PANEL_PHP must be 8.2, 8.3, 8.4, 8.5 or system" >&2; exit 1 ;; esac
 PANEL_USER="${PANEL_USER:-nebula-panel}"
 WEBAPPS_USER="${WEBAPPS_USER:-nebula-webapps}"
 SITES_ROOT="${SITES_ROOT:-/srv/nebula/sites}"
@@ -143,9 +148,52 @@ repair_legacy_modsecurity_loader
 log "Installing packages (Nginx, PHP-FPM, tooling)…"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
-apt-get install -y -qq nginx php-fpm php-cli php-mysql php-curl php-mbstring php-xml php-zip \
+apt-get install -y -qq nginx \
   rsync ufw sudo curl ca-certificates tar zip openssl git acl \
   certbot python3-certbot-nginx >/dev/null
+
+# Keep the ondrej/php PPA from hijacking the system-default, unversioned php
+# meta-packages. Without this pin they track ondrej's newest stable, so
+# installing e.g. PHP 8.5 also drags in 8.4 and the updater keeps trying to
+# pull a second PHP. It is written before any PHP install so the panel's own
+# PHP never pulls in another version; it is a no-op until the PPA is present.
+PHP_PIN=/etc/apt/preferences.d/nebula-ondrej-php
+cat > "$PHP_PIN" <<'PINEOF'
+# Managed by Nebula Panel. Keeps unversioned php meta-packages on the distro
+# default so adding extra PHP versions never pulls in another one.
+Package: php php-fpm php-cli php-mysql php-curl php-mbstring php-xml php-zip php-gd php-bcmath php-intl php-soap php-imap php-json php-opcache php-dev php-pear php-readline php-redis php-imagick php-xdebug php-memcached php-apcu
+Pin: release o=LP-PPA-ondrej-php
+Pin-Priority: -1
+PINEOF
+chmod 0644 "$PHP_PIN"
+
+# The panel runs on PANEL_PHP (default: the latest supported release, 8.5).
+# Versions newer than the distro's come from the ondrej/php PPA; if that
+# cannot be reached the installer falls back to the distro PHP so a first
+# install never fails on a third-party repository.
+install_distro_php() {
+  apt-get install -y -qq php-fpm php-cli php-mysql php-curl php-mbstring php-xml php-zip >/dev/null
+}
+if [[ "$PANEL_PHP" == "system" ]]; then
+  install_distro_php
+else
+  _php_pkgs=("php${PANEL_PHP}-fpm" "php${PANEL_PHP}-cli" "php${PANEL_PHP}-mysql" "php${PANEL_PHP}-curl" \
+             "php${PANEL_PHP}-mbstring" "php${PANEL_PHP}-xml" "php${PANEL_PHP}-zip")
+  if ! apt-cache show "php${PANEL_PHP}-fpm" >/dev/null 2>&1; then
+    apt-get install -y -qq software-properties-common >/dev/null 2>&1 || true
+    if command -v add-apt-repository >/dev/null 2>&1 \
+       && { grep -rqs 'ondrej/php' /etc/apt/sources.list.d 2>/dev/null || add-apt-repository -y ppa:ondrej/php >/dev/null 2>&1; }; then
+      apt-get update -qq
+    fi
+  fi
+  if apt-get install -y -qq "${_php_pkgs[@]}" >/dev/null 2>&1; then
+    update-alternatives --set php "/usr/bin/php${PANEL_PHP}" >/dev/null 2>&1 || true
+    ok "PHP ${PANEL_PHP} installed for the panel"
+  else
+    warn "PHP ${PANEL_PHP} is not installable here (ondrej/php PPA unreachable?) — using the distro PHP instead."
+    install_distro_php
+  fi
+fi
 ok "Packages installed"
 if [[ -n "$PUBLIC_IP" ]] && ! php -r 'exit(filter_var($argv[1], FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE|FILTER_FLAG_NO_RES_RANGE) ? 0 : 1);' "$PUBLIC_IP"; then
   die "PUBLIC_IP must be a public IPv4 or IPv6 address."
@@ -181,6 +229,9 @@ fi
 # Highest PHP version that has an installed FPM config tree.
 detect_php_version() {
   local d ver=""
+  if [[ "$PANEL_PHP" != "system" && -d "/etc/php/${PANEL_PHP}/fpm" ]]; then
+    echo "$PANEL_PHP"; return 0
+  fi
   for d in $(ls -d /etc/php/*/fpm 2>/dev/null | sort -V); do
     ver="$(basename "$(dirname "$d")")"
   done
@@ -213,21 +264,6 @@ FPM_SOCK="$(find_fpm_socket)"
 [[ -z "$FPM_SOCK" ]] && die "Could not find a PHP-FPM socket for PHP ${PHP_VER} in /run/php/."
 ok "PHP $PHP_VER  (socket: $FPM_SOCK)"
 
-# Keep the ondrej/php PPA (added later when installing extra PHP versions) from
-# hijacking the system-default, unversioned php meta-packages. Without this pin
-# they track ondrej's newest stable, so installing e.g. PHP 8.5 also drags in
-# 8.4 and the updater keeps trying to pull a second PHP. Writing it here repairs
-# a box that already hit the bug on the next installer run; it is a no-op until
-# the PPA is present.
-PHP_PIN=/etc/apt/preferences.d/nebula-ondrej-php
-cat > "$PHP_PIN" <<'PINEOF'
-# Managed by Nebula Panel. Keeps unversioned php meta-packages on the distro
-# default so adding extra PHP versions never pulls in another one.
-Package: php php-fpm php-cli php-mysql php-curl php-mbstring php-xml php-zip php-gd php-bcmath php-intl php-soap php-imap php-json php-opcache php-dev php-pear php-readline php-redis php-imagick php-xdebug php-memcached php-apcu
-Pin: release o=LP-PPA-ondrej-php
-Pin-Priority: -1
-PINEOF
-chmod 0644 "$PHP_PIN"
 ok "Pinned unversioned php meta-packages to the distro default"
 
 systemctl enable --now nginx >/dev/null 2>&1 || true
@@ -400,7 +436,7 @@ _missing=""
 for v in setup-wizard dashboard websites domains dns files services databases phpmyadmin \
          mail ssl php cron firewall logs updates users sshkeys docker backups terminal \
          sysinfo diagnostics notifications apps selfupdate settings api service \
-         file-edit login setup layout; do
+         file-edit account error login setup layout; do
   [[ -f "$DEST/views/$v.php" ]] || _missing="$_missing $v"
 done
 if [[ -n "$_missing" ]]; then
@@ -525,6 +561,18 @@ rlimit_files = 4096
 php_admin_value[session.save_path] = ${DEST}/data/sessions
 php_admin_value[upload_tmp_dir] = ${DEST}/data/tmp
 EOF
+# The shared panel/webapp pools listen on fixed sockets, so they may only
+# exist under the PHP version the panel runs on. Remove copies left by a
+# previous install on another version (e.g. after switching to PANEL_PHP=8.5).
+for _pool_dir in /etc/php/*/fpm/pool.d; do
+  [[ "$_pool_dir" == "/etc/php/${PHP_VER}/fpm/pool.d" ]] && continue
+  if [[ -f "$_pool_dir/nebula-panel.conf" || -f "$_pool_dir/nebula-webapps.conf" ]]; then
+    rm -f "$_pool_dir/nebula-panel.conf" "$_pool_dir/nebula-webapps.conf"
+    _old_ver="$(basename "$(dirname "$(dirname "$_pool_dir")")")"
+    systemctl restart "php${_old_ver}-fpm" 2>/dev/null || true
+    ok "Moved the panel pools off PHP ${_old_ver}"
+  fi
+done
 cat > "/etc/php/${PHP_VER}/fpm/pool.d/nebula-webapps.conf" <<EOF
 [nebula-webapps]
 user = ${WEBAPPS_USER}

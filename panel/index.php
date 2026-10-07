@@ -35,7 +35,7 @@ switch ($route) {
             }
             $error = $res['error'];
         }
-        render('setup', ['error' => $error], false);
+        render('setup', ['error' => $error, 'username' => (string) ($_POST['username'] ?? '')], false);
         return;
 
     case 'login':
@@ -54,7 +54,9 @@ switch ($route) {
                 http_response_code(429);
                 header('Retry-After: ' . $retry);
                 audit('login', 'rate limited');
-                $error = 'Too many login attempts. Try again in ' . (int) ceil($retry / 60) . ' minute(s).';
+                $minutes = max(1, (int) ceil($retry / 60));
+                $error = 'Too many sign-in attempts. Try again in ' . $minutes . ' minute' . ($minutes === 1 ? '' : 's') . '.';
+                $locked = true;
             } elseif (attempt_login($loginName, $_POST['password'] ?? '')) {
                 redirect('dashboard');
             } else {
@@ -62,7 +64,7 @@ switch ($route) {
                 $error = 'Invalid username or password.';
             }
         }
-        render('login', ['error' => $error], false);
+        render('login', ['error' => $error, 'username' => (string) ($_POST['username'] ?? ''), 'locked' => $locked ?? false], false);
         return;
 
     case 'logout':
@@ -200,7 +202,12 @@ if ($route === 'backup-download') {
 if (is_page_route($route)) {
     if (!role_route_allowed($route)) {
         http_response_code(403);
-        render('dashboard', ['permissionError' => true], true);
+        render('error', ['errorCode' => 403], true);
+        return;
+    }
+    // Panel self-update lives as a tab of the Updates page.
+    if ($route === 'selfupdate') {
+        render('updates', ['updatesTab' => 'panel'], true);
         return;
     }
     render($route, [], true);
@@ -208,4 +215,4 @@ if (is_page_route($route)) {
 }
 
 http_response_code(404);
-render('dashboard', [], true);
+render('error', ['errorCode' => 404], true);

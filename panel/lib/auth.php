@@ -176,7 +176,7 @@ function role_route_allowed(string $route, ?string $role = null): bool
 {
     $role = $role ?? current_role();
     if ($role === 'admin') return true;
-    $common = ['dashboard','services','service','logs','sysinfo','diagnostics','notifications'];
+    $common = ['dashboard','services','service','logs','sysinfo','diagnostics','notifications','account'];
     $operator = $common;
     $developer = $common;
     $allowed = $role === 'operator' ? $operator : ($role === 'developer' ? $developer : $common);
@@ -185,12 +185,17 @@ function role_route_allowed(string $route, ?string $role = null): bool
 
 function api_route_owner(string $name): string
 {
-    $map = ['metrics'=>'dashboard','health'=>'dashboard','processes'=>'dashboard','file-upload'=>'files','file-state'=>'files','file-save'=>'files','file-rename'=>'files','file-op'=>'files','file-mkfile'=>'files','file-mkdir'=>'files','file-chmod'=>'files','file-compress'=>'files','file-delete'=>'files','file-tree'=>'files','sites'=>'websites','git'=>'websites','compose'=>'docker','fail2ban'=>'firewall','modsecurity'=>'firewall','provision'=>'apps','pma'=>'phpmyadmin','selfupdate'=>'selfupdate'];
+    $map = ['metrics'=>'dashboard','health'=>'dashboard','processes'=>'dashboard','file-upload'=>'files','file-state'=>'files','file-save'=>'files','file-rename'=>'files','file-op'=>'files','file-mkfile'=>'files','file-mkdir'=>'files','file-chmod'=>'files','file-compress'=>'files','file-delete'=>'files','file-trash'=>'files','file-tree'=>'files','sites'=>'websites','git'=>'websites','compose'=>'docker','fail2ban'=>'firewall','modsecurity'=>'firewall','provision'=>'apps','pma'=>'phpmyadmin','selfupdate'=>'selfupdate'];
     return $map[$name] ?? $name;
 }
 
 function can_access_api(string $name, string $method): bool
 {
+    // Every signed-in person may manage their own account (password change),
+    // including read-only roles; bearer tokens may not.
+    if ($name === 'account') {
+        return !(function_exists('is_api_token_authenticated') && is_api_token_authenticated());
+    }
     if (!role_route_allowed(api_route_owner($name))) return false;
     if ($method !== 'GET' && current_role() === 'auditor') return false;
     return true;

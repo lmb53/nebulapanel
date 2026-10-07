@@ -37,7 +37,9 @@ function system_users(): array
             'gid'   => (int) $f[3],
             'home'  => $f[5],
             'shell' => $f[6],
-            'human' => ($uid >= 1000 && $uid < 65534),
+            // A person's account: regular UID range *and* a real login shell
+            // (build/service users such as nixbld* use nologin/false).
+            'human' => ($uid >= 1000 && $uid < 65534) && !preg_match('#/(nologin|false|sync)$#', $f[6]),
         ];
     }
     usort($users, function ($a, $b) {

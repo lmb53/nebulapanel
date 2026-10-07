@@ -493,6 +493,58 @@ $check(preg_match('/roundcube-install\)(.*?)\n  # roundcube-remove/s', $helperSo
     && stripos($rcMsg[1], 'Set up mail') !== false,
     'the missing-certificate error does not tell the user how to fix it');
 
+// ---------------------------------------------------------------------------
+// UI audit regressions.
+// ---------------------------------------------------------------------------
+// A File Manager delete must be handled once: app.js used to bind a second
+// confirm + request to the same button with contradictory wording.
+$check(strpos($appJs, "[data-fm-delete]") === false, 'app.js still binds the File Manager delete button a second time');
+$check(substr_count((string) file_get_contents(APP_ROOT . '/views/files.php'), "querySelectorAll('[data-fm-delete]')") === 1,
+    'the File Manager delete button is not bound exactly once');
+// Native browser dialogs were replaced by the in-app modal everywhere.
+foreach (glob(APP_ROOT . '/views/*.php') as $viewFile) {
+    $viewSource = (string) file_get_contents($viewFile);
+    $check(preg_match('/(?<![.\w])(confirm|prompt|alert)\(/', $viewSource) === 0,
+        basename($viewFile) . ' still uses a native confirm()/prompt()/alert() dialog');
+}
+// Recoverable trash: move, list, restore, purge.
+$trashRoot = $config['fm_root'];
+@mkdir($trashRoot, 0700, true);
+@mkdir($trashRoot . '/trash-case', 0700);
+file_put_contents($trashRoot . '/trash-case/note.txt', 'keep me');
+$moved = fm_trash_move((string) realpath($trashRoot . '/trash-case/note.txt'));
+$check(!empty($moved['ok']) && !file_exists($trashRoot . '/trash-case/note.txt'), 'moving a file to the trash failed');
+$listed = fm_trash_list();
+$check(count($listed) === 1 && $listed[0]['rel'] === 'trash-case/note.txt', 'the trash does not list the deleted item with its original path');
+$restored = fm_trash_restore((string) ($listed[0]['id'] ?? ''));
+$check(!empty($restored['ok']) && (string) @file_get_contents($trashRoot . '/trash-case/note.txt') === 'keep me', 'restoring from the trash failed');
+$check(fm_trash_list() === [], 'a restored item is still listed in the trash');
+fm_trash_move((string) realpath($trashRoot . '/trash-case/note.txt'));
+$check(!empty(fm_trash_empty()['ok']) && fm_trash_list() === [], 'emptying the trash failed');
+$check(fm_trash_restore('../../etc') === ['ok' => false, 'error' => 'That item is no longer in the trash.'], 'trash ids are not validated');
+@rmdir($trashRoot . '/trash-case');
+@rmdir(DATA_DIR . '/trash/files');
+@rmdir(DATA_DIR . '/trash');
+// Natural file ordering (file2 before file10).
+@mkdir($trashRoot . '/order', 0700);
+foreach (['file10.log', 'file2.log', 'file1.log'] as $orderName) { touch($trashRoot . '/order/' . $orderName); }
+$ordered = array_column(fm_list((string) realpath($trashRoot . '/order'))['files'], 'name');
+$check($ordered === ['file1.log', 'file2.log', 'file10.log'], 'File Manager listing is not in natural order');
+foreach (['file10.log', 'file2.log', 'file1.log'] as $orderName) { @unlink($trashRoot . '/order/' . $orderName); }
+@rmdir($trashRoot . '/order');
+// Navigation registry: H1/nav parity, parents for sub-pages, Panel Updates merged into Updates.
+$check(nav_active_route('service') === 'services' && nav_active_route('file-edit') === 'files' && nav_active_route('selfupdate') === 'updates',
+    'sub-pages do not highlight their parent navigation item');
+$check(!isset($modules['selfupdate']) && is_page_route('selfupdate') && is_page_route('account'), 'Updates/account routing is wrong');
+$check(($modules['firewall'][1] ?? '') === 'Security', 'the Security nav label does not match its page title');
+$check(role_route_allowed('account', 'auditor') && role_route_allowed('account', 'operator'), 'non-admin roles cannot reach their own account page');
+// Service display names and PHP version defaults.
+$check(service_display_name('mariadb') === 'MariaDB' && service_display_name('php8.3-fpm') === 'PHP 8.3-FPM' && service_display_name('ufw') === 'UFW',
+    'service display names are not formatted');
+require_once APP_ROOT . '/lib/mod_apps.php';
+$check(php_latest_version() === '8.5', 'the latest supported PHP version is not 8.5');
+$check(strpos($installerSource, 'PANEL_PHP="${PANEL_PHP:-8.5}"') !== false, 'the installer does not default the panel to PHP 8.5');
+
 @unlink(DATA_DIR . '/setup.lock');
 @unlink(fm_state_file());
 @unlink(fm_state_file() . '.lock');

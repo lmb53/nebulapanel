@@ -198,6 +198,71 @@ function is_json_request(): bool
         || strpos($_SERVER['HTTP_ACCEPT'] ?? '', 'application/json') !== false;
 }
 
+/** One date/time format across server-rendered pages: "7 Oct 2026, 09:21". */
+function fmt_datetime($timestamp, bool $withTime = true): string
+{
+    if (is_string($timestamp) && !ctype_digit($timestamp)) {
+        $timestamp = strtotime($timestamp);
+    }
+    $timestamp = (int) $timestamp;
+    if ($timestamp <= 0) {
+        return '—';
+    }
+    return date($withTime ? 'j M Y, H:i' : 'j M Y', $timestamp);
+}
+
+/** Meter colour from the configured health thresholds (mirrors app.js colorFor). */
+function meter_color($pct): string
+{
+    global $config;
+    if ($pct === null || $pct === '') { return 'var(--slate-500)'; }
+    $pct = (float) $pct;
+    if ($pct >= (float) ($config['health_critical_percent'] ?? 90)) { return 'var(--red-500)'; }
+    if ($pct >= (float) ($config['health_warn_percent'] ?? 80)) { return 'var(--orange-500)'; }
+    return 'var(--emerald-500)';
+}
+
+/**
+ * The one "this feature needs something that is missing" state used by every
+ * page: icon, title, explanation (trusted HTML) and fix actions.
+ * Each action: ['label' => , 'href' => , 'icon' => , 'primary' => bool, 'attrs' => raw attribute string].
+ */
+function requirement_missing(string $icon, string $title, string $bodyHtml, array $actions = [], bool $inCard = true): string
+{
+    if (!$actions) {
+        $actions[] = ['label' => 'Open Diagnostics', 'href' => url('diagnostics'), 'icon' => 'stethoscope'];
+    }
+    $buttons = '';
+    foreach ($actions as $a) {
+        $cls = 'btn ' . (!empty($a['primary']) ? 'btn-primary' : 'btn-secondary');
+        $iconHtml = !empty($a['icon']) ? '<i data-lucide="' . e($a['icon']) . '"></i>' : '';
+        $buttons .= isset($a['href'])
+            ? '<a class="' . $cls . '" href="' . e($a['href']) . '">' . $iconHtml . e($a['label']) . '</a>'
+            : '<button class="' . $cls . '" type="button" ' . ($a['attrs'] ?? '') . '>' . $iconHtml . e($a['label']) . '</button>';
+    }
+    $html = '<div class="empty-state requirement-missing" role="status">'
+        . '<div class="es-icon"><i data-lucide="' . e($icon) . '"></i></div>'
+        . '<div class="es-title">' . e($title) . '</div>'
+        . '<div class="es-body">' . $bodyHtml . '</div>'
+        . '<div class="es-actions">' . $buttons . '</div></div>';
+    return $inCard ? '<div class="card">' . $html . '</div>' : $html;
+}
+
+/** The helper-missing variant shared by every page that needs nebula-helper. */
+function helper_missing_state(string $feature, bool $inCard = true): string
+{
+    return requirement_missing('shield-alert', 'Privileged helper not installed',
+        'The <span class="mono">nebula-helper</span> is required for ' . e($feature) . '. Re-run <span class="mono">install.sh</span> from a reviewed commit to install it.',
+        [], $inCard);
+}
+
+/** Machine-readable timestamp for <time datetime="">. */
+function iso_datetime($timestamp): string
+{
+    $timestamp = is_string($timestamp) && !ctype_digit($timestamp) ? strtotime($timestamp) : (int) $timestamp;
+    return $timestamp > 0 ? gmdate('c', $timestamp) : '';
+}
+
 /** Human-readable byte size. */
 function human_bytes($bytes, int $decimals = 1): string
 {

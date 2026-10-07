@@ -3,40 +3,36 @@
 require_once APP_ROOT . '/lib/mod_selfupdate.php';
 $cur = su_current();
 ?>
-<div class="page-header">
-  <div>
-    <h1 class="page-title">Panel Updates</h1>
-    <p class="page-subtitle">Update Nebula Panel itself from
-      <span class="mono"><?= e($config['repo'] ?? '') ?></span>@<span class="mono"><?= e($config['repo_ref'] ?? 'main') ?></span></p>
-  </div>
-  <div class="page-actions">
-    <button class="btn btn-secondary" id="suCheck"><i data-lucide="refresh-cw"></i>Check for updates</button>
-    <button class="btn btn-primary" id="suApply" disabled><i data-lucide="download-cloud"></i>Update now</button>
-  </div>
-</div>
-
+<?php /* Panel self-update: rendered as the "Nebula Panel" tab of the Updates page. */ ?>
 <div class="card" style="margin-bottom:16px">
+  <div class="card-header">
+    <div><h3>Nebula Panel</h3><span class="muted">Updates from <span class="mono"><?= e($config['repo'] ?? '') ?>@<?= e($config['repo_ref'] ?? 'main') ?></span></span></div>
+    <div class="flex gap-2">
+      <button class="btn btn-secondary btn-sm" type="button" id="suCheck"><i data-lucide="refresh-cw"></i>Check for updates</button>
+      <button class="btn btn-primary btn-sm" type="button" id="suApply" disabled><i data-lucide="download-cloud"></i>Update now</button>
+    </div>
+  </div>
   <div class="card-pad">
     <div class="grid grid-2" style="gap:20px">
       <div>
         <div class="field-label">Installed version</div>
-        <div class="mono" id="suCurrent" style="font-size:13px;color:var(--text-secondary)">
-          <?= $cur ? e(substr($cur['sha'], 0, 12)) . ' · ' . e($cur['applied_at'] ?? '') : 'unknown (no version recorded yet)' ?>
+        <div id="suCurrent" style="font-size:13px;color:var(--text-secondary)">
+          <?= $cur ? '<span class="mono">' . e(substr($cur['sha'], 0, 12)) . '</span> · ' . e(fmt_datetime($cur['applied_at'] ?? '')) : 'Not recorded yet' ?>
         </div>
       </div>
       <div>
         <div class="field-label">Latest available</div>
-        <div class="mono" id="suLatest" style="font-size:13px;color:var(--text-secondary)">— click “Check for updates”</div>
+        <div id="suLatest" style="font-size:13px;color:var(--text-secondary)">Not checked yet</div>
       </div>
     </div>
     <div id="suStatus" style="margin-top:16px"></div>
-    <div id="suMessage" class="mono text-tertiary" style="margin-top:8px;font-size:12px;white-space:pre-wrap"></div>
+    <div id="suMessage" class="field-help" style="white-space:pre-wrap"></div>
   </div>
 </div>
 
 <div class="card hidden" id="suLogCard">
   <div class="card-header"><h3>Update log</h3></div>
-  <pre class="mono" id="suLog" style="margin:0;padding:16px;font-size:12px;line-height:1.6;white-space:pre-wrap;max-height:50vh;overflow:auto"></pre>
+  <pre class="mono log-pre" id="suLog"></pre>
 </div>
 
 <script>
@@ -71,11 +67,16 @@ document.addEventListener('DOMContentLoaded', () => {
       toast(message, 'error');
       return;
     }
-    document.getElementById('suLatest').textContent =
-      res.latest_sha.slice(0, 12) + (res.date ? ' · ' + res.date : '');
-    msgEl.textContent = res.message ? 'Latest commit: ' + res.message.split('\n')[0] : '';
+    const latest = document.getElementById('suLatest');
+    latest.replaceChildren();
+    const sha = document.createElement('span'); sha.className = 'mono'; sha.textContent = res.latest_sha.slice(0, 12);
+    latest.append(sha, document.createTextNode(res.date ? ' · ' + window.Nebula.fmtDate(res.date) : ''));
+    msgEl.textContent = res.message ? 'Latest change: ' + res.message.split('\n')[0] : '';
     if (res.update_available) {
-      badge('badge-orange', res.known ? 'Update available' : 'Update available (baseline unknown)');
+      badge(res.known ? 'badge-orange' : 'badge-blue', res.known ? 'Update available' : 'Installed version not recorded');
+      if (!res.known) msgEl.textContent = 'The installed version was not recorded, so the panel cannot tell whether it is current. Updating installs the latest reviewed commit and records it.' + (msgEl.textContent ? '\n' + msgEl.textContent : '');
+      applyBtn.classList.toggle('btn-primary', !!res.known);
+      applyBtn.classList.toggle('btn-secondary', !res.known);
       applyBtn.disabled = false;
     } else {
       badge('badge-emerald', 'Up to date');
@@ -84,7 +85,7 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   async function apply() {
-    if (!confirm('Download and apply the latest version now? Your data/ and config.php are preserved, and a snapshot is taken first.')) return;
+    if (!await window.Nebula.confirm({ title: 'Update Nebula Panel now?', message: 'Your data/ folder and config.php are preserved, and a snapshot is taken first.', warning: true, icon: 'download-cloud', confirmLabel: 'Update now' })) return;
     applyBtn.disabled = true;
     const orig = applyBtn.innerHTML;
     applyBtn.innerHTML = '<i data-lucide="loader-circle"></i>Updating…';
@@ -112,6 +113,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
   document.getElementById('suCheck').addEventListener('click', check);
   applyBtn.addEventListener('click', apply);
-  check(); // auto-check on load
+  // Check when the Nebula Panel tab is first shown (avoids a GitHub request on
+  // every visit to the system-packages tab).
+  const panelTab = document.getElementById('updPanel');
+  let checked = false;
+  const maybeCheck = () => { if (!checked && panelTab && !panelTab.classList.contains('hidden')) { checked = true; check(); } };
+  document.querySelector('[data-tab-target="updPanel"]')?.addEventListener('click', () => setTimeout(maybeCheck));
+  maybeCheck();
 });
 </script>

@@ -18,7 +18,7 @@ $selectedWebsite = (string) ($_GET['website'] ?? '');
   <?php if ($available): ?>
     <div class="page-actions">
       <?php if ($pmaInstalled): ?><a class="btn btn-secondary" href="<?= e(url('phpmyadmin')) ?>"><i data-lucide="table-properties"></i>phpMyAdmin</a><?php endif; ?>
-      <button class="btn btn-primary" id="dbCreateToggle"><i data-lucide="plus"></i>Create Database</button>
+      <button class="btn btn-primary" type="button" id="dbCreateToggle" aria-expanded="false" aria-controls="dbCreateCard"><i data-lucide="plus"></i>Create database</button>
     </div>
   <?php endif; ?>
 </div>
@@ -31,30 +31,24 @@ $selectedWebsite = (string) ($_GET['website'] ?? '');
       'stopped'   => 'Database server is not running',
   ][$dbStatus['state']] ?? 'Database server unavailable';
   ?>
-  <div class="card"><div class="empty-state">
-    <div class="es-icon"><i data-lucide="database"></i></div>
-    <div style="font-weight:600;color:var(--text-secondary)"><?= e($dbHeadline) ?></div>
-    <div style="font-size:13px;margin-top:4px;max-width:60ch;margin-left:auto;margin-right:auto"><?= e($dbStatus['message']) ?></div>
-    <div style="margin-top:14px;display:flex;gap:8px;justify-content:center;flex-wrap:wrap">
-      <?php if ($dbStatus['state'] === 'stopped'): ?>
-        <a class="btn btn-primary btn-sm" href="<?= e(url('services')) ?>"><i data-lucide="server-cog"></i>Open Services</a>
-      <?php else: ?>
-        <a class="btn btn-primary btn-sm" href="<?= e(url('apps')) ?>"><i data-lucide="package-plus"></i>Install MariaDB</a>
-      <?php endif; ?>
-      <a class="btn btn-secondary btn-sm" href="<?= e(url('databases')) ?>"><i data-lucide="refresh-cw"></i>Re-check</a>
-    </div>
-  </div></div>
+  <?php
+  $dbActions = $dbStatus['state'] === 'stopped'
+      ? [['label' => 'Open Services', 'href' => url('services'), 'icon' => 'server-cog', 'primary' => true]]
+      : [['label' => 'Install MariaDB', 'href' => url('apps'), 'icon' => 'package-plus', 'primary' => true]];
+  $dbActions[] = ['label' => 'Re-check', 'href' => url('databases'), 'icon' => 'refresh-cw'];
+  ?>
+  <?= requirement_missing('database', $dbHeadline, e($dbStatus['message']), $dbActions) ?>
 <?php else: ?>
   <div class="card hidden" id="dbCreateCard" style="margin-bottom:16px">
     <div class="card-header"><div><h3>Create website database</h3><span class="muted">Every database is owned by one of your panel-managed websites.</span></div></div>
     <div class="card-pad">
-      <div class="grid" style="grid-template-columns:1.2fr 1fr .8fr 1fr 1.2fr auto;gap:12px;align-items:end">
-        <div><label class="field-label" for="dbName">Database name</label><input class="input mono" id="dbName" placeholder="site_database" autocomplete="off"></div>
-        <div><label class="field-label" for="dbUser">User (optional)</label><input class="input mono" id="dbUser" placeholder="site_user" autocomplete="off"></div>
+      <div class="form-grid" style="--cols:minmax(0,1.2fr) minmax(0,1fr) minmax(0,.8fr) minmax(0,1fr) minmax(0,1.2fr) auto">
+        <div><label class="field-label" for="dbName">Database name<span class="req" aria-hidden="true">*</span></label><input class="input mono" id="dbName" placeholder="site_database" autocomplete="off"></div>
+        <div><label class="field-label" for="dbUser">User <span class="text-tertiary" style="font-weight:400">(optional)</span></label><input class="input mono" id="dbUser" placeholder="site_user" autocomplete="off"></div>
         <div><label class="field-label" for="dbHost">Host</label><input class="input mono" id="dbHost" value="localhost" autocomplete="off"></div>
         <div><label class="field-label" for="dbPassword">Password</label><input class="input mono" id="dbPassword" type="password" autocomplete="new-password"></div>
-        <div><label class="field-label" for="dbWebsite">Website</label><select class="select" id="dbWebsite"><option value="">Select website…</option><?php foreach ($sites as $site): ?><?php $siteDomain=(string)($site['domain']??''); ?><option value="<?= e($siteDomain) ?>"<?= $siteDomain===$selectedWebsite?' selected':'' ?>><?= e($siteDomain) ?></option><?php endforeach; ?></select></div>
-        <button class="btn btn-primary" id="dbCreate"><i data-lucide="database-zap"></i>Create</button>
+        <div><label class="field-label" for="dbWebsite">Website<span class="req" aria-hidden="true">*</span></label><select class="select" id="dbWebsite"><option value="">Select website…</option><?php foreach ($sites as $site): ?><?php $siteDomain=(string)($site['domain']??''); ?><option value="<?= e($siteDomain) ?>"<?= $siteDomain===$selectedWebsite?' selected':'' ?>><?= e($siteDomain) ?></option><?php endforeach; ?></select></div>
+        <button class="btn btn-primary" type="button" id="dbCreate"><i data-lucide="database-zap"></i>Create</button>
       </div>
     </div>
   </div>
@@ -68,14 +62,14 @@ $selectedWebsite = (string) ($_GET['website'] ?? '');
   <div class="card" style="margin-bottom:16px">
     <div class="card-header"><div><h3>Website databases</h3><span class="muted" id="dbEngine">Loading database service…</span></div></div>
     <div class="table-wrap"><table class="data-table">
-      <thead><tr><th>Database name</th><th>Engine</th><th>Owner website</th><th>Size</th><th>Tables</th><th>Collation</th><th>Users</th><th style="text-align:right">Actions</th></tr></thead>
-      <tbody id="dbBody"><tr><td colspan="8" class="text-tertiary" style="text-align:center;padding:28px">Loading…</td></tr></tbody>
+      <thead><tr><th>Database name</th><th>Engine</th><th>Owner website</th><th class="num">Size</th><th class="num">Tables</th><th>Collation</th><th>Users</th><th class="actions-col"><span class="sr-only">Actions</span></th></tr></thead>
+      <tbody id="dbBody"><tr class="empty-row"><td colspan="8">Loading…</td></tr></tbody>
     </table></div>
   </div>
 
   <div class="card">
-    <div class="card-header"><h3>Database users</h3><div class="card-actions" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><input class="input mono" id="duUser" placeholder="user" style="max-width:140px"><input class="input mono" id="duHost" value="localhost" style="max-width:115px"><input class="input mono" id="duPass" type="password" placeholder="password" style="max-width:160px"><select class="select" id="duGrant" style="max-width:190px"><option value="">No initial grant</option></select><button class="btn btn-primary btn-sm" id="duCreate"><i data-lucide="user-plus"></i>Create user</button></div></div>
-    <div class="table-wrap"><table class="data-table"><thead><tr><th>User</th><th>Host</th><th style="text-align:right">Actions</th></tr></thead><tbody id="dbUserBody"><tr><td colspan="3" class="text-tertiary" style="text-align:center;padding:24px">Loading…</td></tr></tbody></table></div>
+    <div class="card-header"><h3>Database users</h3><div class="card-actions" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><input class="input input-sm mono" id="duUser" placeholder="user" aria-label="New user name" style="max-width:140px"><input class="input input-sm mono" id="duHost" value="localhost" aria-label="Host" style="max-width:115px"><input class="input input-sm mono" id="duPass" type="password" placeholder="password" aria-label="Password" autocomplete="new-password" style="max-width:160px"><select class="select" id="duGrant" style="max-width:190px"><option value="">No initial grant</option></select><button class="btn btn-primary btn-sm" id="duCreate"><i data-lucide="user-plus"></i>Create user</button></div></div>
+    <div class="table-wrap"><table class="data-table"><thead><tr><th>User</th><th>Host</th><th class="actions-col"><span class="sr-only">Actions</span></th></tr></thead><tbody id="dbUserBody"><tr class="empty-row"><td colspan="3">Loading…</td></tr></tbody></table></div>
   </div>
 
   <script>
@@ -124,17 +118,17 @@ $selectedWebsite = (string) ($_GET['website'] ?? '');
         tr.appendChild(make('td','mono text-tertiary',db.collation || '–'));
         const usersTd=make('td'); (db.users || []).slice(0,2).forEach((u)=>usersTd.appendChild(make('span','badge badge-slate',u))); if ((db.users||[]).length>2) usersTd.appendChild(make('span','badge badge-slate',`+${db.users.length-2}`)); if (!(db.users||[]).length) usersTd.textContent='–'; tr.appendChild(usersTd);
         const actions=make('td'); actions.style.textAlign='right'; const wrap=make('div','flex gap-1'); wrap.style.justifyContent='flex-end';
-        if (!db.system) { const pma=make('button','icon-btn'); pma.title=pmaInstalled?'Open this database in phpMyAdmin':'phpMyAdmin is not installed'; pma.disabled=!pmaInstalled; pma.innerHTML='<i data-lucide="table-properties"></i>'; pma.addEventListener('click',()=>openPma(db.name,pma)); wrap.appendChild(pma); const del=make('button','icon-btn'); del.title='Drop database'; del.style.color='var(--red-400)'; del.innerHTML='<i data-lucide="trash-2"></i>'; del.addEventListener('click',async()=>{ if(!confirm(`Drop database "${db.name}"? This cannot be undone.`))return; const res=await apiPost('databases',{action:'drop_db',name:db.name}); if(res.ok){toast('Database dropped','success');loadAll();}else toast(res.error||'Failed','error'); }); wrap.appendChild(del); }
+        if (!db.system) { const pma=make('button','icon-btn'); pma.title=pmaInstalled?'Open this database in phpMyAdmin':'phpMyAdmin is not installed'; pma.disabled=!pmaInstalled; pma.innerHTML='<i data-lucide="table-properties"></i>'; pma.addEventListener('click',()=>openPma(db.name,pma)); wrap.appendChild(pma); const del=make('button','icon-btn'); del.title='Drop database'; del.style.color='var(--red-400)'; del.innerHTML='<i data-lucide="trash-2"></i>'; del.addEventListener('click',async()=>{ if(!await window.Nebula.confirm({title:`Drop database "${db.name}"?`,message:'All tables and data in it are deleted. This cannot be undone.',danger:true,confirmLabel:'Drop database'}))return; const res=await apiPost('databases',{action:'drop_db',name:db.name}); if(res.ok){toast('Database dropped','success');loadAll();}else toast(res.error||'Failed','error'); }); wrap.appendChild(del); }
         actions.appendChild(wrap); tr.appendChild(actions); body.appendChild(tr);
       });
 
       const userBody=document.getElementById('dbUserBody'); userBody.innerHTML='';
-      users.forEach((u)=>{ const tr=make('tr'); tr.appendChild(make('td','mono',u.user||'(anonymous)')); tr.appendChild(make('td','mono text-tertiary',u.host)); const td=make('td');td.style.textAlign='right';const b=make('button','btn btn-danger btn-sm');b.innerHTML='<i data-lucide="trash-2"></i>';b.addEventListener('click',async()=>{if(!confirm(`Drop user "${u.user}"@"${u.host}"?`))return;const res=await apiPost('databases',{action:'drop_user',user:u.user,host:u.host});if(res.ok){toast('User dropped','success');loadAll();}else toast(res.error||'Failed','error');});td.appendChild(b);tr.appendChild(td);userBody.appendChild(tr); });
+      users.forEach((u)=>{ const tr=make('tr'); tr.appendChild(make('td','mono',u.user||'(anonymous)')); tr.appendChild(make('td','mono text-tertiary',u.host)); const td=make('td');td.style.textAlign='right';const b=make('button','btn btn-danger btn-sm');b.innerHTML='<i data-lucide="trash-2"></i>';b.addEventListener('click',async()=>{if(!await window.Nebula.confirm({title:`Drop user "${u.user}"@"${u.host}"?`,message:'Applications signing in as this user will stop working.',danger:true,confirmLabel:'Drop user'}))return;const res=await apiPost('databases',{action:'drop_user',user:u.user,host:u.host});if(res.ok){toast('User dropped','success');loadAll();}else toast(res.error||'Failed','error');});td.appendChild(b);tr.appendChild(td);userBody.appendChild(tr); });
       if (!users.length) { const tr=make('tr');const td=make('td','text-tertiary','No users.');td.colSpan=3;td.style.cssText='text-align:center;padding:24px';tr.appendChild(td);userBody.appendChild(tr); }
       if (window.lucide) lucide.createIcons();
     }
 
-    document.getElementById('dbCreateToggle')?.addEventListener('click',()=>{const card=document.getElementById('dbCreateCard');card.classList.toggle('hidden');if(!card.classList.contains('hidden'))document.getElementById('dbName').focus();});
+    document.getElementById('dbCreateToggle')?.addEventListener('click',(ev)=>{const card=document.getElementById('dbCreateCard');card.classList.toggle('hidden');ev.currentTarget.setAttribute('aria-expanded',card.classList.contains('hidden')?'false':'true');if(!card.classList.contains('hidden'))document.getElementById('dbName').focus();});
     document.getElementById('dbCreate')?.addEventListener('click',async()=>{const name=document.getElementById('dbName').value.trim(),user=document.getElementById('dbUser').value.trim(),host=document.getElementById('dbHost').value.trim()||'localhost',password=document.getElementById('dbPassword').value,website=document.getElementById('dbWebsite').value;if(!name){toast('Enter a database name','warning');return;}if(!website){toast('Select the website that owns this database','warning');return;}if(user&&!password){toast('Enter a password for the new user','warning');return;}const res=await apiPost('databases',{action:'create_bundle',name,user,host,password,website});if(res.ok){toast('Database created','success');['dbName','dbUser','dbPassword'].forEach(id=>document.getElementById(id).value='');loadAll();}else toast(res.error||'Failed','error');});
     document.getElementById('duCreate')?.addEventListener('click',async()=>{const user=document.getElementById('duUser').value.trim(),host=document.getElementById('duHost').value.trim()||'localhost',password=document.getElementById('duPass').value,grant_db=document.getElementById('duGrant').value;if(!user||!password){toast('Enter a user and password','warning');return;}const res=await apiPost('databases',{action:'create_user',user,host,password,grant_db});if(res.ok){toast('User created','success');document.getElementById('duUser').value='';document.getElementById('duPass').value='';loadAll();}else toast(res.error||'Failed','error');});
     loadAll();

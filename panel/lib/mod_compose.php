@@ -68,8 +68,10 @@ function compose_availability(): array
             $reason = 'The validating helper cannot run Docker. Re-run install.sh on the server.';
         } elseif (stripos($err, 'daemon') !== false || stripos($err, 'connect') !== false) {
             $reason = 'The Docker daemon is not running. Start the docker service from Services, then reload this page.';
+        } elseif (!helper_available()) {
+            $reason = 'The privileged helper is not installed, so the panel cannot talk to Docker. Re-run install.sh on the server.';
         } else {
-            $reason = 'Docker is installed but not responding: ' . ($err ?: 'unknown error');
+            $reason = 'Docker is installed but not responding' . ($err !== '' ? ': ' . $err : '. Check the docker service under Services.');
         }
         return ['available' => false, 'installable' => false, 'reason' => $reason, 'bin' => null];
     }

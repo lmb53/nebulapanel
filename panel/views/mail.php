@@ -25,7 +25,7 @@ $svcBadge = static function (string $v): string {
 $svcState = static function (string $v): string {
     return $v === 'active' ? 'ok' : ($v === 'inactive' ? 'off' : 'warn');
 };
-$dnsBadge = ['A' => 'badge-blue', 'AAAA' => 'badge-purple', 'CNAME' => 'badge-emerald', 'MX' => 'badge-orange', 'TXT' => 'badge-slate'];
+$dnsBadge = ['A' => 'badge-blue', 'AAAA' => 'badge-blue', 'CNAME' => 'badge-purple', 'MX' => 'badge-purple', 'TXT' => 'badge-slate'];
 
 $mailboxes  = $selected === '' ? [] : array_values(array_filter($state['accounts'], fn($a) => str_ends_with((string) ($a['email'] ?? ''), '@' . $selected)));
 $aliases    = $selected === '' ? [] : array_values(array_filter($state['aliases'], fn($a) => str_ends_with((string) ($a['from'] ?? ''), '@' . $selected)));
@@ -54,17 +54,19 @@ $totalMb = count($state['accounts']);
     <p class="page-subtitle">Self-hosted mail — Postfix · Dovecot · OpenDKIM · Webmail</p>
   </div>
   <?php if ($installed && $wmInstalled && $wmUrl): ?>
-    <a class="btn btn-primary" href="<?= e($wmUrl) ?>" target="_blank" rel="noopener"><i data-lucide="mail"></i>Open Webmail</a>
+    <div class="page-actions"><a class="btn btn-primary" href="<?= e($wmUrl) ?>" target="_blank" rel="noopener"><i data-lucide="external-link"></i>Open webmail</a></div>
   <?php endif; ?>
 </div>
 
-<?php if (!$helper): ?>
+<?php if (!$helper && $installed): ?>
   <div class="notice notice-warning" style="margin-bottom:16px"><i data-lucide="shield-alert"></i>
-    <div><strong>Privileged helper required</strong><div>The <span class="mono">nebula-helper</span> is not installed. Re-run <span class="mono">install.sh</span> to enable email management.</div></div>
+    <div><strong>Privileged helper not installed</strong><div>Mail settings are read-only until <span class="mono">install.sh</span> is re-run to install the <span class="mono">nebula-helper</span>.</div></div>
   </div>
 <?php endif; ?>
 
-<?php if (!$installed): ?>
+<?php if (!$installed && !$helper): ?>
+  <?= helper_missing_state('email management') ?>
+<?php elseif (!$installed): ?>
   <!-- ===== Not installed: setup ===== -->
   <div class="card">
     <div class="card-header"><h3>Mail server</h3><span class="badge badge-slate">Not installed</span></div>
@@ -373,10 +375,11 @@ document.addEventListener('DOMContentLoaded', () => {
     const body = mailSetupBody();
     if (body) runStream(e.currentTarget, body, 'mailSetupLog', 'mailSetupLogCard', 'Mail server installed', '<i data-lucide="download"></i>Install &amp; configure mail server');
   });
-  document.getElementById('mailReconfigure')?.addEventListener('click', (e) => {
-    if (!confirm('Re-apply the mail server configuration now?')) return;
+  document.getElementById('mailReconfigure')?.addEventListener('click', async (e) => {
+    const button = e.currentTarget;
+    if (!await window.Nebula.confirm({ title: 'Re-apply the mail configuration?', message: 'Postfix, Dovecot and OpenDKIM are reconfigured and reloaded.', warning: true, icon: 'refresh-cw', confirmLabel: 'Re-apply' })) return;
     const body = mailSetupBody();
-    if (body) runStream(e.currentTarget, body, 'mailSetupLog', 'mailSetupLogCard', 'Mail server reconfigured', '<i data-lucide="refresh-cw"></i>Reconfigure / repair server');
+    if (body) runStream(button, body, 'mailSetupLog', 'mailSetupLogCard', 'Mail server reconfigured', '<i data-lucide="refresh-cw"></i>Reconfigure / repair server');
   });
 
   document.getElementById('mailReapply')?.addEventListener('click', async (e) => {
@@ -399,7 +402,7 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('rcInstall')?.addEventListener('click', (e) =>
     runStream(e.currentTarget, { action: 'roundcube-install' }, 'wmLog', 'wmLogCard', 'Roundcube installed', '<i data-lucide="download"></i>Install Roundcube'));
   document.getElementById('wmRemove')?.addEventListener('click', async () => {
-    if (!confirm('Remove the installed webmail client? Its files will be deleted.')) return;
+    if (!await window.Nebula.confirm({ title: 'Remove webmail?', message: 'The installed webmail client and its files are deleted. Mailboxes are not affected.', danger: true, confirmLabel: 'Remove' })) return;
     const res = await apiPost('mail', { action: 'webmail-remove' });
     if (res.ok) { toast('Webmail removed', 'success'); reload(); } else toast(res.error || 'Failed', 'error');
   });
@@ -415,7 +418,7 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('domainInput')?.addEventListener('keydown', (e) => { if (e.key === 'Enter') document.getElementById('domainAdd').click(); });
   document.querySelectorAll('[data-domain-delete]').forEach(b => b.addEventListener('click', async () => {
     const d = b.dataset.domainDelete;
-    if (!confirm('Delete mail domain ' + d + '? Its mailboxes and aliases will be removed.')) return;
+    if (!await window.Nebula.confirm({ title: 'Delete mail domain ' + d + '?', message: 'Its mailboxes and aliases are removed.', danger: true })) return;
     const res = await apiPost('mail', { action: 'domain-delete', domain: d });
     if (res.ok) { toast('Domain deleted', 'success'); location = <?= json_encode(url('mail')) ?>; } else toast(res.error || 'Failed', 'error');
   }));
@@ -429,12 +432,12 @@ document.addEventListener('DOMContentLoaded', () => {
     if (res.ok) { toast(res.warning || 'Mailbox created', res.warning ? 'warning' : 'success'); reload(); } else toast(res.error || 'Failed', 'error');
   });
   document.querySelectorAll('[data-account-delete]').forEach(b => b.addEventListener('click', async () => {
-    if (!confirm('Delete mailbox ' + b.dataset.accountDelete + '?')) return;
+    if (!await window.Nebula.confirm({ title: 'Delete mailbox ' + b.dataset.accountDelete + '?', message: 'Stored mail for this mailbox is removed.', danger: true })) return;
     const res = await apiPost('mail', { action: 'account-delete', email: b.dataset.accountDelete });
     if (res.ok) { toast('Mailbox deleted', 'success'); reload(); } else toast(res.error || 'Failed', 'error');
   }));
   document.querySelectorAll('[data-account-passwd]').forEach(b => b.addEventListener('click', async () => {
-    const pw = prompt('New password for ' + b.dataset.accountPasswd + ' (min 8 characters):');
+    const pw = await window.Nebula.prompt({ title: 'Change mailbox password', label: 'New password for ' + b.dataset.accountPasswd, validate: (v) => v.length >= 8 ? '' : 'Use at least 8 characters.', confirmLabel: 'Change password' });
     if (pw === null) return;
     const res = await apiPost('mail', { action: 'account-passwd', email: b.dataset.accountPasswd, password: pw });
     if (res.ok) { toast('Password changed', 'success'); } else toast(res.error || 'Failed', 'error');
@@ -449,7 +452,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (res.ok) { toast(res.warning || 'Alias added', res.warning ? 'warning' : 'success'); reload(); } else toast(res.error || 'Failed', 'error');
   });
   document.querySelectorAll('[data-alias-delete-from]').forEach(b => b.addEventListener('click', async () => {
-    if (!confirm('Delete this alias?')) return;
+    if (!await window.Nebula.confirm({ title: 'Delete this alias?', danger: true })) return;
     const res = await apiPost('mail', { action: 'alias-delete', from: b.dataset.aliasDeleteFrom, to: b.dataset.aliasDeleteTo });
     if (res.ok) { toast('Alias deleted', 'success'); reload(); } else toast(res.error || 'Failed', 'error');
   }));

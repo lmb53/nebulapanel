@@ -3,16 +3,16 @@
 require_once APP_ROOT . '/lib/files.php';
 $abs = fm_resolve($_GET['path'] ?? '');
 if ($abs === null || !is_file($abs)) {
-    echo '<div class="card"><div class="empty-state"><div class="es-icon"><i data-lucide="file-x"></i></div><div style="font-weight:600;color:var(--text-secondary)">File not found</div></div></div>';
+    echo '<div class="page-header"><div><h1 class="page-title">File not found</h1></div></div>' . requirement_missing('file-x', 'This file no longer exists', 'It may have been moved, renamed or deleted.', [['label' => 'Open File Manager', 'href' => url('files'), 'icon' => 'folder-open']]);
     return;
 }
 $rel = fm_rel($abs);
 fm_record_recent($rel);
-$dir = trim(dirname($rel), '.');
-$dir = $dir === '/' ? '' : $dir;
+$dir = str_replace('\\', '/', dirname($rel));
+$dir = ($dir === '.' || $dir === '/') ? '' : $dir;
 if (!fm_is_text($abs)) {
     ?>
-    <div class="page-header"><div><div class="breadcrumb"><a href="<?= e(url('files', ['path' => $dir])) ?>"><i data-lucide="corner-left-up"></i>Back to folder</a></div><h1 class="page-title" style="font-size:18px"><?= e(basename($rel)) ?></h1></div></div>
+    <div class="page-header"><div><div class="breadcrumb"><a href="<?= e(url('files', ['path' => $dir])) ?>"><i data-lucide="arrow-left"></i>Back to folder</a></div><h1 class="page-title editor-title"><?= e(basename($rel)) ?></h1></div></div>
     <div class="card"><div class="empty-state"><div class="es-icon"><i data-lucide="file-lock-2"></i></div><div style="font-weight:600;color:var(--text-secondary)">Not an editable text file</div><div style="font-size:13px;margin-top:4px">This file is binary or too large to edit inline.</div><div style="margin-top:12px"><a class="btn btn-secondary" href="<?= e(url('file-download', ['path' => $rel])) ?>"><i data-lucide="download"></i>Download</a></div></div></div>
     <?php return;
 }
@@ -23,19 +23,20 @@ $siblingFiles = array_values(array_filter($siblingListing['files'], fn($file) =>
 ?>
 <div class="editor-workspace">
 <aside class="editor-sidebar">
-  <div class="editor-sidebar-head"><div><strong><?= e(basename(dirname($rel)) ?: 'root') ?></strong><span class="mono"><?= e($dir ?: '/') ?></span></div><a class="icon-btn" href="<?= e(url('files',['path'=>$dir])) ?>" target="_blank" title="Open folder in File Manager"><i data-lucide="folder-open"></i></a></div>
-  <div class="editor-file-list"><?php foreach ($siblingFiles as $file): ?><a class="editor-file-link<?= $file['rel'] === $rel ? ' active' : '' ?>" href="<?= e(url('file-edit',['path'=>$file['rel']])) ?>"><i data-lucide="file-code-2"></i><span><?= e($file['name']) ?></span></a><?php endforeach; ?></div>
+  <div class="editor-sidebar-head"><div><strong><?= e(basename(dirname($rel)) ?: 'root') ?></strong><span class="mono"><?= e($dir ?: '/') ?></span></div><a class="icon-btn" href="<?= e(url('files',['path'=>$dir])) ?>" target="_blank" rel="opener" title="Open folder in File Manager" aria-label="Open folder in File Manager"><i data-lucide="folder-open"></i></a></div>
+  <div class="editor-file-list"><?php foreach ($siblingFiles as $file): ?><a class="editor-file-link<?= $file['rel'] === $rel ? ' active' : '' ?>"<?= $file['rel'] === $rel ? ' aria-current="page"' : '' ?> title="<?= e($file['name']) ?>" href="<?= e(url('file-edit',['path'=>$file['rel']])) ?>"><i data-lucide="file-code-2"></i><span><?= e($file['name']) ?></span></a><?php endforeach; ?></div>
 </aside>
 <section class="editor-main">
 <div class="page-header">
-  <div><div class="breadcrumb"><a href="<?= e(url('files', ['path' => $dir])) ?>"><i data-lucide="corner-left-up"></i>Back to folder</a></div><h1 class="page-title" style="font-size:18px"><?= e(basename($rel)) ?></h1><p class="page-subtitle"><span class="mono"><?= e($rel) ?></span> · <?= e(human_bytes($size)) ?></p></div>
+  <div><div class="breadcrumb"><a href="<?= e(url('files', ['path' => $dir])) ?>"><i data-lucide="arrow-left"></i>Back to folder</a></div><h1 class="page-title editor-title"><?= e(basename($rel)) ?></h1><p class="page-subtitle"><span class="mono"><?= e($rel) ?></span> · <?= e(human_bytes($size)) ?></p></div>
   <div class="page-actions">
-    <button class="btn btn-secondary" id="fwrap"><i data-lucide="wrap-text"></i>Wrap</button>
-    <button class="btn btn-secondary" id="ffind"><i data-lucide="search"></i>Find</button>
-    <button class="icon-btn" id="ffindPrev" title="Previous match"><i data-lucide="chevron-up"></i></button>
-    <button class="icon-btn" id="ffindNext" title="Next match"><i data-lucide="chevron-down"></i></button>
-    <span id="fsaved" class="editor-save-state hidden"></span>
-    <button class="btn btn-primary" id="fsave"><i data-lucide="save"></i>Save</button>
+    <span id="fsaved" class="editor-save-state hidden" role="status"></span>
+    <button class="btn btn-secondary btn-sm" type="button" id="fwrap" aria-pressed="false"><i data-lucide="wrap-text"></i>Wrap</button>
+    <button class="btn btn-secondary btn-sm" type="button" id="ffind"><i data-lucide="search"></i>Find</button>
+    <button class="icon-btn" type="button" id="ffindPrev" title="Previous match" aria-label="Previous match"><i data-lucide="chevron-up"></i></button>
+    <button class="icon-btn" type="button" id="ffindNext" title="Next match" aria-label="Next match"><i data-lucide="chevron-down"></i></button>
+    <button class="icon-btn" type="button" id="themeToggle" title="Toggle theme" aria-label="Toggle theme"><i data-lucide="moon"></i></button>
+    <button class="btn btn-primary btn-sm" type="button" id="fsave"><i data-lucide="save"></i>Save</button>
   </div>
 </div>
 
@@ -43,7 +44,7 @@ $siblingFiles = array_values(array_filter($siblingListing['files'], fn($file) =>
 <link rel="stylesheet" href="<?= e(asset('vendor/codemirror-material-darker-5.65.16.min.css')) ?>">
 <link rel="stylesheet" href="<?= e(asset('vendor/codemirror-dialog-5.65.16.min.css')) ?>">
 <div class="editor-tabs" id="editorTabs"></div>
-<div class="card code-editor-card"><div class="code-editor-toolbar"><span class="badge badge-slate mono" id="fmode">text</span><span class="muted mono" id="fcursor">Ln 1, Col 1</span><span class="topbar-spacer"></span><span class="muted">Ctrl/Cmd+S save · Ctrl/Cmd+F find · F3 next · Tab indent</span></div><div class="code-editor-host"><textarea id="fedit" class="input mono" style="width:100%;height:60vh;white-space:pre"><?= e($content) ?></textarea></div></div>
+<div class="card code-editor-card"><div class="code-editor-toolbar"><span class="badge badge-slate mono" id="fmode">text</span><span class="muted mono" id="fcursor">Ln 1, Col 1</span><span class="topbar-spacer"></span><span class="muted">Ctrl/Cmd+S save · Ctrl/Cmd+F find · F3 next · Tab indent</span></div><div class="code-editor-host"><textarea id="fedit" aria-label="File contents" class="input mono" style="width:100%;height:60vh;white-space:pre"><?= e($content) ?></textarea></div></div>
 </section>
 </div>
 
@@ -89,7 +90,7 @@ document.addEventListener('DOMContentLoaded', () => {
       const link=document.createElement('a');link.href=item.href;link.textContent=item.name;link.title=item.path;link.addEventListener('click',()=>{allowNavigation=true;});
       if (isDirty) { const dot=document.createElement('span');dot.className='editor-dirty-dot';dot.title='Unsaved changes';tab.append(dot); }
       const close=document.createElement('button');close.type='button';close.title='Close tab';close.textContent='×';
-      close.addEventListener('click',(event)=>{event.preventDefault();event.stopPropagation();if(isDirty&&!confirm(`Discard unsaved changes to "${item.name}"?`))return;delete drafts[item.path];persistDrafts();const wasCurrent=item.path===FEDIT_PATH;openTabs.splice(position,1);persistTabs();if(wasCurrent&&openTabs.length){allowNavigation=true;location.href=openTabs[Math.min(position,openTabs.length-1)].href;}else if(wasCurrent)window.close();else renderTabs();});
+      close.addEventListener('click',async(event)=>{event.preventDefault();event.stopPropagation();if(isDirty&&!await window.Nebula.confirm({title:`Discard changes to "${item.name}"?`,message:'Your unsaved edits will be lost.',danger:true,confirmLabel:'Discard'}))return;delete drafts[item.path];persistDrafts();const wasCurrent=item.path===FEDIT_PATH;openTabs.splice(position,1);persistTabs();if(wasCurrent&&openTabs.length){allowNavigation=true;location.href=openTabs[Math.min(position,openTabs.length-1)].href;}else if(wasCurrent)window.close();else renderTabs();});
       tab.append(link,close);host.append(tab);
     });
   };
@@ -111,7 +112,7 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('ffind')?.addEventListener('click',()=>editor?editor.execCommand('find'):ta.focus());
   document.getElementById('ffindPrev')?.addEventListener('click',()=>editor?.execCommand('findPrev'));
   document.getElementById('ffindNext')?.addEventListener('click',()=>editor?.execCommand('findNext'));
-  document.getElementById('fwrap')?.addEventListener('click',(event)=>{wrapping=!wrapping;if(editor)editor.setOption('lineWrapping',wrapping);else ta.style.whiteSpace=wrapping?'pre-wrap':'pre';event.currentTarget.classList.toggle('active',wrapping);});
+  document.getElementById('fwrap')?.addEventListener('click',(event)=>{wrapping=!wrapping;if(editor)editor.setOption('lineWrapping',wrapping);else ta.style.whiteSpace=wrapping?'pre-wrap':'pre';event.currentTarget.classList.toggle('active',wrapping);event.currentTarget.setAttribute('aria-pressed',wrapping?'true':'false');});
   document.addEventListener('keydown',(event)=>{if((event.ctrlKey||event.metaKey)&&event.key.toLowerCase()==='s'){event.preventDefault();save();}if(event.key==='F3'){event.preventDefault();editor?.execCommand(event.shiftKey?'findPrev':'findNext');}});
   window.addEventListener('beforeunload',(event)=>{if(dirty&&!allowNavigation){event.preventDefault();event.returnValue='';}});
 });

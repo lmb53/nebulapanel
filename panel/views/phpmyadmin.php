@@ -18,44 +18,38 @@ $helper = helper_available();
       <a class="btn btn-primary" href="<?= e(url('databases')) ?>">
         <i data-lucide="database"></i>Choose a database
       </a>
-      <div class="mono" style="margin-top:12px;color:var(--blue-400)"><?= e($url) ?></div>
-      <div class="muted" style="font-size:13px;margin-top:12px">
+      <div class="field-help" style="margin-top:12px">Installed at <span class="mono"><?= e($url) ?></span></div>
+      <div class="field-help" style="font-size:13px;margin-top:8px">
         Use the phpMyAdmin button beside a database. Nebula creates a short-lived,
         signed handoff and opens that database without putting its password in the URL.
       </div>
-      <div style="margin-top:20px;padding-top:16px;border-top:1px solid var(--border)">
-        <button class="btn btn-danger" id="pmaRemove"><i data-lucide="trash-2"></i>Remove phpMyAdmin</button>
+      <div style="margin-top:20px;padding-top:16px;border-top:1px solid var(--border-subtle)">
+        <button class="btn btn-danger" type="button" id="pmaRemove"><i data-lucide="trash-2"></i>Remove phpMyAdmin</button>
       </div>
     </div>
   </div>
 <?php else: ?>
+  <?php if (!$helper): ?>
+  <?= helper_missing_state('installing phpMyAdmin') ?>
+  <?php else: ?>
   <div class="card">
-    <div class="card-header"><h3>phpMyAdmin is not installed</h3></div>
+    <div class="card-header"><h3>Install phpMyAdmin</h3><span class="badge badge-slate">Not installed</span></div>
     <div class="card-pad">
-      <p style="color:var(--text-secondary);margin:0 0 16px">
+      <p style="color:var(--text-secondary);margin:0 0 16px;max-width:70ch">
         phpMyAdmin provides a full web interface for managing your MySQL / MariaDB
         databases, tables, and users. Installation uses the signed distribution package
-        (~15MB) and may take a moment.
+        (about 15 MB) and may take a moment.
       </p>
-      <button class="btn btn-primary" id="pmaInstall"<?= $helper ? '' : ' disabled' ?>>
+      <button class="btn btn-primary" type="button" id="pmaInstall">
         <i data-lucide="download"></i>Install phpMyAdmin
       </button>
-      <?php if (!$helper): ?>
-        <div class="empty-state" style="margin-top:16px">
-          <div class="es-icon"><i data-lucide="shield-alert"></i></div>
-          <div style="font-weight:600;color:var(--text-secondary)">Privileged helper required</div>
-          <div style="font-size:13px;margin-top:4px">
-            The <span class="mono">nebula-helper</span> is not installed. Re-run
-            <span class="mono">install.sh</span> to enable phpMyAdmin installation.
-          </div>
-        </div>
-      <?php endif; ?>
       <div class="card hidden" id="pmaLogCard" style="margin-top:16px">
         <div class="card-header"><h3>Install output</h3></div>
-        <pre class="mono" id="pmaLog" style="margin:0;padding:16px;font-size:12px;line-height:1.55;white-space:pre-wrap;max-height:40vh;overflow:auto"></pre>
+        <pre class="mono log-pre" id="pmaLog"></pre>
       </div>
     </div>
   </div>
+  <?php endif; ?>
 <?php endif; ?>
 
 <script>
@@ -92,7 +86,7 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   document.getElementById('pmaRemove')?.addEventListener('click', async () => {
-    if (!confirm('Remove phpMyAdmin? The installed files will be deleted.')) return;
+    if (!await window.Nebula.confirm({ title: 'Remove phpMyAdmin?', message: 'The installed files are deleted. Databases are not affected.', danger: true, confirmLabel: 'Remove' })) return;
     const res = await apiPost('pma', { action: 'remove' });
     if (res.ok) { toast('phpMyAdmin removed', 'success'); setTimeout(() => location.reload(), 500); }
     else toast(res.error || 'Failed', 'error');
