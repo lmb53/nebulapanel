@@ -36,13 +36,30 @@ function notifications_update_state(callable $mutator): array
         'dismissed'=>array_values(array_unique((array)($current['dismissed']??[]))),
     ]);
     if(!is_array($state)){@flock($lock,LOCK_UN);fclose($lock);return ['ok'=>false];}
+    // Keep the most recent entries only; old IDs belong to conditions that
+    // have long since changed or cleared.
     $data['users'][$key]=[
         'updated_at' => time(),
-        'read' => array_values(array_unique((array) ($state['read'] ?? []))),
-        'dismissed' => array_values(array_unique((array) ($state['dismissed'] ?? []))),
+        'read' => array_slice(array_values(array_unique((array) ($state['read'] ?? []))), -NOTIFICATION_STATE_LIMIT),
+        'dismissed' => array_slice(array_values(array_unique((array) ($state['dismissed'] ?? []))), -NOTIFICATION_STATE_LIMIT),
     ];
     $ok=write_json_file($path,$data);@flock($lock,LOCK_UN);fclose($lock);return ['ok'=>$ok,'state'=>$state];
 }
+
+/**
+ * Stable identity for a health item. The detail line carries live readings
+ * ("81.2% used on /"), so hashing it gave the same condition a new ID on every
+ * check: read/dismissed state never stuck, and the state file grew forever.
+ * Level and title still change when a condition escalates or its count
+ * changes, which is exactly when it should resurface as unread.
+ */
+function notification_id(array $item): string
+{
+    return substr(hash('sha256', ($item['level'] ?? '') . '|' . ($item['title'] ?? '') . '|' . ($item['route'] ?? '')), 0, 16);
+}
+
+/** Bound on remembered read/dismissed IDs per user. */
+const NOTIFICATION_STATE_LIMIT = 200;
 
 function notifications_items(): array
 {
@@ -52,7 +69,7 @@ function notifications_items(): array
     $checked = (int) ($health['checked_at'] ?? time());
     $items = [];
     foreach ((array) ($health['items'] ?? []) as $item) {
-        $item['id'] = substr(hash('sha256', ($item['title'] ?? '') . '|' . ($item['detail'] ?? '') . '|' . ($item['route'] ?? '')), 0, 16);
+        $item['id'] = notification_id($item);
         if (in_array($item['id'], $state['dismissed'], true)) { continue; }
         $item['created_at'] = $checked;
         $item['read'] = in_array($item['id'], $state['read'], true);

@@ -8,7 +8,7 @@ if ($abs === null || !is_dir($abs)) {
 }
 $root_ok = fm_root() !== '';
 $rel = $abs ? fm_rel($abs) : '';
-$listing = $abs ? fm_list($abs) : ['dirs' => [], 'files' => []];
+$listing = $abs ? fm_list($abs) : ['dirs' => [], 'files' => [], 'total' => 0, 'truncated' => false];
 $breadcrumbs = fm_breadcrumbs($rel);
 $fmState = fm_state();
 $pinnedEntries = fm_state_entries('pinned');
@@ -233,6 +233,9 @@ if ($rel !== '') {
           <button class="tab" type="button" role="tab" aria-selected="false" data-fm-tab="trash"><i data-lucide="trash-2"></i>Trash <span class="badge badge-slate" id="fmTrashCount"><?= (int) $trashCount ?></span></button>
         </div>
         <div class="fm-tab-panel" data-fm-panel="browse" role="tabpanel">
+        <?php if (!empty($listing['truncated'])): ?>
+          <div class="notice notice-info" style="margin:12px 16px 0"><i data-lucide="info"></i><div>Showing the first <?= (int) FM_LIST_LIMIT ?> of <?= (int) $listing['total'] ?> entries (folders first, then files, by name). Use the Terminal for very large folders.</div></div>
+        <?php endif; ?>
 
         <!-- List view -->
         <div class="table-wrap" id="fmListView">
@@ -575,8 +578,20 @@ document.addEventListener('DOMContentLoaded', () => {
     fd.append('file', file);
     fd.append('overwrite', overwrite ? '1' : '0');
     try {
-      const r = await fetch(window.Nebula.api('file-upload'), { method: 'POST', headers: { 'X-CSRF-Token': csrf() }, body: fd });
-      const res = await r.json();
+      const r = await fetch(window.Nebula.api('file-upload'), {
+        method: 'POST',
+        headers: { 'X-CSRF-Token': csrf() },
+        body: fd,
+      });
+      // nginx answers an oversized body with an HTML 413 page, not JSON.
+      const text = await r.text();
+      let res;
+      try { res = JSON.parse(text); }
+      catch (e) {
+        res = { ok: false, error: r.status === 413
+          ? `${file.name} is larger than the web server accepts. Re-run install.sh to apply the panel's upload limits.`
+          : `Upload failed: ${file.name} (HTTP ${r.status})` };
+      }
       if (res.ok) { toast(`${res.overwritten ? 'Replaced' : 'Uploaded'} ${file.name}`, 'success'); return true; }
       if (res.conflict) {
         if (await ask({ title: 'Replace existing file?', message: `"${file.name}" already exists. Replace it with the uploaded file?`, warning: true, icon: 'file-up', confirmLabel: 'Replace' })) {

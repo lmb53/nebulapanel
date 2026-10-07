@@ -34,9 +34,20 @@ function sshkey_add(string $user, string $key): array
     return $code === 0 ? ['ok' => true] : ['ok' => false, 'error' => trim($out) ?: 'Could not add key.'];
 }
 
-function sshkey_delete(string $user, int $number): array
+function sshkey_delete(string $user, int $number, string $expect = ''): array
 {
     if (!sshkey_user_allowed($user) || $number < 1) { return ['ok' => false, 'error' => 'Invalid key selection.']; }
+    // Keys are addressed by position, which shifts when another key is added
+    // or removed. Confirm the key at that position is the one the page showed.
+    if ($expect !== '') {
+        $current = null;
+        foreach (sshkey_list($user) as $row) {
+            if ($row['number'] === $number) { $current = $row['meta']; break; }
+        }
+        if ($current !== $expect) {
+            return ['ok' => false, 'conflict' => true, 'error' => 'The key list changed since this page loaded. Refresh and try again.'];
+        }
+    }
     [$code, $out] = helper_cmd('ssh-key-delete ' . escapeshellarg($user) . ' ' . $number);
     audit('sshkey.delete', $user . ' #' . $number);
     return $code === 0 ? ['ok' => true] : ['ok' => false, 'error' => trim($out) ?: 'Could not remove key.'];

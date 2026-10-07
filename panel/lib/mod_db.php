@@ -242,6 +242,13 @@ function db_link_website(string $database, string $website): array
 function db_create_bundle(string $name, string $user, string $host, string $password, string $website): array
 {
     if ($website === '') { return ['ok' => false, 'error' => 'A website owner is required.']; }
+    // Validate the user up front so a bad request never creates (and then has
+    // to drop) the database.
+    if ($user !== '') {
+        if (!db_ident_ok($user)) { return ['ok' => false, 'error' => 'Invalid user name.']; }
+        if (!db_host_ok($host ?: 'localhost')) { return ['ok' => false, 'error' => 'Invalid host.']; }
+        if (($passwordError = db_password_error($password)) !== null) { return ['ok' => false, 'error' => $passwordError]; }
+    }
     $created = db_create($name);
     if (empty($created['ok'])) { return $created; }
     if ($user !== '') {
@@ -319,6 +326,18 @@ function db_drop(string $name): array
     return ['ok' => true];
 }
 
+/**
+ * An empty password creates an account anyone can use, from any host the
+ * grant names. The UI already insists on one; enforce it for API callers too.
+ */
+function db_password_error(string $password): ?string
+{
+    if (strlen($password) < 8 || strlen($password) > 256 || strpos($password, "\0") !== false) {
+        return 'Database user passwords must be 8–256 characters.';
+    }
+    return null;
+}
+
 /** Create a user, optionally granting all privileges on one database. */
 function db_create_user(string $user, string $host, string $password, string $grantDb = ''): array
 {
@@ -330,6 +349,9 @@ function db_create_user(string $user, string $host, string $password, string $gr
     }
     if ($grantDb !== '' && !db_ident_ok($grantDb)) {
         return ['ok' => false, 'error' => 'Invalid database name.'];
+    }
+    if (($passwordError = db_password_error($password)) !== null) {
+        return ['ok' => false, 'error' => $passwordError];
     }
     // user/host are regex-validated, so safe to inline inside the quotes.
     $sql = "CREATE USER '" . $user . "'@'" . $host . "' IDENTIFIED BY " . db_sql_str($password) . ";";

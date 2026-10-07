@@ -32,6 +32,25 @@ function fm_path_forbidden(string $absolute): bool
     return false;
 }
 
+/**
+ * True when acting on $absolute as a whole (delete, move, rename, archive)
+ * would also act on a panel-private path: the path is forbidden itself, or it
+ * is an ancestor of one. Only possible when FM_ROOT is set to contain the
+ * panel installation, but then deleting or archiving that parent would
+ * destroy the panel or copy its secrets into a web-served folder.
+ */
+function fm_path_protected(string $absolute): bool
+{
+    if (fm_path_forbidden($absolute)) {
+        return true;
+    }
+    $prefix = rtrim($absolute, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR;
+    foreach (fm_forbidden_roots() as $blocked) {
+        if (str_starts_with($blocked . DIRECTORY_SEPARATOR, $prefix)) { return true; }
+    }
+    return false;
+}
+
 function fm_absolute_allowed(string $absolute): bool
 {
     $root = fm_root();
@@ -81,6 +100,35 @@ function fm_resolve(string $rel, bool $mustExist = true): ?string
     return $real;
 }
 
+/**
+ * Resolve a user-supplied path to the directory entry itself, without
+ * following a final symlink. Operations that act on an entry (delete, rename,
+ * move) must use this: fm_resolve() would hand back the link's *target*, so
+ * deleting a link would delete whatever it points at. The parent is still
+ * fully confined, and the File Manager root itself is never returned.
+ */
+function fm_resolve_entry(string $rel): ?string
+{
+    $rel = trim(str_replace('\\', '/', $rel), '/');
+    if ($rel === '') {
+        return null;
+    }
+    $name = basename($rel);
+    if ($name === '' || $name === '.' || $name === '..') {
+        return null;
+    }
+    $parentRel = dirname($rel);
+    $parent = fm_resolve($parentRel === '.' ? '' : $parentRel);
+    if ($parent === null || !is_dir($parent)) {
+        return null;
+    }
+    $abs = $parent . '/' . $name;
+    if (!is_link($abs) && (!file_exists($abs) || fm_path_protected($abs))) {
+        return null;
+    }
+    return $abs;
+}
+
 /** Path relative to FM_ROOT, for display / links (uses '/' at root). */
 function fm_rel(string $abs): string
 {
@@ -104,47 +152,70 @@ function fm_link_path(string $abs): ?string
     return fm_rel($real);
 }
 
-/** List a directory. Returns ['dirs' => [...], 'files' => [...]] sorted. */
-function fm_list(string $absDir): array
+/** Directory listings stop building full rows after this many entries. */
+const FM_LIST_LIMIT = 2000;
+
+/**
+ * List a directory. Returns ['dirs' => [...], 'files' => [...]] sorted, plus
+ * 'total' and 'truncated'. Reading names is cheap, but each row costs a
+ * realpath, stat and owner/group lookup, so a folder with 100k entries (a
+ * cache or session directory) is cut to the first $limit rows, folders first.
+ */
+function fm_list(string $absDir, int $limit = FM_LIST_LIMIT): array
 {
-    $dirs = [];
-    $files = [];
     $handle = @opendir($absDir);
     if (!$handle) {
-        return ['dirs' => [], 'files' => []];
+        return ['dirs' => [], 'files' => [], 'total' => 0, 'truncated' => false];
     }
+    $dirNames = [];
+    $fileNames = [];
     while (($entry = readdir($handle)) !== false) {
         if ($entry === '.' || $entry === '..') {
             continue;
         }
-        $full = $absDir . '/' . $entry;
-        $entryReal = realpath($full);
-        if ($entryReal !== false && fm_path_forbidden($entryReal)) { continue; }
-        $isDir = is_dir($full);
-        $item = [
-            'name'     => $entry,
-            'rel'      => fm_rel($full),
-            'is_dir'   => $isDir,
-            'size'     => $isDir ? null : (@filesize($full) ?: 0),
-            'mtime'    => @filemtime($full) ?: 0,
-            'perms'    => substr(sprintf('%o', @fileperms($full) ?: 0), -4),
-            'readable' => is_readable($full),
-            'owner'    => fm_owner($full),
-            'group'    => fm_group($full),
-            'ext'      => $isDir ? '' : strtolower(pathinfo($full, PATHINFO_EXTENSION)),
-        ];
-        if ($isDir) {
-            $dirs[] = $item;
+        if (is_dir($absDir . '/' . $entry)) {
+            $dirNames[] = $entry;
         } else {
-            $files[] = $item;
+            $fileNames[] = $entry;
         }
     }
     closedir($handle);
     // Natural order: file2 before file10.
-    $byName = fn($a, $b) => strnatcasecmp($a['name'], $b['name']);
-    usort($dirs, $byName);
-    usort($files, $byName);
-    return ['dirs' => $dirs, 'files' => $files];
+    usort($dirNames, 'strnatcasecmp');
+    usort($fileNames, 'strnatcasecmp');
+    $total = count($dirNames) + count($fileNames);
+    $truncated = $limit > 0 && $total > $limit;
+    if ($truncated) {
+        $dirNames = array_slice($dirNames, 0, $limit);
+        $fileNames = array_slice($fileNames, 0, max(0, $limit - count($dirNames)));
+    }
+    $dirs = [];
+    $files = [];
+    foreach ([[$dirNames, true], [$fileNames, false]] as [$names, $isDir]) {
+        foreach ($names as $entry) {
+            $full = $absDir . '/' . $entry;
+            $entryReal = realpath($full);
+            if ($entryReal !== false && fm_path_forbidden($entryReal)) { continue; }
+            $item = [
+                'name'     => $entry,
+                'rel'      => fm_rel($full),
+                'is_dir'   => $isDir,
+                'size'     => $isDir ? null : (@filesize($full) ?: 0),
+                'mtime'    => @filemtime($full) ?: 0,
+                'perms'    => substr(sprintf('%o', @fileperms($full) ?: 0), -4),
+                'readable' => is_readable($full),
+                'owner'    => fm_owner($full),
+                'group'    => fm_group($full),
+                'ext'      => $isDir ? '' : strtolower(pathinfo($full, PATHINFO_EXTENSION)),
+            ];
+            if ($isDir) {
+                $dirs[] = $item;
+            } else {
+                $files[] = $item;
+            }
+        }
+    }
+    return ['dirs' => $dirs, 'files' => $files, 'total' => $total, 'truncated' => $truncated];
 }
 
 /** Breadcrumb segments for a relative path. */
@@ -172,6 +243,33 @@ function fm_is_text(string $abs, int $maxBytes = 512000): bool
     }
     // Treat as binary if it contains a null byte.
     return strpos($sample, "\0") === false;
+}
+
+/**
+ * Why a file cannot be opened in the inline editor, or null when it can.
+ * The editor round-trips text through the browser as UTF-8, so a file in any
+ * other encoding would be silently rewritten (or blanked) on save.
+ */
+function fm_edit_block_reason(string $abs, int $maxBytes = 512000): ?string
+{
+    $size = @filesize($abs);
+    if ($size === false) {
+        return 'The file could not be read.';
+    }
+    if ($size > $maxBytes) {
+        return 'The file is larger than ' . human_bytes($maxBytes) . ', the inline editor limit.';
+    }
+    $content = @file_get_contents($abs);
+    if ($content === false) {
+        return 'The file could not be read.';
+    }
+    if (strpos($content, "\0") !== false) {
+        return 'This is a binary file.';
+    }
+    if (preg_match('//u', $content) !== 1) {
+        return 'The file is not valid UTF-8 text; editing it inline would corrupt it.';
+    }
+    return null;
 }
 
 /** Owner name for an absolute path. Falls back to numeric uid, '?' on failure. */
@@ -328,7 +426,7 @@ function fm_compress(array $paths, string $destDir, string $name): array
     $rels = [];
     foreach (array_slice(array_values(array_unique($paths)), 0, 100) as $rel) {
         $abs = fm_resolve((string) $rel);
-        if ($abs === null || $abs === fm_root()) {
+        if ($abs === null || $abs === fm_root() || fm_path_protected($abs)) {
             return ['ok' => false, 'error' => 'One of the selected paths is not allowed.'];
         }
         $rels[] = fm_rel($abs);
@@ -362,9 +460,18 @@ function fm_compress(array $paths, string $destDir, string $name): array
 /** Validate a single path segment (no separators, not . or ..). */
 function fm_valid_name(string $n): bool
 {
+    // Keep in sync with valid_component() in bin/nebula-helper.
     return $n !== '' && $n !== '.' && $n !== '..'
-        && preg_match('/^[A-Za-z0-9._ -]+$/', $n) === 1
+        && preg_match('/^[A-Za-z0-9._ ()+,@=~-]+$/', $n) === 1
+        && trim($n) === $n
         && strlen($n) <= 255;
+}
+
+/** Names that make a web server or PHP execute or reconfigure a directory. */
+function fm_executable_upload_name(string $name): bool
+{
+    return preg_match('/\.(?:php[0-9]?|pht|phtml|phar|phps)$/i', $name) === 1
+        || in_array(strtolower($name), ['.htaccess', '.user.ini'], true);
 }
 
 function fm_stage_path(): ?string
@@ -422,15 +529,18 @@ function fm_mkfile(string $relDir, string $name): array
 /** Rename the entry at $rel to $newName (same directory). */
 function fm_rename(string $rel, string $newName): array
 {
-    $abs = fm_resolve($rel);
-    if ($abs === null || !file_exists($abs)) {
+    $abs = fm_resolve_entry($rel);
+    if ($abs === null) {
         return ['ok' => false, 'error' => 'Path not found or not allowed.'];
     }
     if (!fm_valid_name($newName)) {
         return ['ok' => false, 'error' => 'Invalid name.'];
     }
     $target = dirname($abs) . '/' . $newName;
-    if (file_exists($target)) {
+    if ($target === $abs) {
+        return ['ok' => true];
+    }
+    if (file_exists($target) || is_link($target)) {
         return ['ok' => false, 'error' => 'A file or folder with that name already exists.'];
     }
     if (!@rename($abs, $target)) {
@@ -475,7 +585,12 @@ function fm_save(string $rel, string $content, string $expectedHash = ''): array
     if ($expectedHash !== '' && !hash_equals($currentHash, $expectedHash)) {
         return ['ok'=>false,'conflict'=>true,'error'=>'This file changed on disk after you opened it. Reload or copy your draft before saving.','current_hash'=>$currentHash];
     }
-    if (is_writable($abs)) {
+    // An in-place replace by the panel account would hand the file to that
+    // account. Only do it for files the panel already owns in a directory it
+    // can write; everything else goes through the owner-preserving helper.
+    $owner = @fileowner($abs);
+    $selfOwned = !function_exists('posix_geteuid') || ($owner !== false && $owner === posix_geteuid());
+    if (is_writable($abs) && is_writable(dirname($abs)) && ($selfOwned || !helper_available())) {
         $tmp = @tempnam(dirname($abs), '.nebula-edit-');
         if ($tmp === false || @file_put_contents($tmp, $content, LOCK_EX) === false) {
             if (is_string($tmp)) @unlink($tmp);
@@ -483,6 +598,11 @@ function fm_save(string $rel, string $content, string $expectedHash = ''): array
         }
         @chmod($tmp, @fileperms($abs) & 0777);
         if (!@rename($tmp, $abs)) { @unlink($tmp); return ['ok'=>false,'error'=>'Could not replace the file atomically.']; }
+    } elseif (is_writable($abs) && !helper_available()) {
+        // No helper and no writable directory for a temp file: write in place.
+        if (@file_put_contents($abs, $content, LOCK_EX) === false) {
+            return ['ok' => false, 'error' => 'Save failed (permissions?).'];
+        }
     } else {
         $staged = fm_stage_path();
         if ($staged === null || @file_put_contents($staged, $content, LOCK_EX) === false) {
@@ -534,8 +654,10 @@ function fm_op(string $rel, string $destDir, string $op): array
     if ($op !== 'copy' && $op !== 'move') {
         return ['ok' => false, 'error' => 'Invalid operation.'];
     }
-    $abs = fm_resolve($rel);
-    if ($abs === null || !file_exists($abs)) {
+    // A move relocates the entry itself (a symlink stays a symlink); a copy
+    // reads through to the content it names.
+    $abs = $op === 'move' ? fm_resolve_entry($rel) : fm_resolve($rel);
+    if ($abs === null || $abs === fm_root() || (!file_exists($abs) && !is_link($abs))) {
         return ['ok' => false, 'error' => 'Source not found or not allowed.'];
     }
     $destAbs = fm_resolve($destDir);
@@ -543,10 +665,13 @@ function fm_op(string $rel, string $destDir, string $op): array
         return ['ok' => false, 'error' => 'Destination not found or not allowed.'];
     }
     $target = $destAbs . '/' . basename($abs);
-    if (is_dir($abs) && ($destAbs === $abs || strpos($destAbs, $abs . DIRECTORY_SEPARATOR) === 0)) {
+    if (is_dir($abs) && !is_link($abs) && ($destAbs === $abs || strpos($destAbs, $abs . DIRECTORY_SEPARATOR) === 0)) {
         return ['ok' => false, 'error' => 'A folder cannot be copied or moved into itself.'];
     }
-    if (file_exists($target)) {
+    if ($op === 'move' && dirname($abs) === $destAbs) {
+        return ['ok' => false, 'error' => 'The item is already in that folder.'];
+    }
+    if (file_exists($target) || is_link($target)) {
         return ['ok' => false, 'error' => 'Target already exists in destination.'];
     }
     $useHelper = helper_available() && (!is_writable($destAbs) || ($op === 'move' && !is_writable(dirname($abs))));
@@ -563,6 +688,27 @@ function fm_op(string $rel, string $destDir, string $op): array
     return ['ok' => true];
 }
 
+/** Explain a PHP upload error code in terms the operator can act on. */
+function fm_upload_error_message(int $code): string
+{
+    switch ($code) {
+        case UPLOAD_ERR_INI_SIZE:
+        case UPLOAD_ERR_FORM_SIZE:
+            return 'The file exceeds PHP\'s upload_max_filesize (' . (ini_get('upload_max_filesize') ?: '?')
+                . '). Re-run install.sh to apply the panel\'s upload limits.';
+        case UPLOAD_ERR_PARTIAL:
+            return 'The upload was interrupted before it finished. Try again.';
+        case UPLOAD_ERR_NO_FILE:
+            return 'No file uploaded.';
+        case UPLOAD_ERR_NO_TMP_DIR:
+        case UPLOAD_ERR_CANT_WRITE:
+            return 'The server could not store the upload (temporary directory missing or not writable).';
+        case UPLOAD_ERR_EXTENSION:
+            return 'A PHP extension blocked the upload.';
+    }
+    return 'Upload error (code ' . $code . ').';
+}
+
 /** Handle an uploaded file into relative directory $relDir. */
 function fm_upload(string $relDir, array $file, bool $overwrite = false): array
 {
@@ -575,7 +721,7 @@ function fm_upload(string $relDir, array $file, bool $overwrite = false): array
         return ['ok' => false, 'error' => 'No file uploaded.'];
     }
     if ($file['error'] !== UPLOAD_ERR_OK) {
-        return ['ok' => false, 'error' => 'Upload error (code ' . (int) $file['error'] . ').'];
+        return ['ok' => false, 'error' => fm_upload_error_message((int) $file['error'])];
     }
     if (!is_uploaded_file($file['tmp_name'])) {
         return ['ok' => false, 'error' => 'Invalid upload.'];
@@ -594,8 +740,8 @@ function fm_upload(string $relDir, array $file, bool $overwrite = false): array
     if (!fm_valid_name($name)) {
         return ['ok' => false, 'error' => 'Invalid file name.'];
     }
-    if (empty($config['allow_php_uploads']) && preg_match('/\.(?:php[0-9]?|phtml|phar)$/i', $name)) {
-        return ['ok' => false, 'error' => 'Executable PHP uploads are disabled by policy.'];
+    if (empty($config['allow_php_uploads']) && fm_executable_upload_name($name)) {
+        return ['ok' => false, 'error' => 'Uploading PHP files, .htaccess, or .user.ini is disabled by policy.'];
     }
     $target = $abs . '/' . $name;
     if (file_exists($target)) {

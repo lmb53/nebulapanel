@@ -92,15 +92,57 @@ function cron_save(array $lines): array
     return ['ok' => true];
 }
 
+const CRON_KEYWORDS = ['@reboot', '@yearly', '@annually', '@monthly', '@weekly', '@daily', '@midnight', '@hourly'];
+
+/** Why a schedule/command pair cannot be written to the crontab, or null. */
+function cron_validate(string $schedule, string $command): ?string
+{
+    if ($schedule === '' || $command === '') {
+        return 'Schedule and command are both required.';
+    }
+    // A line break would smuggle extra entries into the crontab (and shift
+    // every index the UI uses to address jobs).
+    if (preg_match('/[\x00-\x08\x0A-\x1F\x7F]/', $schedule . $command)) {
+        return 'Schedule and command must each be a single line.';
+    }
+    if ($schedule[0] === '@') {
+        return in_array(strtolower($schedule), CRON_KEYWORDS, true)
+            ? null : 'Unknown schedule keyword. Use one of ' . implode(', ', CRON_KEYWORDS) . '.';
+    }
+    $fields = preg_split('/\s+/', $schedule);
+    if (count($fields) !== 5) {
+        return 'Schedule must be 5 fields (e.g. "0 2 * * *") or an @keyword.';
+    }
+    foreach ($fields as $field) {
+        if (!preg_match('/^[A-Za-z0-9*\/,-]+$/', $field)) {
+            return 'Invalid schedule field "' . $field . '".';
+        }
+    }
+    return null;
+}
+
+/**
+ * Jobs are addressed by crontab line index, which shifts whenever another
+ * line is added or removed. When the caller says which line it saw, the line
+ * at that index must still be it, or the action would hit a different job.
+ */
+function cron_line_error(array $lines, int $index, ?string $expect): ?string
+{
+    if (!isset($lines[$index])) {
+        return 'Job not found (list may be stale — refresh).';
+    }
+    if ($expect !== null && $expect !== '' && $lines[$index] !== $expect) {
+        return 'The crontab changed since this page loaded. Refresh and try again.';
+    }
+    return null;
+}
+
 function cron_add(string $schedule, string $command): array
 {
     $schedule = trim($schedule);
     $command = trim($command);
-    if ($schedule === '' || $command === '') {
-        return ['ok' => false, 'error' => 'Schedule and command are both required.'];
-    }
-    if ($schedule[0] !== '@' && count(preg_split('/\s+/', $schedule)) !== 5) {
-        return ['ok' => false, 'error' => 'Schedule must be 5 fields (e.g. "0 2 * * *") or an @keyword.'];
+    if (($error = cron_validate($schedule, $command)) !== null) {
+        return ['ok' => false, 'error' => $error];
     }
     $lines = cron_current_lines();
     $lines[] = $schedule . ' ' . $command;
@@ -111,11 +153,11 @@ function cron_add(string $schedule, string $command): array
     return $res;
 }
 
-function cron_delete(int $index): array
+function cron_delete(int $index, ?string $expect = null): array
 {
     $lines = cron_current_lines();
-    if (!isset($lines[$index])) {
-        return ['ok' => false, 'error' => 'Job not found (list may be stale — refresh).'];
+    if (($error = cron_line_error($lines, $index, $expect)) !== null) {
+        return ['ok' => false, 'error' => $error];
     }
     $removed = $lines[$index];
     array_splice($lines, $index, 1);
@@ -126,19 +168,19 @@ function cron_delete(int $index): array
     return $res;
 }
 
-function cron_update(int $index,string $schedule,string $command): array
+function cron_update(int $index,string $schedule,string $command,?string $expect=null): array
 {
     $schedule=trim($schedule);$command=trim($command);$lines=cron_current_lines();
-    if(!isset($lines[$index]))return ['ok'=>false,'error'=>'Job not found.'];
-    if($schedule===''||$command===''||($schedule[0]!=='@'&&count(preg_split('/\s+/',$schedule))!==5))return ['ok'=>false,'error'=>'Enter a valid schedule and command.'];
+    if(($error=cron_line_error($lines,$index,$expect))!==null)return ['ok'=>false,'error'=>$error];
+    if(($error=cron_validate($schedule,$command))!==null)return ['ok'=>false,'error'=>$error];
     $disabled = str_starts_with(trim($lines[$index]), '# NEBULA_DISABLED ');
     $lines[$index]=($disabled?'# NEBULA_DISABLED ':'').$schedule.' '.$command;$res=cron_save($lines);if(!empty($res['ok']))audit('cron.update',$lines[$index]);return $res;
 }
 
-function cron_toggle(int $index, bool $enabled): array
+function cron_toggle(int $index, bool $enabled, ?string $expect = null): array
 {
     $lines = cron_current_lines();
-    if (!isset($lines[$index])) { return ['ok' => false, 'error' => 'Job not found.']; }
+    if (($error = cron_line_error($lines, $index, $expect)) !== null) { return ['ok' => false, 'error' => $error]; }
     $trimmed = trim($lines[$index]);
     $currentlyDisabled = str_starts_with($trimmed, '# NEBULA_DISABLED ');
     $jobLine = $currentlyDisabled ? substr($trimmed, strlen('# NEBULA_DISABLED ')) : $trimmed;
@@ -153,8 +195,8 @@ function cron_toggle(int $index, bool $enabled): array
 
 function cron_runs_file(): string { return DATA_DIR.'/cron-runs.json'; }
 function cron_runs(): array { $runs=@json_decode((string)@file_get_contents(cron_runs_file()),true);return is_array($runs)?$runs:[]; }
-function cron_run_now(int $index): array
+function cron_run_now(int $index, ?string $expect = null): array
 {
-    $lines=cron_current_lines();if(!isset($lines[$index]))return ['ok'=>false,'error'=>'Job not found.'];$parsed=null;foreach(cron_list() as $job)if(($job['index']??-1)===$index&&($job['type']??'')==='job'){$parsed=$job;break;}if(!$parsed)return ['ok'=>false,'error'=>'Only cron jobs can be run.'];
+    $lines=cron_current_lines();if(($error=cron_line_error($lines,$index,$expect))!==null)return ['ok'=>false,'error'=>$error];$parsed=null;foreach(cron_list() as $job)if(($job['index']??-1)===$index&&($job['type']??'')==='job'){$parsed=$job;break;}if(!$parsed)return ['ok'=>false,'error'=>'Only cron jobs can be run.'];
     [$code,$out]=run_cmd((string)$parsed['command'],60);$runs=cron_runs();array_unshift($runs,['time'=>date('c'),'schedule'=>$parsed['schedule'],'command'=>$parsed['command'],'exit'=>$code,'output'=>substr($out,0,4000)]);write_json_file(cron_runs_file(),array_slice($runs,0,30));audit('cron.run',$parsed['command'].' (exit '.$code.')');return ['ok'=>$code===0,'exit'=>$code,'output'=>$out,'error'=>$code===0?'':('Command exited with code '.$code)];
 }

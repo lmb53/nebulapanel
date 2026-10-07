@@ -15,7 +15,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             (string) ($body['proto'] ?? '')
         );
     } elseif ($action === 'delete') {
-        $res = fw_delete((int) ($body['num'] ?? -1));
+        $res = fw_delete((int) ($body['num'] ?? -1), (string) ($body['expect'] ?? ''));
     } elseif ($action === 'enable') {
         $res = fw_set(true);
     } elseif ($action === 'disable') {

@@ -10,16 +10,18 @@ $rel = fm_rel($abs);
 fm_record_recent($rel);
 $dir = str_replace('\\', '/', dirname($rel));
 $dir = ($dir === '.' || $dir === '/') ? '' : $dir;
-if (!fm_is_text($abs)) {
+$blockReason = fm_edit_block_reason($abs);
+if ($blockReason !== null) {
     ?>
     <div class="page-header"><div><div class="breadcrumb"><a href="<?= e(url('files', ['path' => $dir])) ?>"><i data-lucide="arrow-left"></i>Back to folder</a></div><h1 class="page-title editor-title"><?= e(basename($rel)) ?></h1></div></div>
-    <div class="card"><div class="empty-state"><div class="es-icon"><i data-lucide="file-lock-2"></i></div><div style="font-weight:600;color:var(--text-secondary)">Not an editable text file</div><div style="font-size:13px;margin-top:4px">This file is binary or too large to edit inline.</div><div style="margin-top:12px"><a class="btn btn-secondary" href="<?= e(url('file-download', ['path' => $rel])) ?>"><i data-lucide="download"></i>Download</a></div></div></div>
+    <?= requirement_missing('file-lock-2', 'Not an editable text file', e($blockReason), [['label' => 'Download', 'href' => url('file-download', ['path' => $rel]), 'icon' => 'download']]) ?>
     <?php return;
 }
 $content = (string) file_get_contents($abs);
 $size = filesize($abs);
 $siblingListing = fm_list(dirname($abs));
-$siblingFiles = array_values(array_filter($siblingListing['files'], fn($file) => fm_is_text(dirname($abs) . DIRECTORY_SEPARATOR . $file['name'])));
+// Each candidate is sampled from disk, so bound the work in huge folders.
+$siblingFiles = array_values(array_filter(array_slice($siblingListing['files'], 0, 300), fn($file) => fm_is_text(dirname($abs) . DIRECTORY_SEPARATOR . $file['name'])));
 ?>
 <div class="editor-workspace">
 <aside class="editor-sidebar">
@@ -107,7 +109,10 @@ document.addEventListener('DOMContentLoaded', () => {
   if(dirty)setSaveState('Unsaved changes','var(--orange-400)');
   document.getElementById('fmode').textContent=extension||'text';
   const value=()=>editor?editor.getValue():ta.value;
-  const save=async()=>{const res=await apiPost('file-save',{path:FEDIT_PATH,content:value(),base_hash:FEDIT_HASH});if(res.ok){FEDIT_HASH=res.hash||FEDIT_HASH;toast('Saved','success');lastSavedContent=value();dirty=false;delete drafts[FEDIT_PATH];persistDrafts();renderTabs();setSaveState('Saved','var(--emerald-400)',true);}else{toast(res.error||'Save failed','error');if(res.conflict)setSaveState('Changed on disk — reload before saving','var(--red-400)');}};
+  // One save at a time: a second Ctrl+S while the first is in flight would
+  // carry the pre-save hash and be rejected as a conflict.
+  let saving=false;
+  const save=async()=>{if(saving)return;saving=true;const content=value();try{const res=await apiPost('file-save',{path:FEDIT_PATH,content,base_hash:FEDIT_HASH});if(res.ok){FEDIT_HASH=res.hash||FEDIT_HASH;toast('Saved','success');lastSavedContent=content;dirty=value()!==content;if(!dirty)delete drafts[FEDIT_PATH];persistDrafts();renderTabs();if(dirty)setSaveState('Unsaved changes','var(--orange-400)');else setSaveState('Saved','var(--emerald-400)',true);}else{toast(res.error||'Save failed','error');if(res.conflict)setSaveState('Changed on disk — reload before saving','var(--red-400)');}}finally{saving=false;}};
   document.getElementById('fsave')?.addEventListener('click',save);
   document.getElementById('ffind')?.addEventListener('click',()=>editor?editor.execCommand('find'):ta.focus());
   document.getElementById('ffindPrev')?.addEventListener('click',()=>editor?.execCommand('findPrev'));

@@ -14,7 +14,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     } else {
         json_out(['ok' => false, 'error' => 'Unknown action.'], 400);
     }
-    json_out(['ok' => $ok], $ok ? 200 : 500);
+    json_out($ok ? ['ok' => true] : ['ok' => false, 'error' => 'Could not update notification state.'], $ok ? 200 : 400);
 }
 $items = notifications_items();
 json_out(['ok' => true, 'unread' => count(array_filter($items, fn($item) => empty($item['read']))), 'items' => $items]);
