@@ -26,15 +26,15 @@ $apacheStatus = service_status('apache2');
 <?php else: ?>
   <div class="grid grid-3" style="margin-bottom:16px">
     <a class="stat-card" href="<?= e(url('service', ['name' => 'nginx'])) ?>" style="color:inherit">
-      <div class="stat-top"><div class="stat-icon" style="background:rgba(16,185,129,.12)"><i data-lucide="server-cog" style="color:var(--emerald-400)"></i></div><span class="badge <?= $nginxStatus === 'active' ? 'badge-emerald' : 'badge-slate' ?>"><span class="bdot"></span><?= e(ucfirst($nginxStatus)) ?></span></div>
+      <div class="stat-top"><div class="stat-icon" style="background:color-mix(in srgb,var(--ok) 12%,transparent)"><i data-lucide="server-cog" style="color:var(--emerald-400)"></i></div><span class="badge <?= $nginxStatus === 'active' ? 'badge-emerald' : 'badge-slate' ?>"><span class="bdot"></span><?= e(ucfirst($nginxStatus)) ?></span></div>
       <div class="stat-val text">Nginx</div><div class="stat-label">Underlying reverse proxy / web server</div>
     </a>
     <a class="stat-card" href="<?= e(url('service', ['name' => 'apache2'])) ?>" style="color:inherit">
-      <div class="stat-top"><div class="stat-icon" style="background:rgba(245,158,11,.12)"><i data-lucide="server" style="color:var(--orange-400)"></i></div><span class="badge <?= $apacheStatus === 'active' ? 'badge-emerald' : 'badge-slate' ?>"><span class="bdot"></span><?= e(ucfirst($apacheStatus)) ?></span></div>
+      <div class="stat-top"><div class="stat-icon" style="background:color-mix(in srgb,var(--warn) 12%,transparent)"><i data-lucide="server" style="color:var(--orange-400)"></i></div><span class="badge <?= $apacheStatus === 'active' ? 'badge-emerald' : 'badge-slate' ?>"><span class="bdot"></span><?= e(ucfirst($apacheStatus)) ?></span></div>
       <div class="stat-val text">Apache</div><div class="stat-label">Available underlying HTTP service</div>
     </a>
     <div class="stat-card">
-      <div class="stat-top"><div class="stat-icon" style="background:rgba(59,130,246,.12)"><i data-lucide="hard-drive" style="color:var(--blue-400)"></i></div></div>
+      <div class="stat-top"><div class="stat-icon" style="background:color-mix(in srgb,var(--accent) 12%,transparent)"><i data-lucide="hard-drive" style="color:var(--blue-400)"></i></div></div>
       <div class="stat-val text"><?= e(human_bytes(array_sum(array_map(fn($site) => (int) ($site['disk_used'] ?? 0), $sites)))) ?></div><div class="stat-label">Disk used by tracked document roots</div>
     </div>
   </div>
@@ -101,7 +101,7 @@ $apacheStatus = service_status('apache2');
         ?>
         <div class="card" data-ws-card data-ws-ssl-state="<?= $ssl ? 'ssl' : 'nossl' ?>" style="padding:16px">
           <div class="flex items-center gap-3" style="margin-bottom:12px">
-            <div style="width:36px;height:36px;border-radius:8px;background:rgba(59,130,246,.12);display:flex;align-items:center;justify-content:center;flex-shrink:0"><i data-lucide="globe" style="width:17px;height:17px;color:var(--blue-400)"></i></div>
+            <div style="width:36px;height:36px;border-radius:8px;background:color-mix(in srgb,var(--accent) 12%,transparent);display:flex;align-items:center;justify-content:center;flex-shrink:0"><i data-lucide="globe" style="width:17px;height:17px;color:var(--blue-400)"></i></div>
             <div style="flex:1;min-width:0">
               <div style="font-weight:700;font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
                 <a href="<?= e($url) ?>" target="_blank" rel="noopener"><?= e($domain) ?></a>

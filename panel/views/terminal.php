@@ -38,14 +38,14 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   async function run(cmd) {
-    line('$ ' + cmd, '#9fb0c3');
+    line('$ ' + cmd, 'var(--term-prompt)');
     let res;
     try { res = await apiPost('terminal', { command: cmd }); }
-    catch (e) { line('[request failed]', '#f87171'); return; }
-    if (!res.ok) { line(res.error || '[error]', '#f87171'); return; }
+    catch (e) { line('[request failed]', 'var(--term-err)'); return; }
+    if (!res.ok) { line(res.error || '[error]', 'var(--term-err)'); return; }
     if (res.stdout) line(res.stdout);
-    if (res.stderr) line(res.stderr, '#f87171');
-    if (res.code !== 0) line('[exit ' + res.code + ']', '#8296ab');
+    if (res.stderr) line(res.stderr, 'var(--term-err)');
+    if (res.code !== 0) line('[exit ' + res.code + ']', 'var(--term-dim)');
     body.scrollTop = body.scrollHeight;
   }
 

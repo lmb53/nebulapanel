@@ -54,9 +54,9 @@ $selectedWebsite = (string) ($_GET['website'] ?? '');
   </div>
 
   <div class="grid grid-3" style="margin-bottom:16px">
-    <div class="stat-card"><div class="stat-top"><div class="stat-icon" style="background:rgba(59,130,246,.12)"><i data-lucide="database" style="color:var(--blue-400)"></i></div></div><div class="stat-val" id="dbStatCount">–</div><div class="stat-label">User databases</div></div>
-    <div class="stat-card"><div class="stat-top"><div class="stat-icon" style="background:rgba(16,185,129,.12)"><i data-lucide="hard-drive" style="color:var(--emerald-400)"></i></div></div><div class="stat-val" id="dbStatSize">–</div><div class="stat-label">Total database size</div></div>
-    <div class="stat-card"><div class="stat-top"><div class="stat-icon" style="background:rgba(168,85,247,.12)"><i data-lucide="users" style="color:var(--purple-400)"></i></div></div><div class="stat-val" id="dbStatUsers">–</div><div class="stat-label">Database users</div></div>
+    <div class="stat-card"><div class="stat-top"><div class="stat-icon" style="background:color-mix(in srgb,var(--accent) 12%,transparent)"><i data-lucide="database" style="color:var(--blue-400)"></i></div></div><div class="stat-val" id="dbStatCount">–</div><div class="stat-label">User databases</div></div>
+    <div class="stat-card"><div class="stat-top"><div class="stat-icon" style="background:color-mix(in srgb,var(--ok) 12%,transparent)"><i data-lucide="hard-drive" style="color:var(--emerald-400)"></i></div></div><div class="stat-val" id="dbStatSize">–</div><div class="stat-label">Total database size</div></div>
+    <div class="stat-card"><div class="stat-top"><div class="stat-icon" style="background:color-mix(in srgb,var(--violet) 12%,transparent)"><i data-lucide="users" style="color:var(--purple-400)"></i></div></div><div class="stat-val" id="dbStatUsers">–</div><div class="stat-label">Database users</div></div>
   </div>
 
   <div class="card" style="margin-bottom:16px">

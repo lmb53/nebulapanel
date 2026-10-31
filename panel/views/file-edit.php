@@ -3,7 +3,7 @@
 require_once APP_ROOT . '/lib/files.php';
 $abs = fm_resolve($_GET['path'] ?? '');
 if ($abs === null || !is_file($abs)) {
-    echo '<div class="page-header"><div><h1 class="page-title">File not found</h1></div></div>' . requirement_missing('file-x', 'This file no longer exists', 'It may have been moved, renamed or deleted.', [['label' => 'Open File Manager', 'href' => url('files'), 'icon' => 'folder-open']]);
+    echo '<div class="editor-missing"><div class="page-header"><div><h1 class="page-title">File not found</h1></div></div>' . requirement_missing('file-x', 'This file no longer exists', 'It may have been moved, renamed or deleted.', [['label' => 'Open File Manager', 'href' => url('files'), 'icon' => 'folder-open']]) . '</div>';
     return;
 }
 $rel = fm_rel($abs);

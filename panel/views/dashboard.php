@@ -21,7 +21,7 @@ $initialDiskPct = $initialDisk ? round($initialDisk['used'] / max(1, $initialDis
 <div class="grid grid-4" style="margin-bottom:16px">
   <div class="stat-card">
     <div class="stat-top">
-      <div class="stat-icon" style="background:rgba(59,130,246,.12)"><i data-lucide="cpu" style="color:var(--blue-400)"></i></div>
+      <div class="stat-icon" style="background:color-mix(in srgb,var(--accent) 12%,transparent)"><i data-lucide="cpu" style="color:var(--blue-400)"></i></div>
     </div>
     <div class="stat-val" data-stat="cpu"><?= e($initialCpu ?? 'n/a') ?><span class="unit">%</span></div>
     <div class="stat-label" data-stat="load">CPU · Load <?= e(implode(', ', array_map(fn($n) => number_format((float) $n, 2), $initialLoad))) ?></div>
@@ -29,7 +29,7 @@ $initialDiskPct = $initialDisk ? round($initialDisk['used'] / max(1, $initialDis
   </div>
   <div class="stat-card">
     <div class="stat-top">
-      <div class="stat-icon" style="background:rgba(245,158,11,.12)"><i data-lucide="memory-stick" style="color:var(--orange-400)"></i></div>
+      <div class="stat-icon" style="background:color-mix(in srgb,var(--warn) 12%,transparent)"><i data-lucide="memory-stick" style="color:var(--orange-400)"></i></div>
     </div>
     <div class="stat-val" data-stat="mem"><?= e($initialMemPct ?? 'n/a') ?><span class="unit">%</span></div>
     <div class="stat-label" data-stat="mem-detail"><?= $initialMem ? e(human_bytes($initialMem['used']) . ' / ' . human_bytes($initialMem['total'])) : 'Memory unavailable' ?></div>
@@ -37,7 +37,7 @@ $initialDiskPct = $initialDisk ? round($initialDisk['used'] / max(1, $initialDis
   </div>
   <div class="stat-card">
     <div class="stat-top">
-      <div class="stat-icon" style="background:rgba(168,85,247,.12)"><i data-lucide="hard-drive" style="color:var(--purple-400)"></i></div>
+      <div class="stat-icon" style="background:color-mix(in srgb,var(--violet) 12%,transparent)"><i data-lucide="hard-drive" style="color:var(--purple-400)"></i></div>
     </div>
     <div class="stat-val" data-stat="disk"><?= e($initialDiskPct ?? 'n/a') ?><span class="unit">%</span></div>
     <div class="stat-label" data-stat="disk-detail"><?= $initialDisk ? e(human_bytes($initialDisk['used']) . ' / ' . human_bytes($initialDisk['total'])) : 'Disk unavailable' ?></div>
@@ -45,7 +45,7 @@ $initialDiskPct = $initialDisk ? round($initialDisk['used'] / max(1, $initialDis
   </div>
   <div class="stat-card">
     <div class="stat-top">
-      <div class="stat-icon" style="background:rgba(16,185,129,.12)"><i data-lucide="server" style="color:var(--emerald-400)"></i></div>
+      <div class="stat-icon" style="background:color-mix(in srgb,var(--ok) 12%,transparent)"><i data-lucide="server" style="color:var(--emerald-400)"></i></div>
       <span class="badge badge-emerald"><span class="bdot"></span>Online</span>
     </div>
     <div class="stat-val"><?= e($facts['cpu_cores'] ?: '?') ?><span class="unit">vCPU</span></div>

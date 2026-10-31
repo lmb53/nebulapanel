@@ -43,7 +43,9 @@ function csp_nonce(): string
  */
 function theme_boot_script(): string
 {
-    return '<script>(function(){try{if(localStorage.getItem("nebula-theme")==="light")'
+    // A saved choice wins; otherwise follow the operating system preference.
+    return '<script>(function(){try{var t=localStorage.getItem("nebula-theme");'
+        . 'if(t==="light"||(!t&&window.matchMedia&&matchMedia("(prefers-color-scheme: light)").matches))'
         . '{document.documentElement.classList.add("light");}}catch(e){}})();</script>';
 }
 

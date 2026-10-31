@@ -8,10 +8,10 @@ $systemUsers = system_users();
 </div>
 
 <div class="grid grid-4" style="margin-bottom:16px">
-  <div class="stat-card"><div class="stat-top"><div class="stat-icon" style="background:rgba(59,130,246,.12)"><i data-lucide="users" style="color:var(--blue-400)"></i></div></div><div class="stat-val" id="puTotal">–</div><div class="stat-label">Panel users</div></div>
-  <div class="stat-card"><div class="stat-top"><div class="stat-icon" style="background:rgba(16,185,129,.12)"><i data-lucide="shield-check" style="color:var(--emerald-400)"></i></div></div><div class="stat-val" id="puAdmins">–</div><div class="stat-label">Administrators</div></div>
-  <div class="stat-card"><div class="stat-top"><div class="stat-icon" style="background:rgba(168,85,247,.12)"><i data-lucide="key-round" style="color:var(--purple-400)"></i></div></div><div class="stat-val">4</div><div class="stat-label">Built-in roles</div></div>
-  <div class="stat-card"><div class="stat-top"><div class="stat-icon" style="background:rgba(245,158,11,.12)"><i data-lucide="user-cog" style="color:var(--orange-400)"></i></div></div><div class="stat-val"><?= count(array_filter($systemUsers, fn($u) => $u['human'])) ?></div><div class="stat-label">Linux login accounts</div></div>
+  <div class="stat-card"><div class="stat-top"><div class="stat-icon" style="background:color-mix(in srgb,var(--accent) 12%,transparent)"><i data-lucide="users" style="color:var(--blue-400)"></i></div></div><div class="stat-val" id="puTotal">–</div><div class="stat-label">Panel users</div></div>
+  <div class="stat-card"><div class="stat-top"><div class="stat-icon" style="background:color-mix(in srgb,var(--ok) 12%,transparent)"><i data-lucide="shield-check" style="color:var(--emerald-400)"></i></div></div><div class="stat-val" id="puAdmins">–</div><div class="stat-label">Administrators</div></div>
+  <div class="stat-card"><div class="stat-top"><div class="stat-icon" style="background:color-mix(in srgb,var(--violet) 12%,transparent)"><i data-lucide="key-round" style="color:var(--purple-400)"></i></div></div><div class="stat-val">4</div><div class="stat-label">Built-in roles</div></div>
+  <div class="stat-card"><div class="stat-top"><div class="stat-icon" style="background:color-mix(in srgb,var(--warn) 12%,transparent)"><i data-lucide="user-cog" style="color:var(--orange-400)"></i></div></div><div class="stat-val"><?= count(array_filter($systemUsers, fn($u) => $u['human'])) ?></div><div class="stat-label">Linux login accounts</div></div>
 </div>
 
 <div class="tabs page-tabs" id="userTabs">

@@ -503,20 +503,21 @@ document.addEventListener('DOMContentLoaded', () => {
     if (ctx && window.Chart) {
       const labels = s.timeline.map(d => d.date.slice(5));
       if (statsChart) statsChart.destroy();
+      const tc = (name, fallback) => Nebula.cssVar(name) || fallback;
       statsChart = new Chart(ctx, {
         type: 'line',
         data: {
           labels,
           datasets: [
-            { label: 'Sent', data: s.timeline.map(d => d.sent), borderColor: '#3b82f6', backgroundColor: 'rgba(59,130,246,.10)', fill: true, tension: .35, pointRadius: 0, borderWidth: 2 },
-            { label: 'Received', data: s.timeline.map(d => d.received), borderColor: '#10b981', backgroundColor: 'rgba(16,185,129,.10)', fill: true, tension: .35, pointRadius: 0, borderWidth: 2 },
-            { label: 'Rejected', data: s.timeline.map(d => d.rejected), borderColor: '#f97316', tension: .35, pointRadius: 0, borderWidth: 2 },
+            { label: 'Sent', data: s.timeline.map(d => d.sent), borderColor: tc('--accent', '#3CC4B8'), backgroundColor: Nebula.withAlpha(tc('--accent', '#3CC4B8'), .1), fill: true, tension: .35, pointRadius: 0, borderWidth: 1.75 },
+            { label: 'Received', data: s.timeline.map(d => d.received), borderColor: tc('--ok', '#4CC27E'), backgroundColor: Nebula.withAlpha(tc('--ok', '#4CC27E'), .1), fill: true, tension: .35, pointRadius: 0, borderWidth: 1.75 },
+            { label: 'Rejected', data: s.timeline.map(d => d.rejected), borderColor: tc('--warn', '#E0A84A'), tension: .35, pointRadius: 0, borderWidth: 1.75 },
           ],
         },
         options: {
           maintainAspectRatio: false, animation: false,
           plugins: { legend: { position: 'top', labels: { boxWidth: 8, boxHeight: 8, usePointStyle: true } } },
-          scales: { x: { grid: { display: false } }, y: { beginAtZero: true, grid: { color: 'rgba(255,255,255,.05)' }, ticks: { precision: 0 } } },
+          scales: { x: { grid: { display: false } }, y: { beginAtZero: true, grid: { color: tc('--chart-grid', 'rgba(128,128,128,.1)') }, ticks: { precision: 0 } } },
         },
       });
     }

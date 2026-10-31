@@ -16,9 +16,10 @@
 
   // Apply the persisted theme immediately (before any DOMContentLoaded handler,
   // e.g. code editors) so light/dark is settled when views initialise.
-  if (localStorage.getItem('nebula-theme') === 'light') {
-    document.documentElement.classList.add('light');
-  }
+  // With no saved choice the panel follows the operating system preference.
+  const prefersLight = () => { try { return window.matchMedia('(prefers-color-scheme: light)').matches; } catch (e) { return false; } };
+  const savedTheme = () => { try { return localStorage.getItem('nebula-theme'); } catch (e) { return null; } };
+  document.documentElement.classList.toggle('light', savedTheme() === 'light' || (!savedTheme() && prefersLight()));
 
   // A 401 means the panel session ended (idle timeout, password change, or
   // the account was disabled). Say so once instead of failing every poll with
@@ -195,21 +196,20 @@
 
   // Public API for per-module view scripts (available by DOMContentLoaded).
   window.Nebula = { api, apiGet, apiPost, streamPost, toast, copyText, fmtBytes, fmtDate, cmTheme, registerCM, registerRefresh, refreshAll,
-    confirm: confirmDialog, prompt: promptDialog, updateSvcBadge, updateSvcEnabled, dialog, validateForm, setFieldError, clearFieldError, setBusy, colorFor, openEditor };
+    confirm: confirmDialog, prompt: promptDialog, updateSvcBadge, updateSvcEnabled, dialog, validateForm, setFieldError, clearFieldError, setBusy, colorFor, openEditor,
+    cssVar: (name) => cssVar(name), withAlpha: (color, alpha) => withAlpha(color, alpha) };
 
   // ---- Toasts -------------------------------------------------------------
   function toast(msg, type = 'success') {
     const stack = document.getElementById('toastStack');
     if (!stack) return;
     const icons = { success: 'check-circle-2', error: 'x-circle', warning: 'alert-triangle', info: 'info' };
-    const colors = { success: 'var(--emerald-400)', error: 'var(--red-400)', warning: 'var(--orange-400)', info: 'var(--blue-400)' };
     const el = document.createElement('div');
-    el.className = 'toast';
+    el.className = 'toast toast-' + (icons[type] ? type : 'info');
     const icon = document.createElement('i');
     icon.dataset.lucide = icons[type] || 'info';
-    icon.style.color = colors[type] || colors.info;
+    icon.className = 'toast-icon';
     const copy = document.createElement('div');
-    copy.style.fontSize = '13px';
     copy.style.whiteSpace = 'pre-wrap';
     copy.style.wordBreak = 'break-word';
     copy.style.flex = '1';
@@ -246,6 +246,17 @@
 
   // ---- Theme-aware colours -----------------------------------------------
   const cssVar = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  // Canvas (Chart.js) cannot resolve CSS variables, so charts read the
+  // resolved theme colour and derive translucent fills from it.
+  const withAlpha = (color, alpha) => {
+    const m = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(String(color).trim());
+    if (!m) return color;
+    let h = m[1];
+    if (h.length === 3) h = h.split('').map((c) => c + c).join('');
+    const n = parseInt(h, 16);
+    return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${alpha})`;
+  };
+  const themeColor = (name, fallback) => cssVar(name) || fallback;
   const thresholds = (() => {
     const [warn, crit] = META('health-thresholds').split(',').map(Number);
     return { warn: Number.isFinite(warn) && warn > 0 ? warn : 80, crit: Number.isFinite(crit) && crit > 0 ? crit : 90 };
@@ -399,9 +410,13 @@
   function applyChartTheme() {
     if (!window.Chart) return;
     Chart.defaults.font.family = getComputedStyle(document.body).fontFamily;
-    Chart.defaults.color = cssVar('--chart-text') || '#8296ab';
+    Chart.defaults.color = cssVar('--chart-text') || '#8B9AA0';
     Chart.defaults.borderColor = cssVar('--chart-grid') || 'rgba(255,255,255,.06)';
     if (liveChart) {
+      const c1 = themeColor('--chart-1', '#3CC4B8'), c2 = themeColor('--chart-2', '#E0A84A');
+      liveChart.data.datasets[0].borderColor = c1;
+      liveChart.data.datasets[0].backgroundColor = withAlpha(c1, 0.12);
+      liveChart.data.datasets[1].borderColor = c2;
       liveChart.options.scales.y.grid.color = cssVar('--chart-grid');
       liveChart.options.scales.y.ticks.color = cssVar('--chart-text');
       liveChart.options.plugins.legend.labels.color = cssVar('--chart-text');
@@ -442,8 +457,8 @@
       data: {
         labels: series.labels,
         datasets: [
-          { label: 'CPU %', data: series.cpu, borderColor: '#3b82f6', backgroundColor: 'rgba(59,130,246,.08)', fill: true, tension: .35, pointRadius: point, borderWidth: 2 },
-          { label: 'Memory %', data: series.mem, borderColor: '#f59e0b', pointRadius: point, borderWidth: 2, tension: .35 },
+          { label: 'CPU %', data: series.cpu, borderColor: themeColor('--chart-1', '#3CC4B8'), backgroundColor: withAlpha(themeColor('--chart-1', '#3CC4B8'), 0.12), fill: true, tension: .35, pointRadius: point, borderWidth: 1.75 },
+          { label: 'Memory %', data: series.mem, borderColor: themeColor('--chart-2', '#E0A84A'), pointRadius: point, borderWidth: 1.75, tension: .35 },
         ],
       },
       options: {
@@ -736,6 +751,91 @@
     applyChartTheme();
     document.dispatchEvent(new CustomEvent('nebula:theme', { detail: { light } }));
   }
+  // ---- Pinned pages (star in the top bar) ---------------------------------
+  // Pins live in this browser only; each is a route already present in the
+  // role-filtered sidebar, so a pin can never expose a page the user lacks.
+  const PIN_KEY = 'nebula-pins';
+  const readPins = () => { try { const v = JSON.parse(store.get(PIN_KEY) || '[]'); return Array.isArray(v) ? v.filter((r) => typeof r === 'string') : []; } catch (e) { return []; } };
+  function renderPins() {
+    const host = document.getElementById('navPinnedItems');
+    const group = document.getElementById('navPinned');
+    if (!host || !group) return;
+    host.textContent = '';
+    const pins = readPins();
+    pins.forEach((route) => {
+      const source = document.querySelector(`.nav-group[data-nav-group] .nav-item[data-route="${CSS.escape(route)}"]`);
+      if (!source) return;
+      const copy = source.cloneNode(true);
+      copy.removeAttribute('aria-current');
+      copy.dataset.pinned = '1';
+      host.appendChild(copy);
+    });
+    group.classList.toggle('hidden', !host.children.length);
+    const btn = document.getElementById('pinToggle');
+    if (btn) {
+      const on = pins.includes(btn.dataset.route);
+      btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+      const label = on ? 'Unpin this page from the sidebar' : 'Pin this page to the sidebar';
+      btn.title = label; btn.setAttribute('aria-label', label);
+    }
+  }
+  function wirePins() {
+    renderPins();
+    document.getElementById('pinToggle')?.addEventListener('click', (event) => {
+      const route = event.currentTarget.dataset.route;
+      if (!route) return;
+      let pins = readPins();
+      const on = pins.includes(route);
+      pins = on ? pins.filter((r) => r !== route) : [...pins, route].slice(-8);
+      store.set(PIN_KEY, JSON.stringify(pins));
+      renderPins();
+      toast(on ? 'Removed from pinned pages' : 'Pinned to the sidebar', 'info');
+    });
+    window.addEventListener('storage', (event) => { if (event.key === PIN_KEY) renderPins(); });
+  }
+
+  // ---- Sidebar "Find a tool" filter ------------------------------------------
+  function wireNavFilter() {
+    const input = document.getElementById('navFilter');
+    const sidebar = document.getElementById('sidebar');
+    if (!input || !sidebar) return;
+    const empty = document.getElementById('navEmpty');
+    const keywords = new Map();
+    document.querySelectorAll('#cmdkList .cmdk-item[data-href]').forEach((item) => keywords.set(item.dataset.href, item.dataset.label || ''));
+    const apply = () => {
+      const q = input.value.trim().toLowerCase();
+      sidebar.classList.toggle('filtering', q !== '');
+      let shown = 0;
+      document.querySelectorAll('.nav-group[data-nav-group]').forEach((group) => {
+        let groupShown = 0;
+        group.querySelectorAll('.nav-item').forEach((item) => {
+          const hay = (item.textContent + ' ' + (keywords.get(item.getAttribute('href')) || '')).toLowerCase();
+          const match = q === '' || q.split(/\s+/).every((t) => hay.includes(t));
+          item.classList.toggle('filtered-out', !match);
+          if (match) groupShown++;
+        });
+        group.classList.toggle('filtered-out', groupShown === 0);
+        shown += groupShown;
+      });
+      document.getElementById('navPinned')?.classList.toggle('filtered-out', q !== '');
+      empty?.classList.toggle('hidden', q === '' || shown > 0);
+    };
+    input.addEventListener('input', apply);
+    input.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape' && input.value) { event.stopPropagation(); input.value = ''; apply(); }
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        const first = document.querySelector('.nav-group[data-nav-group]:not(.filtered-out) .nav-item:not(.filtered-out)');
+        if (first && input.value.trim()) window.location.href = first.getAttribute('href');
+        else if (input.value.trim()) document.getElementById('searchTrigger')?.click();
+      }
+      if (event.key === 'ArrowDown') {
+        const first = document.querySelector('.nav-group[data-nav-group]:not(.filtered-out) .nav-item:not(.filtered-out)');
+        if (first) { event.preventDefault(); first.focus(); }
+      }
+    });
+  }
+
   function wireChrome() {
     const sidebar = document.getElementById('sidebar');
     const collapseBtn = document.getElementById('collapseBtn');
@@ -795,8 +895,15 @@
     document.querySelectorAll('[data-theme-toggle]').forEach((btn) => btn.addEventListener('click', () => { toggleTheme(); closeMenus(); }));
     // Follow theme changes made in another window (e.g. the editor popup).
     window.addEventListener('storage', (event) => {
-      if (event.key === 'nebula-theme') applyTheme(event.newValue === 'light');
+      if (event.key === 'nebula-theme') applyTheme(event.newValue === 'light' || (!event.newValue && prefersLight()));
     });
+    // Track the OS theme live until the user picks one explicitly.
+    window.matchMedia?.('(prefers-color-scheme: light)').addEventListener?.('change', (event) => {
+      if (!savedTheme()) applyTheme(event.matches);
+    });
+
+    wirePins();
+    wireNavFilter();
 
     wireMenu(document.getElementById('accountTrigger'), document.getElementById('accountMenu'));
     document.getElementById('refreshBtn')?.addEventListener('click', () => { pollMetrics(); refreshAll(); toast('Dashboard refreshed', 'info'); });

@@ -46,11 +46,11 @@ $items[] = ['key' => 'phpmyadmin', 'label' => 'phpMyAdmin', 'desc' => 'Web-based
   <div style="width:760px;max-width:100%">
 
     <div style="display:flex;align-items:center;gap:12px;margin-bottom:6px">
-      <div class="logo-mark" style="width:38px;height:38px;border-radius:12px;background:linear-gradient(135deg,var(--blue-500),var(--purple-500));display:flex;align-items:center;justify-content:center;box-shadow:var(--shadow-glow-blue)">
-        <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5" style="width:20px;height:20px"><path d="M13 2 3 14h7l-1 8 10-12h-7l1-8z"/></svg>
+      <div class="logo-mark lg">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 3 14h7l-1 8 10-12h-7l1-8z"/></svg>
       </div>
       <div>
-        <h1 style="margin:0;font-size:22px;font-weight:700">Set up your server</h1>
+        <h1 class="page-title" style="margin:0">Set up your server</h1>
         <p style="margin:2px 0 0;font-size:13px;color:var(--text-tertiary)">Pick the services to install now. You can add more later from <strong>Install Apps</strong>.</p>
       </div>
     </div>
