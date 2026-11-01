@@ -107,10 +107,25 @@ The initial versioned API contract is in [`docs/openapi.yaml`](docs/openapi.yaml
 - PHP 8.0+ with FPM, and `proc_open` enabled (default)
 - Nginx or Apache
 
-## Screenshot
-![Dashboard UI Dark](https://i.imgur.com/Th0TvGm.png)
+## Screenshots
 
-![Dashboard UI Light](https://i.imgur.com/bOQe2Qg.png)
+The panel follows your operating system's light or dark preference until you
+pick a theme with the moon/sun button. Fonts are bundled, so nothing is loaded
+from third-party servers.
+
+| Dark | Light |
+|---|---|
+| ![Dashboard, dark theme](docs/screenshots/dashboard-dark.png) | ![Dashboard, light theme](docs/screenshots/dashboard-light.png) |
+| ![Services, dark theme](docs/screenshots/services-dark.png) | ![File Manager, light theme](docs/screenshots/file-manager-light.png) |
+| ![Install Apps, dark theme](docs/screenshots/install-apps-dark.png) | ![Security, light theme](docs/screenshots/security-light.png) |
+| ![Command palette (Ctrl/Cmd+K)](docs/screenshots/command-palette-dark.png) | ![Sign in](docs/screenshots/sign-in-dark.png) |
+
+On phones the sidebar becomes a labelled drawer:
+
+<p>
+  <img src="docs/screenshots/mobile-dashboard-light.png" alt="Dashboard on a phone" width="260">
+  <img src="docs/screenshots/mobile-navigation-light.png" alt="Navigation drawer on a phone" width="260">
+</p>
 
 ## Development checks
 
