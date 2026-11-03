@@ -136,6 +136,7 @@ php tests/smoke.php
 php tests/security.php
 php tests/robustness.php
 php tests/session-lifecycle.php
+php tests/http-flows.php   # end-to-end browser flows against PHP's built-in server
 find panel -name '*.php' -print0 | xargs -0 -n1 php -l
 bash -n install.sh panel/bin/nebula-helper
 ```

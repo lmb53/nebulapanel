@@ -1,0 +1,3 @@
+# Runtime state written when the panel runs from a checkout (users, tokens,
+# sessions, audit log). Never commit it.
+/panel/data/
