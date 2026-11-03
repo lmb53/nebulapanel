@@ -83,7 +83,7 @@ function change_admin_password(string $current, string $new): array
     }
     $changedUser = $result['user'];
     // Keep this session alive while invalidating every other session for the account.
-    $_SESSION['session_version'] = (int) $changedUser['session_version'];
+    session_persist(['session_version' => (int) $changedUser['session_version']]);
     if ($uid === 1 && is_file(admin_file())) {
         $legacy = json_decode((string) @file_get_contents(admin_file()), true);
         if (is_array($legacy)) { $legacy['hash']=$changedUser['hash'];$legacy['updated']=$changedUser['updated'];write_json_file(admin_file(),$legacy); }

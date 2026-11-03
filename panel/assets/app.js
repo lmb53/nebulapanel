@@ -210,6 +210,7 @@
     icon.dataset.lucide = icons[type] || 'info';
     icon.className = 'toast-icon';
     const copy = document.createElement('div');
+    copy.className = 'toast-msg';
     copy.style.whiteSpace = 'pre-wrap';
     copy.style.wordBreak = 'break-word';
     copy.style.flex = '1';
@@ -230,6 +231,25 @@
     }
   }
   window.nebulaToast = toast;
+
+  // Many actions reload the page shortly after a partial success (a batch
+  // upload or delete where some items failed). Undismissed error toasts must
+  // survive that reload, or the reason for the failure vanishes unread.
+  const CARRY_KEY = 'nebula-carry-errors';
+  const pageKey = () => location.pathname + location.search;
+  window.addEventListener('pagehide', () => {
+    const msgs = Array.from(document.querySelectorAll('#toastStack .toast-error .toast-msg')).map((el) => el.textContent).filter(Boolean);
+    try {
+      if (msgs.length) sessionStorage.setItem(CARRY_KEY, JSON.stringify({ page: pageKey(), at: Date.now(), msgs: msgs.slice(-5) }));
+      else sessionStorage.removeItem(CARRY_KEY);
+    } catch (e) { /* storage unavailable */ }
+  });
+  function restoreCarriedErrors() {
+    let saved = null;
+    try { saved = JSON.parse(sessionStorage.getItem(CARRY_KEY) || 'null'); sessionStorage.removeItem(CARRY_KEY); } catch (e) { return; }
+    if (!saved || saved.page !== pageKey() || Date.now() - (saved.at || 0) > 60000 || !Array.isArray(saved.msgs)) return;
+    saved.msgs.forEach((msg) => toast(String(msg), 'error'));
+  }
 
 
   // ---- Shared formatting --------------------------------------------------
@@ -1128,6 +1148,7 @@
     wireTabs();
     wireNotifications();
     wireAccessibility();
+    restoreCarriedErrors();
 
     const page = window.NEBULA_PAGE;
     if (document.getElementById('miniHealth')) {

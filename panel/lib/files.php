@@ -457,6 +457,9 @@ function fm_compress(array $paths, string $destDir, string $name): array
     return ['ok' => true, 'path' => fm_rel($target)];
 }
 
+/** Shown whenever fm_valid_name() rejects a name. */
+const FM_NAME_RULES = 'Names may use letters, numbers, spaces and . _ - ( ) + , @ = ~ (no leading or trailing spaces, at most 255 characters).';
+
 /** Validate a single path segment (no separators, not . or ..). */
 function fm_valid_name(string $n): bool
 {
@@ -490,7 +493,7 @@ function fm_mkdir(string $relDir, string $name): array
         return ['ok' => false, 'error' => 'Directory not found or not allowed.'];
     }
     if (!fm_valid_name($name)) {
-        return ['ok' => false, 'error' => 'Invalid name.'];
+        return ['ok' => false, 'error' => 'Invalid name. ' . FM_NAME_RULES];
     }
     $target = $abs . '/' . $name;
     if (file_exists($target)) {
@@ -512,7 +515,7 @@ function fm_mkfile(string $relDir, string $name): array
         return ['ok' => false, 'error' => 'Directory not found or not allowed.'];
     }
     if (!fm_valid_name($name)) {
-        return ['ok' => false, 'error' => 'Invalid name.'];
+        return ['ok' => false, 'error' => 'Invalid name. ' . FM_NAME_RULES];
     }
     $target = $abs . '/' . $name;
     if (file_exists($target)) {
@@ -534,7 +537,7 @@ function fm_rename(string $rel, string $newName): array
         return ['ok' => false, 'error' => 'Path not found or not allowed.'];
     }
     if (!fm_valid_name($newName)) {
-        return ['ok' => false, 'error' => 'Invalid name.'];
+        return ['ok' => false, 'error' => 'Invalid name. ' . FM_NAME_RULES];
     }
     $target = dirname($abs) . '/' . $newName;
     if ($target === $abs) {
@@ -558,8 +561,14 @@ function fm_chmod(string $rel, string $mode): array
     if ($abs === null || !file_exists($abs)) {
         return ['ok' => false, 'error' => 'Path not found or not allowed.'];
     }
+    // The UI shows and submits modes as "0755"; accept that form but never a
+    // special-bit digit (setuid/setgid/sticky stay out of reach).
+    $mode = trim($mode);
+    if (preg_match('/^0[0-7]{3}$/', $mode)) {
+        $mode = substr($mode, 1);
+    }
     if (!preg_match('/^[0-7]{3}$/', $mode)) {
-        return ['ok' => false, 'error' => 'Invalid mode.'];
+        return ['ok' => false, 'error' => 'Invalid mode. Use three octal digits, e.g. 644 or 0755.'];
     }
     if (!@chmod($abs, octdec($mode))) {
         [$code, $out] = helper_cmd('file-chmod ' . escapeshellarg($abs) . ' ' . escapeshellarg($mode));
@@ -738,10 +747,10 @@ function fm_upload(string $relDir, array $file, bool $overwrite = false): array
     }
     $name = basename((string) $file['name']);
     if (!fm_valid_name($name)) {
-        return ['ok' => false, 'error' => 'Invalid file name.'];
+        return ['ok' => false, 'error' => 'Invalid file name “' . $name . '”. ' . FM_NAME_RULES];
     }
     if (empty($config['allow_php_uploads']) && fm_executable_upload_name($name)) {
-        return ['ok' => false, 'error' => 'Uploading PHP files, .htaccess, or .user.ini is disabled by policy.'];
+        return ['ok' => false, 'error' => '“' . $name . '” was not uploaded: PHP files, .htaccess and .user.ini uploads are disabled by policy.'];
     }
     $target = $abs . '/' . $name;
     if (file_exists($target)) {
@@ -893,11 +902,18 @@ function fm_trash_restore(string $id): array
     $name = basename($rel);
     if (!fm_valid_name($name)) { return ['ok' => false, 'error' => 'The trashed item has an invalid name.']; }
     $target = $parent . '/' . $name;
-    if (file_exists($target)) {
-        $ext = pathinfo($name, PATHINFO_EXTENSION);
-        $stem = $ext !== '' && empty($meta['is_dir']) ? substr($name, 0, -strlen($ext) - 1) : $name;
-        for ($i = 1; file_exists($target) && $i < 100; $i++) {
-            $target = $parent . '/' . $stem . ' (restored' . ($i > 1 ? ' ' . $i : '') . ')' . ($ext !== '' && empty($meta['is_dir']) ? '.' . $ext : '');
+    if (file_exists($target) || is_link($target)) {
+        // Keep the extension after the suffix ("a (restored).txt"), but treat
+        // a dotfile such as ".env" as having none (".env (restored)").
+        $ext = empty($meta['is_dir']) ? pathinfo($name, PATHINFO_EXTENSION) : '';
+        $stem = $ext !== '' ? substr($name, 0, -strlen($ext) - 1) : $name;
+        if ($stem === '') { $stem = $name; $ext = ''; }
+        for ($i = 1; (file_exists($target) || is_link($target)) && $i < 100; $i++) {
+            $target = $parent . '/' . $stem . ' (restored' . ($i > 1 ? ' ' . $i : '') . ')' . ($ext !== '' ? '.' . $ext : '');
+        }
+        // rename() replaces an existing file, so never fall through on a clash.
+        if (file_exists($target) || is_link($target)) {
+            return ['ok' => false, 'error' => 'Too many items named “' . $name . '” already exist in the original folder. Rename one, then restore again.'];
         }
     }
     $payload = $slot . '/payload';

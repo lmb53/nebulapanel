@@ -135,7 +135,10 @@ function panel_user_update(int $id, string $role, bool $enabled, string $passwor
         // A bearer token has no session account, so the self-demotion guard
         // above cannot protect the last administrator on its own.
         if(!array_filter($users,fn($user)=>($user['role']??'')==='admin'&&!empty($user['enabled'])))return ['ok'=>false,'error'=>'At least one enabled administrator is required.'];
-        if(!save_panel_users($users))return ['ok'=>false,'error'=>'Could not save the panel user.'];audit('panel_user.update','id '.$id.' ('.$role.', '.($enabled?'enabled':'disabled').')');return ['ok'=>true];
+        if(!save_panel_users($users))return ['ok'=>false,'error'=>'Could not save the panel user.'];
+        // Setting your own password here must not sign out the session that did it.
+        if((int)($_SESSION['uid']??0)===$id){foreach($users as $saved){if((int)($saved['id']??0)===$id){session_persist(['session_version'=>(int)$saved['session_version']]);break;}}}
+        audit('panel_user.update','id '.$id.' ('.$role.', '.($enabled?'enabled':'disabled').')');return ['ok'=>true];
     });
 }
 
@@ -436,6 +439,25 @@ function attempt_login(string $username, string $password): bool
     record_login_attempt(true, null, $username);
     audit('login', 'success');
     return true;
+}
+
+/**
+ * Write values into the caller's session even after index.php has released
+ * the session lock (it does so before every API endpoint). Without this a
+ * $_SESSION write made by an endpoint is silently discarded.
+ */
+function session_persist(array $values): void
+{
+    $reopened = false;
+    if (session_status() !== PHP_SESSION_ACTIVE && !headers_sent()) {
+        $reopened = @session_start();
+    }
+    foreach ($values as $key => $value) {
+        $_SESSION[$key] = $value;
+    }
+    if ($reopened) {
+        session_write_close();
+    }
 }
 
 function refresh_session_identity(): void

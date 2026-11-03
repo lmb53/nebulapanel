@@ -396,6 +396,7 @@ if ($rel !== '') {
           <div class="fm-prop-actions">
             <a class="btn btn-secondary" id="fmPropOpen"><i data-lucide="file-pen" id="fmPropOpenIcon"></i><span id="fmPropOpenLabel">Open</span></a>
             <a class="btn btn-secondary" id="fmPropDownload"><i data-lucide="download"></i>Download</a>
+            <button class="btn btn-secondary" type="button" id="fmPropRename"><i data-lucide="text-cursor-input"></i>Rename</button>
             <button class="btn btn-danger" type="button" id="fmPropDelete"><i data-lucide="trash-2"></i>Delete</button>
           </div>
         </div>
@@ -437,8 +438,14 @@ document.addEventListener('DOMContentLoaded', () => {
   const reload = () => setTimeout(() => location.reload(), 400);
   const csrf = () => document.querySelector('meta[name="csrf-token"]').content;
   const bindClick = (id, fn) => document.getElementById(id)?.addEventListener('click', fn);
-  const NAME_RE = /^[^\/\\\0]+$/;
-  const validName = (v) => (!NAME_RE.test(v) || v === '.' || v === '..') ? 'Names cannot contain / or \\ and cannot be "." or "..".' : '';
+  // Mirrors fm_valid_name() in lib/files.php (and the helper's valid_component).
+  const NAME_RE = /^[A-Za-z0-9._ ()+,@=~-]+$/;
+  const validName = (v) => {
+    if (v === '.' || v === '..') return 'A name cannot be "." or "..".';
+    if (v.length > 255) return 'Names can be at most 255 characters.';
+    if (!NAME_RE.test(v) || v.trim() !== v) return 'Use letters, numbers, spaces and . _ - ( ) + , @ = ~ only.';
+    return '';
+  };
 
   // ---- Tabs (Browse / Pinned / Recent / Trash) ----------------------------
   const fmTabs = Array.from(document.querySelectorAll('[data-fm-tab]'));
@@ -502,18 +509,25 @@ document.addEventListener('DOMContentLoaded', () => {
     });
     if (!choice.ok) return;
     let permanent = choice.option;
-    let ok = 0;
+    let trashed = 0, purged = 0;
     for (const path of paths) {
       let res = await apiPost('file-delete', { path, permanent });
+      let wasPermanent = permanent;
       if (!res.ok && res.code === 'trash_failed') {
         const force = await ask({ title: 'Can’t move to trash', message: `${path}\n\n${res.error}`, danger: true, confirmLabel: 'Delete permanently' });
-        if (force) { permanent = true; res = await apiPost('file-delete', { path, permanent: true }); }
+        if (force) { permanent = wasPermanent = true; res = await apiPost('file-delete', { path, permanent: true }); }
         else continue;
       }
-      if (res.ok) ok++; else toast(`${path}: ${res.error || 'Delete failed'}`, 'error');
+      if (res.ok) { if (wasPermanent) purged++; else trashed++; }
+      else toast(`${path}: ${res.error || 'Delete failed'}`, 'error');
     }
-    if (ok) {
-      toast(permanent ? `Permanently deleted ${ok} item${ok === 1 ? '' : 's'}` : `Moved ${ok} item${ok === 1 ? '' : 's'} to the trash`, 'success');
+    const plural = (n) => `${n} item${n === 1 ? '' : 's'}`;
+    const parts = [];
+    if (trashed) parts.push(`moved ${plural(trashed)} to the trash`);
+    if (purged) parts.push(`permanently deleted ${plural(purged)}`);
+    if (parts.length) {
+      const msg = parts.join(' and ');
+      toast(msg.charAt(0).toUpperCase() + msg.slice(1), 'success');
       reload();
     }
   }
@@ -765,6 +779,7 @@ document.addEventListener('DOMContentLoaded', () => {
     dl.classList.toggle('hidden', isDir);
     dl.href = d.download || '#';
     document.getElementById('fmPropDelete').onclick = () => deletePaths([d.path]);
+    document.getElementById('fmPropRename').onclick = () => renameEntry(d.path, d.name);
     propsEmpty?.classList.add('hidden');
     propsBody.classList.remove('hidden');
     propsPane?.classList.add('open');

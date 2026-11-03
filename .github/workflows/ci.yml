@@ -17,3 +17,5 @@ jobs:
         run: php tests/smoke.php && php tests/security.php && php tests/robustness.php && bash tests/helper-contracts.sh
       - name: End-to-end session lifecycle
         run: php tests/session-lifecycle.php
+      - name: End-to-end HTTP flows
+        run: php tests/http-flows.php

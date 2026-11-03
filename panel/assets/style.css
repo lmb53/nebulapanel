@@ -811,6 +811,14 @@ a.service-row{color:inherit}a.service-row:hover{background:var(--bg-surface-hove
   .fm-table .c-date,.fm-table .c-perm{display:none}
   .fm-statusbar{height:auto;min-height:40px;align-items:flex-start;flex-direction:column;padding:8px 12px;gap:4px}
 }
+@media (max-width:600px){
+  /* Give the name column the width: Open/Edit and Download stay reachable
+     from the name link and the Details panel. */
+  .fm-table{min-width:0}
+  .fm-table .c-size{display:none}
+  .fm-table th.c-actions{width:112px}
+  .fm-row-actions>:nth-child(-n+2){display:none}
+}
 
 /* Context menu */
 .ctx-menu{position:fixed;background:var(--bg-elevated);border:1px solid var(--border-default);border-radius:var(--radius-md);box-shadow:var(--shadow-lg);padding:6px;min-width:200px;z-index:70}

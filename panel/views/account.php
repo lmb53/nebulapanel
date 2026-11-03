@@ -22,7 +22,7 @@ $role = panel_roles()[$roleKey] ?? ['label' => ucfirst($roleKey), 'description' 
       <div>
         <label class="field-label" for="accNewPw">New password<span class="req" aria-hidden="true">*</span></label>
         <input class="input" id="accNewPw" type="password" required minlength="12" maxlength="1024" autocomplete="new-password" aria-describedby="accNewPwHelp">
-        <div class="field-help" id="accNewPwHelp">At least 12 characters. Other sessions stay signed in until they expire.</div>
+        <div class="field-help" id="accNewPwHelp">At least 12 characters. Your other signed-in sessions are signed out; this one stays signed in.</div>
       </div>
       <div>
         <label class="field-label" for="accNewPw2">Confirm new password<span class="req" aria-hidden="true">*</span></label>

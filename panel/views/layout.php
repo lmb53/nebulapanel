@@ -42,8 +42,8 @@ function nav_link(string $route, string $icon, string $label, string $active): s
 <title><?= e(($pageTitle !== '' ? $pageTitle . ' · ' : '') . $config['panel_name']) ?></title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <?= theme_boot_script() ?>
-<link rel="preload" href="<?= e(asset('vendor/fonts/instrument-sans-latin.woff2')) ?>" as="font" type="font/woff2" crossorigin>
-<link rel="preload" href="<?= e(asset('vendor/fonts/bricolage-grotesque-latin.woff2')) ?>" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="<?= e(base_url() . '/assets/vendor/fonts/instrument-sans-latin.woff2') ?>" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="<?= e(base_url() . '/assets/vendor/fonts/bricolage-grotesque-latin.woff2') ?>" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="<?= e(asset('style.css')) ?>">
 <script src="<?= e(asset('vendor/lucide-1.8.0.min.js')) ?>"></script>
 <?php if ($needsCharts): ?>
