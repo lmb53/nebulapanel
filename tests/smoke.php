@@ -274,9 +274,9 @@ $check(strpos($websitesSource, 'id="wsRoot"') === false
     'the website creation form still exposes the automatically allocated document root');
 $check(strpos($websitesSource, '<?= e($docroot) ?>') === false,
     'the website list still renders its internal document-root identifier');
-$check(strpos($websitesSource, "streamPost('sites'") !== false
-    && strpos($websitesSource, "classList.add('btn-loading')") !== false,
-    'website SSL issuance has no streaming/loading state');
+$check(strpos($websitesSource, "runTask({ title: 'Issuing certificate for '") !== false
+    && strpos($websitesSource, "endpoint: 'sites', body: { action: 'ssl'") !== false,
+    'website SSL issuance has no streamed progress dialog');
 $dashboardSource = (string) file_get_contents(APP_ROOT . '/views/dashboard.php');
 $check(strpos($dashboardSource, '$initialMem = mem_info();') !== false
     && strpos($dashboardSource, '$initialDisk = disk_info') !== false,
@@ -563,6 +563,102 @@ foreach (glob(APP_ROOT . '/views/*.php') ?: [] as $viewFile) {
     }
 }
 $check(!$badPatterns, 'pattern attributes the browser rejects under the v flag: ' . implode('; ', $badPatterns));
+
+// ---- Two-factor: RFC 6238 SHA-1 vectors (6-digit truncation) -------------
+require_once APP_ROOT . '/lib/mod_mfa.php';
+require_once APP_ROOT . '/lib/qrcode.php';
+$rfcSecret = mfa_base32_encode('12345678901234567890');
+$check($rfcSecret === 'GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ', 'base32 encoding does not match RFC 4648');
+$check(mfa_base32_decode($rfcSecret) === '12345678901234567890', 'base32 decoding does not round-trip');
+foreach ([59 => '287082', 1111111109 => '081804', 1234567890 => '005924', 2000000000 => '279037'] as $time => $expected) {
+    $check(mfa_code($rfcSecret, intdiv($time, 30)) === $expected, "TOTP code at $time is not $expected");
+}
+$check(mfa_verify_code($rfcSecret, '287082', 0, 59) === 1, 'a valid TOTP code was rejected');
+$check(mfa_verify_code($rfcSecret, '287082', 1, 59) === null, 'a replayed TOTP code was accepted');
+$check(mfa_verify_code($rfcSecret, '28708', 0, 59) === null && mfa_verify_code($rfcSecret, 'abcdef', 0, 59) === null, 'malformed TOTP codes were accepted');
+[$plainCodes, $hashCodes] = mfa_new_recovery_codes();
+$check(count(array_unique($plainCodes)) === 10 && preg_match('/^[a-z2-7]{4}-[a-z2-7]{4}-[a-z2-7]{3}$/', $plainCodes[0]) === 1, 'recovery codes have the wrong shape');
+$user = ['mfa' => ['secret' => $rfcSecret, 'enabled_at' => 'x', 'last_step' => 0, 'recovery' => $hashCodes]];
+$check(mfa_check_and_consume($user, strtoupper($plainCodes[3])) === 'recovery' && count($user['mfa']['recovery']) === 9, 'a recovery code was not consumed');
+$check(mfa_check_and_consume($user, $plainCodes[3]) === null, 'a consumed recovery code was accepted again');
+$check(count(NebulaQr::matrix('A')) === 21 && count(NebulaQr::matrix(str_repeat('x', 131))) === 49, 'QR versions are not chosen by capacity');
+
+// ---- Backup schedule maths and retention ----------------------------------
+require_once APP_ROOT . '/lib/mod_backups.php';
+$now = mktime(15, 30, 0, 11, 4, 2026); // Wednesday
+$daily = ['enabled' => true, 'frequency' => 'daily', 'hour' => 2, 'weekday' => 0, 'last_run' => 0];
+$check(backup_schedule_last_slot($daily, $now) === mktime(2, 0, 0, 11, 4, 2026), 'daily slot is not today at 02:00');
+$check(backup_schedule_next($daily, $now) === mktime(2, 0, 0, 11, 5, 2026), 'next daily run is not tomorrow at 02:00');
+$check(backup_schedule_due($daily, $now) && !backup_schedule_due(['last_run' => $now] + $daily, $now), 'daily due-ness is wrong');
+$late = ['hour' => 23] + $daily;
+$check(backup_schedule_last_slot($late, $now) === mktime(23, 0, 0, 11, 3, 2026), 'a later hour today should fall back to yesterday');
+$weekly = ['frequency' => 'weekly', 'weekday' => 1] + $daily;
+$check(backup_schedule_last_slot($weekly, $now) === mktime(2, 0, 0, 11, 2, 2026), 'weekly slot is not the previous Monday');
+$check(!backup_schedule_due(['enabled' => false] + $daily, $now), 'a disabled schedule must never be due');
+mkdir(DATA_DIR . '/backups', 0700, true);
+$site = str_repeat('b', 32);
+foreach ([1, 2, 3, 4] as $n) {
+    $file = 'auto-site-2026110' . $n . '-020000.tar.gz';
+    file_put_contents(DATA_DIR . '/backups/' . $file, 'x');
+    touch(DATA_DIR . '/backups/' . $file, $now - (10 - $n) * 86400);
+    write_json_file(DATA_DIR . '/backups/' . $file . '.manifest.json', ['site_id' => $site, 'kind' => 'scheduled', 'scheduled' => true]);
+}
+file_put_contents(DATA_DIR . '/backups/manual-20261001-020000.tar.gz', 'x');
+touch(DATA_DIR . '/backups/manual-20261001-020000.tar.gz', $now - 40 * 86400);
+write_json_file(DATA_DIR . '/backups/manual-20261001-020000.tar.gz.manifest.json', ['site_id' => $site, 'kind' => 'manual']);
+$pruned = backup_apply_retention(2);
+$remaining = array_column(backup_list(), 'file');
+$check(count($pruned) === 2 && in_array('auto-site-20261104-020000.tar.gz', $remaining, true) && !in_array('auto-site-20261101-020000.tar.gz', $remaining, true), 'retention did not keep the newest scheduled backups');
+$check(in_array('manual-20261001-020000.tar.gz', $remaining, true), 'retention removed a manual backup');
+$check(backup_resolve('../config.php') === null && backup_resolve('x.tar.gz') === null, 'backup path validation is too loose');
+foreach (glob(DATA_DIR . '/backups/*') as $f) { @unlink($f); }
+@rmdir(DATA_DIR . '/backups');
+
+// ---- Resource history -------------------------------------------------------
+require_once APP_ROOT . '/lib/mod_history.php';
+$t0 = $now - 3600;
+foreach ([0, 300, 600, 900] as $i => $offset) {
+    history_record(true, ['cpu' => 10.0 * ($i + 1), 'mem' => 50.0, 'disk' => 70.0, 'load' => 0.5], $t0 + $offset);
+}
+$check(!history_record(true, ['cpu' => 1, 'mem' => 1, 'disk' => 1, 'load' => 1], $t0 + 930), 'history accepted two samples within a minute');
+history_record(true, ['cpu' => 1, 'mem' => 1, 'disk' => 1, 'load' => 1], $now - 9 * 86400);
+$series = history_series('6h', $now);
+$check(count($series['points']) === 4 && $series['points'][0]['cpu'] === 10.0 && $series['points'][3]['cpu_peak'] === 40.0, 'history series lost or mangled samples');
+$check($series['samples'] === 4, 'history kept a sample older than its retention');
+$check(count(history_series('7d', $now)['points']) === 1 && history_series('7d', $now)['points'][0]['cpu'] === 25.0, 'hourly buckets do not average their samples');
+@unlink(history_file()); @unlink(history_file() . '.lock');
+
+// ---- Alerts: notify on change, not on every check ---------------------------
+require_once APP_ROOT . '/lib/mod_alerts.php';
+write_json_file(alerts_file(), ['enabled' => true, 'emails' => [], 'webhooks' => [['type' => 'generic', 'url' => 'http://127.0.0.1:9/']],
+    'events' => ['resources' => true, 'services' => true, 'backups' => true, 'ssl' => true, 'panel' => true, 'updates' => false], 'remind_hours' => 24, 'notify_resolved' => true]);
+$disk = ['level' => 'warning', 'key' => 'disk', 'title' => 'Disk space running low', 'detail' => '85%'];
+$updates = ['level' => 'warning', 'key' => 'updates', 'title' => '25 updates', 'detail' => ''];
+$r1 = alerts_evaluate($now, ['items' => [$disk, $updates]]);
+$r2 = alerts_evaluate($now + 300, ['items' => [$disk]]);
+$r3 = alerts_evaluate($now + 600, ['items' => [['level' => 'critical'] + $disk]]);
+$r4 = alerts_evaluate($now + 600 + 25 * 3600, ['items' => [['level' => 'critical'] + $disk]]);
+$r5 = alerts_evaluate($now + 700 + 25 * 3600, ['items' => []]);
+$check($r1['sent'] === 1, 'a new problem did not alert exactly once (disabled categories must not alert)');
+$check($r2['sent'] === 0, 'an unchanged problem alerted again');
+$check($r3['sent'] === 1 && $r4['sent'] === 1, 'escalation or the daily reminder did not alert');
+$check($r5['sent'] === 1 && $r5['active'] === 0, 'recovery did not alert');
+$check(empty($r1['ok']) && str_contains((string) ($r1['error'] ?? ''), 'Generic JSON'), 'a failed webhook delivery is not reported');
+$text = alerts_text([['type' => 'problem', 'level' => 'critical', 'title' => 'A', 'detail' => 'x'], ['type' => 'resolved', 'level' => 'ok', 'title' => 'Resolved: B', 'detail' => '']]);
+$check($text['level'] === 'critical' && str_contains($text['subject'], '1 problem') && str_contains($text['body'], '[RESOLVED]'), 'alert text summarises the batch wrongly');
+foreach ([alerts_file(), alerts_state_file()] as $f) { @unlink($f); }
+foreach (glob(DATA_DIR . '/*.lock') ?: [] as $f) { @unlink($f); }
+foreach (glob(DATA_DIR . '/.nebula-*') ?: [] as $f) { @unlink($f); }
+
+// ---- Background scheduler runs standalone from the CLI ---------------------
+$schedDir = sys_get_temp_dir() . '/nebula-sched-' . bin2hex(random_bytes(4));
+mkdir($schedDir, 0700);
+$cmd = 'NEBULA_DATA_DIR=' . escapeshellarg($schedDir) . ' NEBULA_SCHEDULER_ALLOW_ROOT=1 ' . escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg(APP_ROOT . '/bin/scheduler.php') . ' --quiet 2>&1';
+exec($cmd, $schedOut, $schedCode);
+$schedState = json_decode((string) @file_get_contents($schedDir . '/scheduler.json'), true);
+$check($schedCode === 0 && is_file($schedDir . '/metrics-history.json') && !empty($schedState['report']['history']['recorded']), 'the scheduler CLI did not run its jobs: ' . implode(' ', $schedOut));
+foreach (array_merge(glob($schedDir . '/*') ?: [], glob($schedDir . '/cache/*') ?: []) as $f) { @unlink($f); }
+@rmdir($schedDir . '/cache'); @rmdir($schedDir);
 
 @unlink(DATA_DIR . '/setup.lock');
 @unlink(fm_state_file());

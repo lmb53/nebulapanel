@@ -59,7 +59,7 @@ function nebula_sections(): array
  */
 function nebula_extra_route_parents(): array
 {
-    return ['file-edit' => 'files', 'service' => 'services', 'selfupdate' => 'updates', 'account' => null];
+    return ['file-edit' => 'files', 'service' => 'services', 'selfupdate' => 'updates', 'account' => null, 'site' => 'websites'];
 }
 
 function nebula_extra_routes(): array
@@ -99,6 +99,12 @@ function page_title_for(string $route): string
             return 'Updates';
         case 'account':
             return 'My account';
+        case 'site':
+            require_once APP_ROOT . '/lib/mod_sites.php';
+            foreach (sites_stored() as $site) {
+                if (($site['id'] ?? '') === (string) ($_GET['id'] ?? '')) { return (string) $site['domain']; }
+            }
+            return 'Website';
     }
     return '';
 }

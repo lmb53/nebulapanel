@@ -60,7 +60,79 @@
     <pre class="mono log-pre" id="msLog">Load the log to see recent rule matches and blocked requests.</pre></div>
 <?php endif; ?>
 </section>
-<section data-tab-panel id="securityAudit" class="card hidden"><div class="card-header"><div><h3>Admin action audit log</h3><span class="muted">Most recent 80 events</span></div><input class="input input-sm" id="auditFilter" type="search" placeholder="Filter events…" aria-label="Filter audit events" style="width:220px"></div><div class="table-wrap"><table class="data-table"><thead><tr><th>Time</th><th>Who</th><th>Action</th><th>Detail</th><th>IP address</th></tr></thead><tbody id="auditRows"><?php foreach($audit as $line): $ev=json_decode($line,true); if(!is_array($ev)){$ev=['detail'=>$line];} ?><tr data-audit-text="<?= e(strtolower($line)) ?>"><td class="text-tertiary" style="white-space:nowrap"><?= e(fmt_datetime($ev['time']??'')) ?></td><td><?= e((string)($ev['actor']??'—')) ?><?php if(!empty($ev['role'])): ?> <span class="text-tertiary" style="font-size:12px">(<?= e((string)$ev['role']) ?>)</span><?php endif; ?></td><td><span class="badge badge-slate mono"><?= e((string)($ev['action']??'event')) ?></span></td><td style="max-width:420px;word-break:break-word"><?= e((string)($ev['detail']??'')) ?></td><td class="mono text-tertiary"><?= e((string)($ev['ip']??'')) ?></td></tr><?php endforeach; ?><?php if(!$audit): ?><tr class="empty-row"><td colspan="5">No audit entries yet.</td></tr><?php endif; ?><tr class="empty-row hidden" id="auditNoMatch"><td colspan="5">No events match the filter.</td></tr></tbody></table></div></section>
+<section data-tab-panel id="securityAudit" class="card hidden">
+  <div class="card-header"><div><h3>Admin action audit log</h3><span class="muted" id="auditSummary">Loading…</span></div>
+    <div class="flex gap-2" style="flex-wrap:wrap"><a class="btn btn-secondary btn-sm" id="auditCsv" href="#"><i data-lucide="file-spreadsheet"></i>Export CSV</a><a class="btn btn-secondary btn-sm" id="auditJson" href="#"><i data-lucide="file-json"></i>Export JSON</a></div></div>
+  <form class="audit-filters" id="auditForm" role="search" aria-label="Filter audit events">
+    <input class="input input-sm" id="auditQ" type="search" placeholder="Search text…" aria-label="Search text">
+    <select class="select input-sm" id="auditActor" aria-label="User"><option value="">All users</option></select>
+    <select class="select input-sm" id="auditAction" aria-label="Action"><option value="">All actions</option></select>
+    <input class="input input-sm" id="auditFrom" type="date" aria-label="From date">
+    <input class="input input-sm" id="auditTo" type="date" aria-label="To date">
+    <button class="btn btn-ghost btn-sm" type="reset" id="auditReset">Clear</button>
+  </form>
+  <div class="table-wrap"><table class="data-table"><thead><tr><th>Time</th><th>Who</th><th>Action</th><th>Detail</th><th>IP address</th></tr></thead><tbody id="auditRows"><tr class="empty-row"><td colspan="5">Loading…</td></tr></tbody></table></div>
+  <div class="card-pad hidden" id="auditMoreWrap" style="text-align:center"><button class="btn btn-secondary btn-sm" type="button" id="auditMore">Load more</button></div>
+</section>
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+  const { apiGet, api, fmtDate } = window.Nebula;
+  const $ = (id) => document.getElementById(id);
+  const rows = $('auditRows');
+  let offset = 0, loaded = false, timer = null;
+  const params = () => {
+    const p = new URLSearchParams();
+    [['q', 'auditQ'], ['actor', 'auditActor'], ['action', 'auditAction'], ['from', 'auditFrom'], ['to', 'auditTo']].forEach(([k, id]) => { const v = $(id).value.trim(); if (v) p.set(k, v); });
+    return p;
+  };
+  const fill = (select, values, label) => {
+    const current = select.value;
+    if (select.options.length - 1 === values.length) return;
+    select.replaceChildren(new Option(label, ''));
+    values.forEach((v) => select.add(new Option(v, v)));
+    select.value = current;
+  };
+  const cell = (text, cls) => { const td = document.createElement('td'); if (cls) td.className = cls; td.textContent = text; return td; };
+  async function load(append = false) {
+    if (!append) offset = 0;
+    const p = params(); p.set('limit', '100'); p.set('offset', String(offset));
+    let res;
+    try { res = await apiGet('audit&' + p.toString()); } catch (e) { $('auditSummary').textContent = e.message; return; }
+    loaded = true;
+    if (!append) rows.replaceChildren();
+    res.events.forEach((ev) => {
+      const tr = document.createElement('tr');
+      tr.append(cell(ev.time ? fmtDate(ev.time) : '—', 'text-tertiary'));
+      tr.lastChild.style.whiteSpace = 'nowrap';
+      const who = cell(ev.actor || '—');
+      if (ev.role) { const r = document.createElement('span'); r.className = 'text-tertiary'; r.style.fontSize = '12px'; r.textContent = ` (${ev.role})`; who.appendChild(r); }
+      const act = document.createElement('td'); const b = document.createElement('span'); b.className = 'badge badge-slate mono'; b.textContent = ev.action || 'event'; act.appendChild(b);
+      act.style.cursor = 'pointer'; act.title = 'Show only this action';
+      act.addEventListener('click', () => { if (ev.action) { const sel = $('auditAction'); if (![...sel.options].some((o) => o.value === ev.action)) sel.add(new Option(ev.action, ev.action)); sel.value = ev.action; load(); } });
+      const detail = cell(ev.detail || ''); detail.style.maxWidth = '420px'; detail.style.wordBreak = 'break-word';
+      tr.append(who, act, detail, cell(ev.ip || '', 'mono text-tertiary'));
+      rows.appendChild(tr);
+    });
+    offset += res.events.length;
+    if (!rows.children.length) { const tr = document.createElement('tr'); tr.className = 'empty-row'; const td = cell(res.scanned ? 'No events match these filters.' : 'No audit entries yet.'); td.colSpan = 5; tr.appendChild(td); rows.appendChild(tr); }
+    $('auditSummary').textContent = `${res.total.toLocaleString()} matching of ${res.scanned.toLocaleString()} events · newest first`;
+    $('auditMoreWrap').classList.toggle('hidden', !res.more);
+    fill($('auditActor'), res.actors, 'All users');
+    fill($('auditAction'), res.actions, 'All actions');
+    const exportParams = params();
+    exportParams.set('format', 'csv'); $('auditCsv').href = api('audit&' + exportParams.toString());
+    exportParams.set('format', 'json'); $('auditJson').href = api('audit&' + exportParams.toString());
+  }
+  $('auditForm').addEventListener('input', (e) => { clearTimeout(timer); timer = setTimeout(() => load(), e.target.id === 'auditQ' ? 300 : 0); });
+  $('auditForm').addEventListener('submit', (e) => { e.preventDefault(); load(); });
+  $('auditForm').addEventListener('reset', () => setTimeout(() => load(), 0));
+  $('auditMore').addEventListener('click', () => load(true));
+  // Load when the tab is first shown (or immediately when opened via #audit).
+  const panel = $('securityAudit');
+  new MutationObserver(() => { if (!loaded && !panel.classList.contains('hidden')) load(); }).observe(panel, { attributes: true, attributeFilter: ['class'] });
+  if (!panel.classList.contains('hidden') || location.hash === '#audit') load();
+});
+</script>
 </div>
 <div class="drawer-overlay hidden" id="fwDrawer"><div class="drawer"><div class="drawer-header"><div><strong>Add firewall rule</strong><div class="muted">Create a scoped UFW allow or block rule</div></div><button class="icon-btn" type="button" data-close-fw aria-label="Close" title="Close"><i data-lucide="x"></i></button></div><div class="drawer-body"><div class="form-stack"><div><label class="field-label" for="fwAction">Action</label><select class="select" id="fwAction"><option value="allow">Allow</option><option value="deny">Deny</option><option value="reject">Reject</option></select></div><div><label class="field-label" for="fwPort">Port or service</label><input class="input mono" id="fwPort" placeholder="22, 53, http"></div><div><label class="field-label" for="fwProto">Protocol</label><select class="select" id="fwProto"><option value="tcp">TCP</option><option value="udp">UDP</option><option value="any">Any</option></select></div><div><label class="field-label">Common services</label><div class="flex gap-2" style="flex-wrap:wrap"><?php foreach(['22'=>'SSH','80'=>'HTTP','443'=>'HTTPS','53'=>'DNS','3306'=>'MySQL'] as $port=>$name): ?><button class="chip" type="button" data-fw-port="<?= e($port) ?>"><?= e($name) ?></button><?php endforeach; ?></div></div></div></div><div class="drawer-footer"><button class="btn btn-secondary" type="button" data-close-fw>Cancel</button><button class="btn btn-primary" type="button" id="fwAdd"><i data-lucide="plus"></i>Add rule</button></div></div></div>
 <script>document.addEventListener('DOMContentLoaded',()=>{const{apiPost,toast}=window.Nebula,drawer=document.getElementById('fwDrawer');const addOpen=document.getElementById('fwAddOpen');if(addOpen)addOpen.onclick=()=>drawer.classList.remove('hidden');const auditFilter=document.getElementById('auditFilter');auditFilter?.addEventListener('input',()=>{const q=auditFilter.value.trim().toLowerCase();let n=0;document.querySelectorAll('[data-audit-text]').forEach(tr=>{const ok=!q||tr.dataset.auditText.includes(q);tr.classList.toggle('hidden',!ok);if(ok)n++;});document.getElementById('auditNoMatch')?.classList.toggle('hidden',n>0||!document.querySelector('[data-audit-text]'));});document.querySelectorAll('[data-close-fw]').forEach(b=>b.onclick=()=>drawer.classList.add('hidden'));document.querySelectorAll('[data-fw-port]').forEach(b=>b.onclick=()=>document.getElementById('fwPort').value=b.dataset.fwPort);document.querySelectorAll('[data-fw]').forEach(b=>b.onclick=async()=>{if(b.dataset.fw==='disable'&&!await window.Nebula.confirm({title:'Disable the firewall?',message:'All ports become reachable until it is enabled again.',danger:true,confirmLabel:'Disable firewall'}))return;const r=await apiPost('firewall',{action:b.dataset.fw});toast(r.ok?('Firewall updated'+((r.safeguards||[]).length?' — kept '+r.safeguards.join(', ')+' open so SSH and the panel stay reachable':'')):(r.error||'Failed'),r.ok?'success':'error');if(r.ok)setTimeout(()=>location.reload(),400);});document.getElementById('fwAdd').onclick=async()=>{const r=await apiPost('firewall',{action:'add',ufwAction:document.getElementById('fwAction').value,port:document.getElementById('fwPort').value,proto:document.getElementById('fwProto').value});toast(r.ok?'Firewall rule added':(r.error||'Failed'),r.ok?'success':'error');if(r.ok)setTimeout(()=>location.reload(),350);};document.querySelectorAll('[data-fw-del]').forEach(b=>b.onclick=async()=>{if(!await window.Nebula.confirm({title:'Delete this firewall rule?',danger:true}))return;const r=await apiPost('firewall',{action:'delete',num:+b.dataset.fwDel,expect:b.dataset.fwRaw||''});toast(r.ok?'Firewall rule deleted':(r.error||'Failed'),r.ok?'success':'error');if(r.ok)setTimeout(()=>location.reload(),300);});});</script>

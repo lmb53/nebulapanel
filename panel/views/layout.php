@@ -25,6 +25,12 @@ $shellMeta = array_values(array_filter([
 ]));
 $navSection = $navActive !== '' ? (nebula_modules()[$navActive][2] ?? '') : '';
 $crumbParts = array_values(array_filter([(string) $shellFacts['hostname'], $navSection]));
+// One shared explanation when privileged features cannot work, instead of
+// the same "helper not installed" message repeated on half the pages.
+$helperState = is_linux() ? helper_state() : 'ok';
+$helperFix = $helperState !== 'ok' && current_role() === 'admin' ? helper_fix_commands() : [];
+$flashWarning = (string) ($_SESSION['flash_warning'] ?? '');
+unset($_SESSION['flash_warning']);
 // Chart.js is only shipped to pages that draw charts.
 $needsCharts = in_array($active, ['dashboard', 'mail'], true);
 function nav_link(string $route, string $icon, string $label, string $active): string
@@ -140,6 +146,36 @@ function nav_link(string $route, string $icon, string $label, string $active): s
     </header>
 
     <main class="page<?= $active === 'files' ? ' page-file-manager' : ($active === 'file-edit' ? ' page-file-editor' : '') ?>" id="main" tabindex="-1">
+      <?php if ($helperState !== 'ok' && $active !== 'file-edit'): ?>
+      <div class="notice notice-warning helper-banner" role="status">
+        <i data-lucide="shield-alert"></i>
+        <div style="min-width:0;flex:1">
+          <?php if ($helperState === 'outdated'): ?>
+          <strong>The privileged helper is older than this panel version</strong>
+          <div>The panel was updated but <span class="mono">/usr/local/bin/nebula-helper</span> was not, so newer actions (such as backup restore and archive extraction) fail until it is reinstalled.</div>
+          <?php else: ?>
+          <strong><?= $helperState === 'missing' ? 'The privileged helper is not installed' : 'The privileged helper is installed but the panel cannot run it' ?></strong>
+          <div>Websites, Domains, DNS, SSL, PHP, Databases, Email, Backups, Docker, SSH keys and File Manager changes need <span class="mono">nebula-helper</span><?= $helperState === 'missing' ? ', which normally lives at <span class="mono">/usr/local/bin/nebula-helper</span>' : ', but its sudo rule in <span class="mono">/etc/sudoers.d/nebula-panel</span> is missing or wrong' ?>. Those pages show “helper not installed” until this is fixed.</div>
+          <?php endif; ?>
+          <?php if ($helperFix): ?>
+          <details class="helper-fix">
+            <summary>How to fix it</summary>
+            <p>On the server, as root, re-run the installer for this version. It reinstalls the helper and its sudo rule and keeps your data:</p>
+            <div class="cmd-line"><code><?= e($helperFix['reinstall']) ?></code><button class="btn btn-secondary btn-sm" type="button" data-copy-text="<?= e($helperFix['reinstall']) ?>"><i data-lucide="copy"></i>Copy</button></div>
+            <p>Or repair only the <?= $helperState === 'missing' ? 'helper and its sudo rule' : ($helperState === 'outdated' ? 'helper' : 'sudo rule') ?>:</p>
+            <?php if ($helperState === 'missing' || $helperState === 'outdated'): ?><div class="cmd-line"><code><?= e($helperFix['helper']) ?></code><button class="btn btn-secondary btn-sm" type="button" data-copy-text="<?= e($helperFix['helper']) ?>"><i data-lucide="copy"></i>Copy</button></div><?php endif; ?>
+            <?php if ($helperState !== 'outdated'): ?><div class="cmd-line"><code><?= e($helperFix['sudoers']) ?></code><button class="btn btn-secondary btn-sm" type="button" data-copy-text="<?= e($helperFix['sudoers']) ?>"><i data-lucide="copy"></i>Copy</button></div><?php endif; ?>
+            <p>Then reload this page. <a href="<?= e(url('diagnostics')) ?>">Diagnostics</a> re-checks every privilege.</p>
+          </details>
+          <?php elseif (current_role() !== 'admin'): ?>
+          <div style="margin-top:4px">Ask an administrator to fix it.</div>
+          <?php endif; ?>
+        </div>
+      </div>
+      <?php endif; ?>
+      <?php if ($flashWarning !== ''): ?>
+      <div class="notice notice-warning" role="alert" style="margin-bottom:16px"><i data-lucide="triangle-alert"></i><div><?= e($flashWarning) ?> <a href="<?= e(url('account')) ?>#mfa">My account</a></div></div>
+      <?php endif; ?>
       <?php require $__view; ?>
     </main>
   </div>

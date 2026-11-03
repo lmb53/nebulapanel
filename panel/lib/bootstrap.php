@@ -86,6 +86,7 @@ require APP_ROOT . '/lib/helpers.php';
 require APP_ROOT . '/lib/auth.php';
 require APP_ROOT . '/lib/sys.php';
 require APP_ROOT . '/lib/modules.php';
+require APP_ROOT . '/lib/mod_sessions.php';
 
 // Account changes take effect immediately for every active session.
 if (!empty($_SESSION['uid'])) {
@@ -121,5 +122,9 @@ if (!empty($_SESSION['uid'])) {
             $_SESSION['rotated_at'] = time();
         }
         $_SESSION['last_seen'] = time();
+        // Signed out from another device (Account → Active sessions).
+        if (!session_registry_check()) {
+            logout_user();
+        }
     }
 }

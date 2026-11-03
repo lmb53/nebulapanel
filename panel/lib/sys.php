@@ -520,3 +520,43 @@ function service_action(string $name, string $action, array $whitelist): array
     }
     return ['ok' => true, 'status' => service_status($name), 'enabled' => service_enabled($name)];
 }
+
+/**
+ * Whether privileged features can work: ok | missing | broken | outdated.
+ * "broken" means the panel's sudo rule does not let the helper run;
+ * "outdated" means it is older than the panel's copy. Cached for a minute and deliberately not audited (it runs on page
+ * loads, not on behalf of an action).
+ */
+function helper_state(): string
+{
+    if (!helper_available()) { return 'missing'; }
+    return (string) cache_remember('helper-state', 60, static function (): string {
+        [$code] = run_cmd('sudo -n ' . NEBULA_HELPER . ' php-versions 2>&1', 10);
+        if ($code !== 0) { return 'broken'; }
+        // A panel self-update does not replace the root-owned helper, so new
+        // privileged actions would fail with "unknown command" until it is.
+        $shipped = @hash_file('sha256', APP_ROOT . '/bin/nebula-helper');
+        $installed = @hash_file('sha256', NEBULA_HELPER);
+        return $shipped && $installed && !hash_equals($shipped, $installed) ? 'outdated' : 'ok';
+    });
+}
+
+/** The commands that repair a missing or broken helper, for the banner. */
+function helper_fix_commands(): array
+{
+    global $config;
+    $user = 'nebula-panel';
+    if (function_exists('posix_geteuid') && function_exists('posix_getpwuid')) {
+        $info = @posix_getpwuid(posix_geteuid());
+        if (is_array($info) && preg_match('/^[a-z_][a-z0-9_-]{0,31}$/', (string) ($info['name'] ?? ''))) { $user = $info['name']; }
+    }
+    $version = @json_decode((string) @file_get_contents(DATA_DIR . '/version.json'), true);
+    $ref = is_array($version) && preg_match('/^[a-f0-9]{40}$/', (string) ($version['sha'] ?? '')) ? $version['sha'] : (string) ($config['repo_ref'] ?? 'main');
+    $repo = preg_match('#^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$#', (string) ($config['repo'] ?? '')) ? $config['repo'] : 'lmb53/nebulapanel';
+    $helperSource = APP_ROOT . '/bin/nebula-helper';
+    return [
+        'reinstall' => 'curl -fsSL https://raw.githubusercontent.com/' . $repo . '/' . $ref . '/install.sh | sudo env SOURCE=remote REPO_REF=' . $ref . ' bash',
+        'helper' => 'sudo install -m 0755 -o root -g root ' . escapeshellarg($helperSource) . ' /usr/local/bin/nebula-helper',
+        'sudoers' => "echo '" . $user . " ALL=(root) NOPASSWD: /usr/local/bin/nebula-helper *' | sudo tee /etc/sudoers.d/nebula-panel >/dev/null && sudo chmod 0440 /etc/sudoers.d/nebula-panel && sudo visudo -cf /etc/sudoers.d/nebula-panel",
+    ];
+}

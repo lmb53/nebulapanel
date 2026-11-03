@@ -294,6 +294,7 @@ if ($rel !== '') {
                       <?php else: ?>
                         <a class="icon-btn" href="<?= e($en['edit']) ?>" title="Edit" aria-label="Edit <?= e($en['name']) ?>"><i data-lucide="file-pen"></i></a>
                         <a class="icon-btn" href="<?= e($en['download']) ?>" title="Download" aria-label="Download <?= e($en['name']) ?>"><i data-lucide="download"></i></a>
+                        <?php if (fm_is_extractable($en['name'])): ?><button class="icon-btn" type="button" data-fm-extract="<?= e($en['rel']) ?>" data-name="<?= e($en['name']) ?>" title="Extract" aria-label="Extract <?= e($en['name']) ?>"><i data-lucide="package-open"></i></button><?php endif; ?>
                       <?php endif; ?>
                       <button class="icon-btn" type="button" data-fm-details title="Details" aria-label="Details for <?= e($en['name']) ?>"><i data-lucide="info"></i></button>
                       <button class="icon-btn" type="button" data-fm-rename="<?= e($en['rel']) ?>" data-name="<?= e($en['name']) ?>" title="Rename" aria-label="Rename <?= e($en['name']) ?>"><i data-lucide="text-cursor-input"></i></button>
@@ -420,6 +421,7 @@ if ($rel !== '') {
       <button type="button" role="menuitem" class="ctx-item" data-ctx-act="cut"><i data-lucide="scissors"></i>Cut</button>
       <button type="button" role="menuitem" class="ctx-item" data-ctx-act="paste"><i data-lucide="clipboard-paste"></i>Paste here</button>
       <button type="button" role="menuitem" class="ctx-item" data-ctx-act="compress"><i data-lucide="archive"></i>Compress</button>
+      <button type="button" role="menuitem" class="ctx-item" data-ctx-act="extract"><i data-lucide="package-open"></i>Extract</button>
       <div class="ctx-sep" role="separator"></div>
       <button type="button" role="menuitem" class="ctx-item" data-ctx-act="rename"><i data-lucide="text-cursor-input"></i>Rename</button>
       <button type="button" role="menuitem" class="ctx-item" data-ctx-act="chmod"><i data-lucide="lock"></i>Permissions</button>
@@ -841,6 +843,20 @@ document.addEventListener('DOMContentLoaded', () => {
     if (res.ok) { toast(`Created ${name}`, 'success'); reload(); }
     else toast(res.error || 'Compression failed', 'error');
   }
+  const ARCHIVE_RE = /\.(zip|tar|tar\.gz|tgz|tar\.bz2|tbz2|tar\.xz|txz)$/i;
+  function isArchive(name) { return ARCHIVE_RE.test(name || ''); }
+  async function extractArchive(path, name) {
+    const stem = name.replace(ARCHIVE_RE, '') || (name + '-extracted');
+    const res = await window.Nebula.dialog({ title: 'Extract ' + name, icon: 'package-open', confirmLabel: 'Extract',
+      message: 'Unpacks the archive as the folder’s owner. Nothing that already exists is overwritten.',
+      input: { label: 'New folder name', value: stem, validate: (v) => validName(v) },
+      option: { label: 'Extract into the current folder instead', help: 'Use this to deploy a site archive straight into public/. Stops if any item would be overwritten.' } });
+    if (!res.ok) return;
+    const folder = res.option ? '' : res.value;
+    const result = await window.Nebula.runTask({ title: 'Extracting ' + name, endpoint: 'file-extract', body: { path, dest: CURDIR, folder }, successMessage: 'Extracted' });
+    if (result.ok) { toast(result.message || ('Extracted ' + name), 'success'); reload(); }
+  }
+  document.querySelectorAll('[data-fm-extract]').forEach((btn) => btn.addEventListener('click', (e) => { e.stopPropagation(); extractArchive(btn.dataset.fmExtract, btn.dataset.name || ''); }));
   bindClick('fmCopySelected', () => setClipboard('copy'));
   bindClick('fmCutSelected', () => setClipboard('move'));
   bindClick('fmPaste', pasteClipboard);
@@ -864,6 +880,7 @@ document.addEventListener('DOMContentLoaded', () => {
       const isFile = row && row.dataset.isdir !== '1';
       ['open', 'rename', 'chmod', 'delete', 'details', 'copy', 'cut', 'compress'].forEach((act) => ctx.querySelector(`[data-ctx-act="${act}"]`)?.classList.toggle('hidden', !row));
       ctx.querySelector('[data-ctx-act="download"]').classList.toggle('hidden', !isFile);
+      ctx.querySelector('[data-ctx-act="extract"]').classList.toggle('hidden', !(isFile && isArchive(row.dataset.name)));
       ctx.querySelector('[data-ctx-open-label]').textContent = isFile ? 'Edit' : 'Open';
       ctx.querySelector('[data-ctx-act="paste"]').disabled = !readClipboard();
       // Hide separators that would sit next to each other or at the edges.
@@ -914,6 +931,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (act === 'copy') return setClipboard('copy', ctxRow);
         if (act === 'cut') return setClipboard('move', ctxRow);
         if (act === 'compress') return compressPaths(selectedPaths(ctxRow));
+        if (act === 'extract') return extractArchive(ctxRow.dataset.path, ctxRow.dataset.name || '');
         if (act === 'details') return showProps(ctxRow);
         if (act === 'chmod') return chmodEntry(ctxRow.dataset.path, ctxRow.dataset.perms);
         if (act === 'rename') return renameEntry(ctxRow.dataset.path, ctxRow.dataset.name || '');

@@ -149,7 +149,7 @@ log "Installing packages (Nginx, PHP-FPM, tooling)…"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
 apt-get install -y -qq nginx \
-  rsync ufw sudo curl ca-certificates tar zip openssl git acl \
+  rsync ufw sudo curl ca-certificates tar zip unzip openssl git acl \
   certbot python3-certbot-nginx >/dev/null
 
 # Keep the ondrej/php PPA from hijacking the system-default, unversioned php
@@ -426,7 +426,7 @@ for _required in index.php lib/bootstrap.php lib/sys.php \
                  api/apps.php api/updates.php api/provision.php \
                  api/notifications.php api/sshkeys.php api/file-state.php \
                  api/file-chmod.php api/file-compress.php assets/app.js assets/style.css \
-                 bin/nebula-helper bin/nebula-recovery bin/recovery.php; do
+                 bin/nebula-helper bin/nebula-recovery bin/recovery.php bin/scheduler.php; do
   [[ -f "$DEST/$_required" ]] || die "Deployed source is incomplete: missing $_required"
 done
 
@@ -436,7 +436,7 @@ _missing=""
 for v in setup-wizard dashboard websites domains dns files services databases phpmyadmin \
          mail ssl php cron firewall logs updates users sshkeys docker backups terminal \
          sysinfo diagnostics notifications apps selfupdate settings api service \
-         file-edit account error login setup layout; do
+         file-edit account site error login login-2fa setup layout; do
   [[ -f "$DEST/views/$v.php" ]] || _missing="$_missing $v"
 done
 if [[ -n "$_missing" ]]; then
@@ -730,6 +730,47 @@ SUDOERS_TMP=""
 sudo -u "$PANEL_USER" sudo -n /usr/local/bin/nebula-helper php-versions >/dev/null 2>&1 \
   || die "privileged helper sudo rule verification failed ($SUDOERS)."
 ok "sudoers rule installed ($SUDOERS)"
+
+# --------------------------------------------------------------------------
+# 6b. Background scheduler (scheduled backups, alerts, resource history)
+# --------------------------------------------------------------------------
+log "Installing the background scheduler timer…"
+SCHED_PHP="$(command -v "php${PHP_VER}" 2>/dev/null || command -v php 2>/dev/null || true)"
+if [[ -n "$SCHED_PHP" && -f "$DEST/bin/scheduler.php" ]]; then
+  cat > /etc/systemd/system/nebula-panel-scheduler.service <<EOF
+[Unit]
+Description=Nebula Panel background scheduler (backups, alerts, resource history)
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=${PANEL_USER}
+Group=${PANEL_USER}
+ExecStart=${SCHED_PHP} ${DEST}/bin/scheduler.php --quiet
+Nice=10
+IOSchedulingClass=idle
+TimeoutStartSec=6h
+EOF
+  cat > /etc/systemd/system/nebula-panel-scheduler.timer <<EOF
+[Unit]
+Description=Run the Nebula Panel scheduler every five minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+AccuracySec=30s
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+  systemctl daemon-reload
+  systemctl enable --now nebula-panel-scheduler.timer >/dev/null 2>&1 \
+    && ok "Scheduler timer enabled (nebula-panel-scheduler.timer)" \
+    || warn "Could not enable nebula-panel-scheduler.timer; scheduled backups and alerts will not run."
+else
+  warn "PHP CLI or bin/scheduler.php missing; scheduled backups and alerts will not run."
+fi
 
 # --------------------------------------------------------------------------
 # 7. Firewall

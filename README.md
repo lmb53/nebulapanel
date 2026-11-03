@@ -64,8 +64,11 @@ the URL (runtime state is migrated), or use a fixed name. Options (env vars):
 | Feature | Status |
 |---|---|
 | Token-gated first-run setup (Argon2id where available) + login/logout | ✅ |
+| **Two-factor sign-in** — authenticator-app codes (TOTP: Google Authenticator, 1Password, Authy…) with QR setup, ten single-use recovery codes, replay protection, and an administrator reset | ✅ |
 | Session idle/absolute expiry, rotation, CSRF, account/IP throttling, structured audit | ✅ |
-| **Dashboard** — live charts, load/CPU, services, top processes and actionable health alerts | ✅ |
+| **Active sessions** — see every browser signed in to your account (device, address, last activity) and sign out one or all others | ✅ |
+| **Dashboard** — live charts plus 6-hour / 24-hour / 7-day CPU, memory and disk history, load, services, top processes and actionable health alerts (including SSL certificates about to expire) | ✅ |
+| **Alerts** — email or webhook (Slack, Discord, ntfy, generic JSON) notifications for low disk, failed services, old or failing backups, expiring certificates and panel problems; notifies on change, with reminders and recovery messages | ✅ |
 | **Services** — tabbed per-instance manager, virtual hosts, logs, start / stop / restart + boot state | ✅ sudo |
 | **Install Apps** — install apache2/redis/mariadb/fail2ban/ModSecurity + extra PHP versions with live output, each shown with its official brand logo | ✅ sudo/helper |
 | **Updates** — list upgradable, update one/all, with persistent streaming apt output | ✅ sudo |
@@ -74,7 +77,7 @@ the URL (runtime state is migrated), or use a fixed name. Options (env vars):
 | **Cron** — administrator-only CRUD on the panel account's crontab | ✅ |
 | **Security** — UFW status, enable/disable, add/delete rules, plus a **Fail2Ban** tab showing every jail's counters, the live banned-IP list with one-click unban, manual ban, and recent ban activity, and a **ModSecurity** tab (OWASP Core Rule Set WAF for nginx: blocking / detection-only / off, with nginx-validated switching and recent findings) | ✅ sudo/helper |
 | **Logs** — journalctl per-unit + `/var/log` file tails | ✅ |
-| **Websites** — immutable IDs, confined roots, per-site Unix/FPM identity, usage, TLS, and credential-free HTTPS Git deploy; deletion archives to root-owned trash | ✅ helper |
+| **Websites** — immutable IDs, confined roots, per-site Unix/FPM identity, usage, TLS, and credential-free HTTPS Git deploy; deletion archives to root-owned trash. Each site has its own page with Overview, Domain & DNS, SSL, PHP, Databases, Files and Backups tabs | ✅ helper |
 | **Domains + DNS** — authoritative BIND zones and record CRUD for panel-managed domains | ✅ helper |
 | **SSL** — list / issue / renew / delete certbot certificates + validated custom PEM upload | ✅ helper |
 | **PHP** — per-version ini settings (memory_limit, upload size…) + modules | ✅ helper |
@@ -82,13 +85,13 @@ the URL (runtime state is migrated), or use a fixed name. Options (env vars):
 | **phpMyAdmin** — one-click install + password-free, short-lived signed per-database signon | ✅ helper |
 | **Email** — one-click Postfix + Dovecot + OpenDKIM mail server, virtual mailboxes & aliases, per-domain **DKIM** keys, copy-ready **MX / SPF / DKIM / DMARC** records (auto-publish to panel DNS zones), a **statistics dashboard** (sent/received/bounced/rejected, per-day chart, top senders & recipients, mailbox storage) and one-click **Roundcube** webmail | ✅ helper |
 | **Docker** — create/control containers with their published ports, view container logs, pull/remove/prune images, manage volumes and networks, **Compose stacks (editable docker-compose.yml, deploy/pull/restart/logs, one-click Compose install when the CLI plugin is missing)** and a one-click **App Store** of popular self-hosted apps with official brand logos | ✅ sudo |
-| **File Manager** — expandable tree previews, browse/pinned/recent, recoverable trash (restore, delete permanently, empty), archives, popup multi-tab editor, ownership, permissions and drag-drop upload | ✅ helper |
+| **File Manager** — expandable tree previews, browse/pinned/recent, recoverable trash (restore, delete permanently, empty), create **and extract** archives (.zip, .tar, .tar.gz, .tar.bz2, .tar.xz — upload a zip and unpack it into `public/`), popup multi-tab editor, ownership, permissions and drag-drop upload | ✅ helper |
 | **Diagnostics** — environment + per-privilege sudo checks with fix hints | ✅ |
-| **Backups** — create / verify / list / download / delete `.tar.gz` | ✅ |
+| **Backups** — website files plus a `mysqldump` of every linked database, **restore** (into the original site or a re-created one, with an automatic safety copy first), nightly or weekly **schedule** with keep-the-last-N retention, verify / download / delete | ✅ helper |
 | **Terminal** — audited non-interactive command runner | ✅ |
 | **System Info** — OS, kernel, CPU, RAM, disk, network | ✅ |
 | **Panel updates** — self-update from GitHub (check + apply), as the *Nebula Panel* tab of **Updates** | ✅ |
-| **Settings** — panel name, session timeout, health thresholds · **My account** — every role changes its own password · audit log under **Security** | ✅ |
+| **Settings** — panel name, session timeout, health thresholds, alerts · **My account** — password, two-factor sign-in and active sessions for every role · searchable, filterable **audit log** with CSV/JSON export under **Security** | ✅ |
 | **Notifications** — live operational inbox, top-bar dropdown, mark-read and delete state | ✅ |
 | **Bearer API** — named, role-bound, scoped, expiring, optionally IP-bound tokens under `api/v1` | ✅ |
 
@@ -238,9 +241,46 @@ Nginx, account, or sudoers configuration changes.
 4. You're in. Credentials and RBAC state are hashed into `data/panel-users.json`.
 
 For local account recovery, run `sudo nebula-recovery reset-admin`. It updates
-the administrator with Argon2id and revokes existing sessions without exposing
+the administrator with Argon2id, turns off their two-factor sign-in (for a lost
+phone) and revokes existing sessions without exposing
 setup publicly. `sudo nebula-recovery issue-bootstrap` rotates the one-hour
 single-use setup token when initialization has not yet completed.
+
+## Background scheduler, backups and alerts
+
+The installer adds a systemd timer, `nebula-panel-scheduler.timer`, that runs
+`bin/scheduler.php` every five minutes as the panel user. Each run:
+
+- records a CPU / memory / disk / load sample for the dashboard's history
+  charts (kept for 8 days);
+- runs the **backup schedule** when its slot has passed (Backups → Schedule:
+  nightly or weekly at a chosen hour, all or selected websites, with or
+  without databases) and then deletes scheduled archives beyond *keep the
+  last N* per website — manual and pre-restore safety copies are never pruned;
+- evaluates the dashboard health checks and sends **alerts** (Settings →
+  Alerts) when something changes: a new problem, a warning that becomes
+  critical, a reminder while it persists, and a recovery message.
+
+Check it with `systemctl list-timers nebula-panel-scheduler.timer` and run it
+once by hand with `sudo -u nebula-panel php <panel-dir>/bin/scheduler.php`.
+If the timer stops, the dashboard shows “Background scheduler stopped” with the
+command that re-enables it.
+
+**Database dumps.** A backup includes every database linked to the website on
+the Databases page, dumped with `mysqldump --single-transaction` into
+`databases/<name>.sql` inside the archive. **Restore** verifies the archive's
+checksum, takes a safety backup of the current site (unless you opt out),
+replaces `public/` as the site's own Unix user, and drops and re-imports each
+selected database. To recover a deleted website, re-create it with the same
+domain and restore the archive into it.
+
+**Alert email** is sent through the server's local mail system (`sendmail`,
+which the Email page installs); without one, use a webhook. ntfy topics take a
+plain topic URL such as `https://ntfy.sh/my-server-alerts`.
+
+**Two-factor sign-in** is per account under My account. An administrator can
+reset another user's 2FA from Users; `sudo nebula-recovery reset-admin` clears
+it for a locked-out administrator.
 
 ## Email
 
@@ -345,8 +385,7 @@ dedicated `nebula-panel` process. Notes:
 ## Still to build (natural next steps)
 
 - **Websites** — staged releases, rollback, wildcard certificates, Apache mode
-- **Recovery** — complete encrypted off-host restore workflow and tested drills
-- **Authentication** — passkeys/TOTP, recovery codes, and step-up checks
+- **Recovery** — encrypted off-host backup destinations (S3/SFTP) and tested drills
+- **Authentication** — passkeys and step-up checks
 - **Live PTY terminal** — real interactive shell (needs a WebSocket sidecar)
-- **Two-factor authentication** for panel users
 ```

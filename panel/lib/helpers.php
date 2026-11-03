@@ -124,6 +124,40 @@ function stream_json_event(array $event): void
     flush();
 }
 
+/** Did the client ask for an NDJSON progress stream (?stream=1)? */
+function stream_requested(): bool
+{
+    return ($_GET['stream'] ?? '') === '1';
+}
+
+/**
+ * Start a progress stream when one was requested and return the output
+ * callback that long actions forward command output to; null otherwise.
+ */
+function stream_output_callback(): ?callable
+{
+    static $callback = null;
+    if (!stream_requested() || PHP_SAPI === 'cli') { return null; }
+    if ($callback === null) {
+        stream_json_start();
+        stream_json_event(['type' => 'start']);
+        $callback = static function (string $text, string $channel = 'stdout'): void {
+            stream_json_event(['type' => 'output', 'channel' => $channel, 'text' => $text]);
+        };
+    }
+    return $callback;
+}
+
+/** Finish an action endpoint: a stream "result" event, or a JSON response. */
+function action_out(array $res): void
+{
+    if (stream_requested() && headers_sent()) {
+        stream_json_event(['type' => 'result', 'result' => $res]);
+        exit;
+    }
+    json_out($res, !empty($res['ok']) ? 200 : 400);
+}
+
 /** Safely replace a JSON file in-place, never exposing a partial write. */
 function write_json_file(string $path, array $data, int $mode = 0600): bool
 {
@@ -257,7 +291,7 @@ function requirement_missing(string $icon, string $title, string $bodyHtml, arra
 function helper_missing_state(string $feature, bool $inCard = true): string
 {
     return requirement_missing('shield-alert', 'Privileged helper not installed',
-        'The <span class="mono">nebula-helper</span> is required for ' . e($feature) . '. Re-run <span class="mono">install.sh</span> from a reviewed commit to install it.',
+        'The <span class="mono">nebula-helper</span> is required for ' . e($feature) . '. The banner at the top of this page explains what is wrong and gives the exact command that fixes it.',
         [], $inCard);
 }
 
@@ -362,6 +396,13 @@ function cache_remember(string $key, int $ttl, callable $producer)
         @flock($lock, LOCK_UN);
         fclose($lock);
     }
+}
+
+/** Drop a cache_remember() entry so the next read recomputes it. */
+function cache_forget(string $key): void
+{
+    $safe = preg_replace('/[^a-z0-9_-]/i', '-', $key) ?: 'cache';
+    @unlink(DATA_DIR . '/cache/' . $safe . '.json');
 }
 
 /** Parse a php.ini size value such as "50M" into bytes (0 when unset). */

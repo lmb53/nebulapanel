@@ -11,7 +11,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if ($action === 'issue') {
         $res = ssl_issue(
             (string) ($body['domain'] ?? ''),
-            (string) ($body['email'] ?? '')
+            (string) ($body['email'] ?? ''),
+            stream_output_callback()
         );
     } elseif ($action === 'upload') {
         $res = ssl_upload(
@@ -21,14 +22,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             (string) ($body['chain'] ?? '')
         );
     } elseif ($action === 'renew') {
-        $res = ssl_renew((string) ($body['name'] ?? ''));
+        $res = ssl_renew((string) ($body['name'] ?? ''), stream_output_callback());
     } elseif ($action === 'delete') {
         $res = ssl_delete((string) ($body['name'] ?? ''));
     } else {
         $res = ['ok' => false, 'error' => 'Unknown action.'];
     }
 
-    json_out($res, !empty($res['ok']) ? 200 : 400);
+    action_out($res);
 }
 
 $available = ssl_available();

@@ -69,6 +69,7 @@ function panel_user_public(array $user): array
         'id' => (int) ($user['id'] ?? 0), 'username' => (string) ($user['username'] ?? ''),
         'role' => (string) ($user['role'] ?? 'auditor'), 'enabled' => !isset($user['enabled']) || (bool) $user['enabled'],
         'created' => (string) ($user['created'] ?? ''), 'last_login' => (string) ($user['last_login'] ?? ''),
+        'mfa' => !empty($user['mfa']['secret']) && !empty($user['mfa']['enabled_at']),
     ];
 }
 
@@ -202,7 +203,7 @@ function role_route_allowed(string $route, ?string $role = null): bool
 
 function api_route_owner(string $name): string
 {
-    $map = ['metrics'=>'dashboard','health'=>'dashboard','processes'=>'dashboard','file-upload'=>'files','file-state'=>'files','file-save'=>'files','file-rename'=>'files','file-op'=>'files','file-mkfile'=>'files','file-mkdir'=>'files','file-chmod'=>'files','file-compress'=>'files','file-delete'=>'files','file-trash'=>'files','file-tree'=>'files','sites'=>'websites','git'=>'websites','compose'=>'docker','fail2ban'=>'firewall','modsecurity'=>'firewall','provision'=>'apps','pma'=>'phpmyadmin','selfupdate'=>'selfupdate'];
+    $map = ['metrics'=>'dashboard','metrics-history'=>'dashboard','health'=>'dashboard','processes'=>'dashboard','file-upload'=>'files','file-state'=>'files','file-save'=>'files','file-rename'=>'files','file-op'=>'files','file-mkfile'=>'files','file-mkdir'=>'files','file-chmod'=>'files','file-compress'=>'files','file-extract'=>'files','file-delete'=>'files','file-trash'=>'files','file-tree'=>'files','sites'=>'websites','git'=>'websites','compose'=>'docker','fail2ban'=>'firewall','audit'=>'firewall','modsecurity'=>'firewall','provision'=>'apps','pma'=>'phpmyadmin','selfupdate'=>'selfupdate'];
     return $map[$name] ?? $name;
 }
 
@@ -398,8 +399,11 @@ function record_login_attempt(bool $success, ?string $ip = null, string $usernam
     @chmod($path, 0600);
 }
 
-/** Attempt a login. Returns true on success. */
-function attempt_login(string $username, string $password): bool
+/**
+ * Attempt a password login. Returns true when signed in, 'mfa' when the
+ * account still has to pass the two-factor step, false on failure.
+ */
+function attempt_login(string $username, string $password): bool|string
 {
     if (!is_setup_complete()) {
         return false;
@@ -438,18 +442,42 @@ function attempt_login(string $username, string $password): bool
     });
     if (empty($loginUpdate['ok'])) { return false; }
     $matched = $loginUpdate['user'];
+    record_login_attempt(true, null, $username);
+    require_once APP_ROOT . '/lib/mod_mfa.php';
+    if (mfa_user_enabled($matched)) {
+        // The password was right; the session is not signed in until the
+        // second factor is verified on the login-2fa step.
+        session_regenerate_id(true);
+        $_SESSION = [];
+        $_SESSION['mfa_pending'] = [
+            'uid' => (int) ($matched['id'] ?? 0),
+            'version' => max(1, (int) ($matched['session_version'] ?? 1)),
+            'at' => time(),
+            'tries' => 0,
+        ];
+        audit('login', 'password accepted, awaiting two-factor code for ' . ($matched['username'] ?? '?'));
+        return 'mfa';
+    }
+    login_establish($matched);
+    audit('login', 'success');
+    return true;
+}
+
+/** Turn the current session into a signed-in session for $user. */
+function login_establish(array $user, bool $mfaVerified = false): void
+{
     session_regenerate_id(true);
-    unset($_SESSION['csrf']);
-    $_SESSION['uid'] = (int) ($matched['id'] ?? 1);
-    $_SESSION['username'] = (string) ($matched['username'] ?? $username);
-    $_SESSION['role'] = (string) ($matched['role'] ?? 'admin');
-    $_SESSION['session_version'] = max(1, (int) ($matched['session_version'] ?? 1));
+    $_SESSION = [];
+    $_SESSION['uid'] = (int) ($user['id'] ?? 1);
+    $_SESSION['username'] = (string) ($user['username'] ?? '');
+    $_SESSION['role'] = (string) ($user['role'] ?? 'auditor');
+    $_SESSION['session_version'] = max(1, (int) ($user['session_version'] ?? 1));
     $_SESSION['last_seen'] = time();
     $_SESSION['created_at'] = time();
     $_SESSION['rotated_at'] = time();
-    record_login_attempt(true, null, $username);
-    audit('login', 'success');
-    return true;
+    $_SESSION['mfa_verified'] = $mfaVerified;
+    require_once APP_ROOT . '/lib/mod_sessions.php';
+    session_registry_register();
 }
 
 /**
@@ -492,6 +520,9 @@ function logout_user(): void
 {
     if (!empty($_SESSION['username'])) {
         audit('logout');
+    }
+    if (!empty($_SESSION['sid_token']) && function_exists('session_registry_forget')) {
+        session_registry_forget((string) $_SESSION['sid_token']);
     }
     $_SESSION = [];
     if (ini_get('session.use_cookies')) {

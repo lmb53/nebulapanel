@@ -157,6 +157,129 @@ $check((string) @file_get_contents($fmRoot . '/site/.env') === 'new', 'the exist
 $res = $a->api('file-mkdir', ['dir' => 'site', 'name' => 'bad*name']);
 $check(($res['ok'] ?? true) === false && str_contains((string) ($res['error'] ?? ''), 'letters, numbers'), 'an invalid name explains the allowed characters');
 
+// 5. Active sessions: list them, end one remotely, end all others.
+$c = $browser();
+$d = $browser();
+$check($c->login('flow-admin', $newPassword) && $d->login('flow-admin', $newPassword), 'two more browsers sign in');
+$sessions = $a->api('account')['sessions'] ?? [];
+$current = array_values(array_filter($sessions, fn($s) => !empty($s['current'])));
+$others = array_values(array_filter($sessions, fn($s) => empty($s['current'])));
+$check(count($current) === 1 && count($others) === 2, 'the account page lists this session and the two others');
+$res = $a->api('account', ['action' => 'revoke-session', 'id' => $others[0]['id'] ?? '']);
+$check(($res['ok'] ?? false) === true && count($res['sessions'] ?? []) === 2, 'one other session can be signed out');
+$statuses = [$c->api('metrics')['status'] ?? 0, $d->api('metrics')['status'] ?? 0];
+sort($statuses);
+$check($statuses === [200, 401], 'exactly the revoked browser is signed out on its next request');
+$res = $a->api('account', ['action' => 'revoke-other-sessions']);
+$check(($res['ok'] ?? false) === true && ($res['ended'] ?? 0) === 1, 'sign out other sessions ends the remaining one');
+$check(($c->api('metrics')['status'] ?? 0) === 401 && ($d->api('metrics')['status'] ?? 0) === 401, 'no other session survives');
+$check(($a->api('metrics')['ok'] ?? false) === true, 'the current session is never signed out by its own revoke');
+
+// 6. Two-factor sign-in.
+require_once $app . '/lib/mod_mfa.php';
+$setup = $a->api('account', ['action' => 'mfa-setup']);
+$secret = str_replace(' ', '', (string) ($setup['secret'] ?? ''));
+$check(($setup['ok'] ?? false) === true && strlen($secret) === 32 && str_contains((string) ($setup['qr_svg'] ?? ''), '<svg'), 'setup returns a secret and a QR code');
+$res = $a->api('account', ['action' => 'mfa-confirm', 'code' => '000000']);
+$check(($res['ok'] ?? true) === false, 'a wrong confirmation code is rejected');
+$step = intdiv(time(), MFA_PERIOD);
+$res = $a->api('account', ['action' => 'mfa-confirm', 'code' => mfa_code($secret, $step)]);
+$recovery = $res['recovery_codes'] ?? [];
+$check(($res['ok'] ?? false) === true && count($recovery) === 10, 'confirming turns 2FA on and returns ten recovery codes');
+$check(($a->api('account')['mfa']['enabled'] ?? false) === true, 'the account reports 2FA as on');
+
+$mfaLogin = static function ($b, string $code) use ($newPassword): array {
+    [, $html] = $b->request('GET', 'login');
+    preg_match('/name="_csrf" value="([^"]+)"/', $html, $m);
+    [$status] = $b->request('POST', 'login', http_build_query(['_csrf' => $m[1] ?? '', 'username' => 'flow-admin', 'password' => $newPassword]), ['Content-Type: application/x-www-form-urlencoded']);
+    $pendingStatus = $b->api('metrics')['status'] ?? 0;
+    [, $html] = $b->request('GET', 'login-2fa');
+    preg_match('/name="_csrf" value="([^"]+)"/', $html, $m);
+    [$final] = $b->request('POST', 'login-2fa', http_build_query(['_csrf' => $m[1] ?? '', 'code' => $code]), ['Content-Type: application/x-www-form-urlencoded']);
+    return [$status, $pendingStatus, $final, $b->api('metrics')['status'] ?? 0];
+};
+$e = $browser();
+[$status, $pending, $final, $after] = $mfaLogin($e, '123456');
+$check($status === 302 && $pending === 401, 'a correct password alone does not sign in when 2FA is on');
+$check($final === 200 && $after === 401, 'a wrong code keeps the session signed out');
+$f = $browser();
+[, , $final, $after] = $mfaLogin($f, mfa_code($secret, $step + 1));
+$check($final === 302 && $after === 200, 'the next authenticator code completes sign-in');
+$g = $browser();
+[, , $final, $after] = $mfaLogin($g, mfa_code($secret, $step + 1));
+$check($after === 401, 'an authenticator code cannot be replayed');
+$h = $browser();
+[, , $final, $after] = $mfaLogin($h, strtoupper($recovery[0]));
+$check($final === 302 && $after === 200, 'a recovery code signs in');
+$i = $browser();
+[, , , $after] = $mfaLogin($i, $recovery[0]);
+$check($after === 401, 'a recovery code works only once');
+$check(($a->api('account')['mfa']['recovery_left'] ?? 0) === 9, 'the used recovery code is removed');
+$res = $a->api('account', ['action' => 'mfa-disable', 'password' => 'wrong password value', 'code' => $recovery[1]]);
+$check(($res['ok'] ?? true) === false, 'turning 2FA off requires the password');
+$res = $a->api('account', ['action' => 'mfa-disable', 'password' => $newPassword, 'code' => $recovery[1]]);
+$check(($res['ok'] ?? false) === true && ($a->api('account')['mfa']['enabled'] ?? true) === false, 'password plus a code turns 2FA off');
+
+// 7. Audit log search and export.
+$res = $a->api('audit&action=login&limit=5');
+$check(($res['ok'] ?? false) === true && ($res['total'] ?? 0) >= 3 && count($res['events'] ?? []) <= 5, 'the audit log filters by action group');
+$check(!array_filter($res['events'] ?? [], fn($ev) => !str_starts_with((string) ($ev['action'] ?? ''), 'login')), 'filtered events all match the action');
+$res = $a->api('audit&q=recovery_regenerated_does_not_exist');
+$check(($res['total'] ?? -1) === 0, 'a text search with no match returns nothing');
+$check(in_array('flow-admin', $res['actors'] ?? [], true) && in_array('mfa', $res['actions'] ?? [], true), 'the audit log offers actors and action groups as filters');
+[$status, $csv] = $a->request('GET', 'api/audit&format=csv&action=mfa');
+$check($status === 200 && str_starts_with($csv, 'time,actor,role,action') && str_contains($csv, 'mfa.enable'), 'the filtered audit log exports as CSV');
+
+// 8. Backup schedule validation and next-run calculation.
+$res = $a->api('backups', ['action' => 'schedule', 'enabled' => true, 'frequency' => 'daily', 'hour' => 25, 'keep' => 7]);
+$check(($res['ok'] ?? true) === false, 'an invalid backup hour is rejected');
+$res = $a->api('backups', ['action' => 'schedule', 'enabled' => true, 'frequency' => 'weekly', 'hour' => 3, 'weekday' => 1, 'keep' => 4, 'include_databases' => true, 'sites' => []]);
+$next = (int) ($res['next_run'] ?? 0);
+$check(($res['ok'] ?? false) === true && $next > time() && (int) date('w', $next) === 1 && (int) date('G', $next) === 3, 'a weekly schedule runs next on the chosen day and hour');
+$list = $a->api('backups');
+$check(($list['schedule']['keep'] ?? 0) === 4 && ($list['schedule']['enabled'] ?? false) === true, 'the schedule is saved');
+
+// 9. Resource history is recorded by the metrics poll and served by range.
+$res = $a->api('metrics-history&range=24h');
+$check(($res['ok'] ?? false) === true && ($res['samples'] ?? 0) >= 1 && is_array($res['points'] ?? null), 'resource history has samples after a metrics poll');
+$res = $a->api('metrics-history&range=bogus');
+$check(($res['range'] ?? '') === '24h', 'an unknown history range falls back to 24 hours');
+
+// 10. Alerts: validation and delivery to a generic JSON webhook.
+$res = $a->api('settings', ['action' => 'alerts', 'enabled' => true, 'emails' => '', 'webhooks' => []]);
+$check(($res['ok'] ?? true) === false, 'alerts cannot be turned on without a channel');
+$res = $a->api('settings', ['action' => 'alerts', 'enabled' => true, 'emails' => 'not-an-email', 'webhooks' => []]);
+$check(($res['ok'] ?? true) === false, 'an invalid alert email is rejected');
+$res = $a->api('settings', ['action' => 'alerts', 'enabled' => true, 'emails' => '', 'webhooks' => [['type' => 'generic', 'url' => 'file:///etc/passwd']]]);
+$check(($res['ok'] ?? true) === false, 'non-HTTP webhook URLs are rejected');
+$hookDir = $root . '/hook';
+mkdir($hookDir, 0700, true);
+file_put_contents($hookDir . '/index.php', '<?php file_put_contents(__DIR__ . "/received.json", file_get_contents("php://input")); http_response_code(204);');
+$probe = stream_socket_server('tcp://127.0.0.1:0');
+$hookPort = (int) substr(strrchr(stream_socket_get_name($probe, false), ':'), 1);
+fclose($probe);
+$hookServer = proc_open([PHP_BINARY, '-S', '127.0.0.1:' . $hookPort, '-t', $hookDir], [0 => ['pipe', 'r'], 1 => ['file', '/dev/null', 'w'], 2 => ['file', '/dev/null', 'w']], $hookPipes, $hookDir);
+for ($n = 0; $n < 50 && !@fsockopen('127.0.0.1', $hookPort); $n++) { usleep(100000); }
+$res = $a->api('settings', ['action' => 'alerts', 'enabled' => true, 'emails' => '', 'webhooks' => [['type' => 'generic', 'url' => 'http://127.0.0.1:' . $hookPort . '/']],
+    'events' => ['resources' => true, 'services' => true, 'backups' => true, 'ssl' => true, 'panel' => true, 'updates' => false], 'remind_hours' => 24, 'notify_resolved' => true]);
+$check(($res['ok'] ?? false) === true, 'alert settings with a webhook are saved');
+$res = $a->api('settings', ['action' => 'alerts-test']);
+$payload = json_decode((string) @file_get_contents($hookDir . '/received.json'), true);
+$check(($res['ok'] ?? false) === true && str_contains((string) ($payload['subject'] ?? ''), 'Test alert'), 'a test alert reaches the webhook as JSON');
+proc_terminate($hookServer);
+proc_close($hookServer);
+
+// 11. New pages render; a missing site is explained instead of erroring.
+[$status, $html] = $a->request('GET', 'site&id=' . str_repeat('a', 32));
+$check($status === 200 && str_contains($html, 'Website not found'), 'an unknown website shows a not-found state');
+[$status, $html] = $a->request('GET', 'account');
+$check($status === 200 && str_contains($html, 'Two-factor sign-in') && str_contains($html, 'Where you’re signed in'), 'the account page shows 2FA and sessions');
+[$status, $html] = $a->request('GET', 'backups');
+$check($status === 200 && str_contains($html, 'Schedule') && str_contains($html, 'Keep the last'), 'the backups page shows the schedule');
+[$status, $html] = $a->request('GET', 'dashboard');
+$check($status === 200 && str_contains($html, 'data-range="7d"'), 'the dashboard offers 7-day history');
+$check(str_contains($html, 'helper-banner') && str_contains($html, '/usr/local/bin/nebula-helper'), 'a missing helper is explained once, with the fix command');
+
 if ($failures) {
     fwrite(STDERR, "$failures HTTP flow regression(s) failed.\n");
     exit(1);

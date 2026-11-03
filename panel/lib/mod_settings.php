@@ -102,3 +102,93 @@ function audit_tail(int $lines = 100): string
     // The audit log can be tens of megabytes; read only its tail.
     return file_tail($f, $lines);
 }
+
+/**
+ * Search the audit log (current file plus its rotated generation).
+ * Filters: q (free text), actor, action (exact, or a prefix such as
+ * "backup" for every backup.* event), ip, from / to (YYYY-MM-DD, inclusive).
+ * Returns the newest matches first, plus the distinct actors and action
+ * groups seen so the UI can offer them as choices.
+ */
+function audit_search(array $filters, int $limit = 100, int $offset = 0): array
+{
+    $limit = max(1, min(50000, $limit));
+    $offset = max(0, $offset);
+    $q = strtolower(trim((string) ($filters['q'] ?? '')));
+    $actor = trim((string) ($filters['actor'] ?? ''));
+    $action = trim((string) ($filters['action'] ?? ''));
+    $ip = trim((string) ($filters['ip'] ?? ''));
+    $from = preg_match('/^\d{4}-\d{2}-\d{2}$/', (string) ($filters['from'] ?? '')) ? strtotime($filters['from'] . ' 00:00:00') : null;
+    $to = preg_match('/^\d{4}-\d{2}-\d{2}$/', (string) ($filters['to'] ?? '')) ? strtotime($filters['to'] . ' 23:59:59') : null;
+    $keep = $offset + $limit;
+    $ring = [];
+    $total = 0;
+    $actors = [];
+    $actions = [];
+    $scanned = 0;
+    foreach ([DATA_DIR . '/audit.log.1', DATA_DIR . '/audit.log'] as $file) {
+        $handle = @fopen($file, 'rb');
+        if ($handle === false) { continue; }
+        while (($line = fgets($handle)) !== false) {
+            $line = rtrim($line, "\r\n");
+            if ($line === '') { continue; }
+            $scanned++;
+            $event = json_decode($line, true);
+            if (!is_array($event)) { $event = ['detail' => $line]; }
+            $eventActor = (string) ($event['actor'] ?? '');
+            $eventAction = (string) ($event['action'] ?? '');
+            if ($eventActor !== '' && count($actors) < 200) { $actors[$eventActor] = true; }
+            $group = explode('.', $eventAction, 2)[0];
+            if ($group !== '' && count($actions) < 200) { $actions[$group] = true; }
+            if ($actor !== '' && $eventActor !== $actor) { continue; }
+            if ($action !== '' && $eventAction !== $action && !str_starts_with($eventAction, $action . '.')) { continue; }
+            if ($ip !== '' && (string) ($event['ip'] ?? '') !== $ip) { continue; }
+            if ($from !== null || $to !== null) {
+                $time = strtotime((string) ($event['time'] ?? ''));
+                if ($time === false || ($from !== null && $time < $from) || ($to !== null && $time > $to)) { continue; }
+            }
+            if ($q !== '' && !str_contains(strtolower($line), $q)) { continue; }
+            $total++;
+            $ring[] = $event;
+            if (count($ring) > $keep) { array_shift($ring); }
+        }
+        fclose($handle);
+    }
+    $events = array_slice(array_reverse($ring), $offset, $limit);
+    ksort($actors);
+    ksort($actions);
+    return [
+        'ok' => true, 'events' => $events, 'total' => $total, 'scanned' => $scanned,
+        'offset' => $offset, 'limit' => $limit, 'more' => $offset + count($events) < $total,
+        'actors' => array_keys($actors), 'actions' => array_keys($actions),
+    ];
+}
+
+/** Stream audit search results as a CSV or JSON download. */
+function audit_export(array $filters, string $format): void
+{
+    $result = audit_search($filters, 50000, 0);
+    $name = 'nebula-audit-' . date('Ymd-His') . ($format === 'csv' ? '.csv' : '.json');
+    audit('audit.export', $format . ', ' . count($result['events']) . ' events');
+    header('Content-Type: ' . ($format === 'csv' ? 'text/csv; charset=UTF-8' : 'application/json; charset=UTF-8'));
+    header('Content-Disposition: ' . attachment_header($name));
+    header('Cache-Control: no-store');
+    if ($format !== 'csv') {
+        echo json_encode($result['events'], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
+        exit;
+    }
+    $out = fopen('php://output', 'wb');
+    fputcsv($out, ['time', 'actor', 'role', 'action', 'detail', 'ip', 'auth_id', 'request_id'], ',', '"', '');
+    foreach ($result['events'] as $event) {
+        $row = [];
+        foreach (['time', 'actor', 'role', 'action', 'detail', 'ip', 'auth_id', 'request_id'] as $key) {
+            $value = (string) ($event[$key] ?? '');
+            // Neutralise spreadsheet formula injection.
+            if ($value !== '' && strpbrk($value[0], '=+-@') !== false) { $value = "'" . $value; }
+            $row[] = $value;
+        }
+        fputcsv($out, $row, ',', '"', '');
+    }
+    fclose($out);
+    exit;
+}

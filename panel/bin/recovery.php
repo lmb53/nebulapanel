@@ -60,6 +60,8 @@ try {
     $record = $index === null ? ['id'=>1,'created'=>date('c')] : $users[$index];
     $record['username']=$username;$record['hash']=$hash;$record['role']='admin';$record['enabled']=true;
     $record['session_version']=max(1,(int)($record['session_version']??1))+1;$record['updated']=date('c');
+    // A reset is how an administrator locked out of their authenticator gets back in.
+    unset($record['mfa'], $record['mfa_pending']);
     if ($index === null) $users[]=$record; else $users[$index]=$record;
     $atomic($path,['version'=>1,'users'=>array_values($users)]);
     $atomic($data.'/admin.json',['username'=>$username,'hash'=>$hash,'updated'=>date('c')]);

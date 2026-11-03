@@ -104,7 +104,7 @@ $apacheStatus = service_status('apache2');
             <div style="width:36px;height:36px;border-radius:8px;background:color-mix(in srgb,var(--accent) 12%,transparent);display:flex;align-items:center;justify-content:center;flex-shrink:0"><i data-lucide="globe" style="width:17px;height:17px;color:var(--blue-400)"></i></div>
             <div style="flex:1;min-width:0">
               <div style="font-weight:700;font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
-                <a href="<?= e($url) ?>" target="_blank" rel="noopener"><?= e($domain) ?></a>
+                <?php if (preg_match('/^[a-f0-9]{32}$/', (string) ($s['id'] ?? ''))): ?><a href="<?= e(url('site', ['id' => $s['id']])) ?>" title="Manage <?= e($domain) ?>"><?= e($domain) ?></a><?php else: ?><a href="<?= e($url) ?>" target="_blank" rel="noopener"><?= e($domain) ?></a><?php endif; ?>
               </div>
             </div>
           </div>
@@ -139,6 +139,7 @@ $apacheStatus = service_status('apache2');
               <button class="icon-btn" type="button" data-ws-ssl="<?= e($domain) ?>" title="Issue SSL certificate" aria-label="Issue SSL certificate for <?= e($domain) ?>"><i data-lucide="shield-plus"></i></button>
             <?php endif; ?>
             <div class="topbar-spacer" style="flex:1"></div>
+            <?php if (preg_match('/^[a-f0-9]{32}$/', (string) ($s['id'] ?? ''))): ?><a class="btn btn-secondary btn-sm" href="<?= e(url('site', ['id' => $s['id']])) ?>"><i data-lucide="settings-2"></i>Manage</a><?php endif; ?>
             <button class="icon-btn danger" type="button" data-ws-del="<?= e($domain) ?>" title="Delete website" aria-label="Delete <?= e($domain) ?>"><i data-lucide="trash-2"></i></button>
           </div>
         </div>
@@ -196,19 +197,8 @@ $apacheStatus = service_status('apache2');
         const domain = btn.getAttribute('data-ws-ssl');
         if (!await window.Nebula.confirm({ title: 'Issue a certificate for ' + domain + '?', message: 'Let’s Encrypt must be able to reach this domain over HTTP.', icon: 'shield-check', confirmLabel: 'Issue certificate' })) return;
         const email = document.getElementById('wsEmail').value.trim();
-        const original = btn.innerHTML;
-        btn.disabled = true;
-        btn.classList.add('btn-loading');
-        btn.innerHTML = '<i data-lucide="loader-circle"></i>';
-        if (window.lucide) lucide.createIcons();
-        toast('Requesting certificate for ' + domain + '…', 'info');
-        const res = await streamPost('sites', { action: 'ssl', domain, email });
-        btn.classList.remove('btn-loading');
-        btn.disabled = false;
-        btn.innerHTML = original;
-        if (window.lucide) lucide.createIcons();
+        const res = await window.Nebula.runTask({ title: 'Issuing certificate for ' + domain, endpoint: 'sites', body: { action: 'ssl', domain, email }, initialStep: 'Requesting a certificate from Let’s Encrypt', successMessage: 'Certificate issued' });
         if (res.ok) { toast('SSL issued', 'success'); setTimeout(() => location.reload(), 500); }
-        else toast(res.error || 'Failed', 'error');
       });
     });
 

@@ -457,6 +457,58 @@ function fm_compress(array $paths, string $destDir, string $name): array
     return ['ok' => true, 'path' => fm_rel($target)];
 }
 
+/** Archive types the File Manager can unpack. */
+const FM_EXTRACT_PATTERN = '/\.(zip|tar|tar\.gz|tgz|tar\.bz2|tbz2|tar\.xz|txz)$/i';
+
+function fm_is_extractable(string $name): bool
+{
+    return (bool) preg_match(FM_EXTRACT_PATTERN, $name);
+}
+
+/** The folder name suggested for an archive: "site-v2.tar.gz" -> "site-v2". */
+function fm_archive_stem(string $name): string
+{
+    $stem = (string) preg_replace(FM_EXTRACT_PATTERN, '', $name);
+    return $stem !== '' && $stem !== $name ? $stem : $name . '-extracted';
+}
+
+/**
+ * Unpack an archive. $newFolder names a new folder inside $destDir to
+ * extract into; '' extracts into $destDir itself (refusing to overwrite).
+ */
+function fm_extract(string $rel, string $destDir, string $newFolder = '', ?callable $onOutput = null): array
+{
+    $abs = fm_resolve($rel);
+    if ($abs === null || !is_file($abs) || is_link($abs) || fm_path_protected($abs)) {
+        return ['ok' => false, 'error' => 'Archive not found or not allowed.'];
+    }
+    if (!fm_is_extractable(basename($abs))) {
+        return ['ok' => false, 'error' => 'Only .zip, .tar, .tar.gz, .tgz, .tar.bz2 and .tar.xz archives can be extracted.'];
+    }
+    $dest = fm_resolve($destDir);
+    if ($dest === null || !is_dir($dest)) {
+        return ['ok' => false, 'error' => 'Destination folder is not allowed.'];
+    }
+    $newFolder = trim($newFolder);
+    if ($newFolder !== '') {
+        if (!fm_valid_name($newFolder)) { return ['ok' => false, 'error' => 'Invalid folder name. ' . FM_NAME_RULES]; }
+        if (file_exists($dest . '/' . $newFolder) || is_link($dest . '/' . $newFolder)) {
+            return ['ok' => false, 'error' => 'A file or folder with that name already exists.'];
+        }
+    }
+    if (!helper_available()) {
+        return ['ok' => false, 'error' => 'Extracting archives needs the privileged helper. The banner at the top of the page gives the command that installs it.'];
+    }
+    $args = 'file-extract ' . escapeshellarg($abs) . ' ' . escapeshellarg($dest) . ' ' . escapeshellarg($newFolder !== '' ? $newFolder : '.');
+    [$code, $out] = $onOutput ? helper_cmd_stream($args, $onOutput, 1800) : helper_cmd($args, 1800);
+    audit('file.extract', fm_rel($abs) . ' -> ' . fm_rel($dest) . ($newFolder !== '' ? '/' . $newFolder : '') . ' (exit ' . $code . ')');
+    if ($code !== 0) {
+        return ['ok' => false, 'error' => trim((string) preg_replace('/^==> .*$/m', '', (string) $out)) ?: 'Extraction failed.'];
+    }
+    $target = $newFolder !== '' ? $dest . '/' . $newFolder : $dest;
+    return ['ok' => true, 'path' => fm_rel($target), 'message' => trim((string) preg_replace('/^==> .*$/m', '', (string) $out))];
+}
+
 /** Shown whenever fm_valid_name() rejects a name. */
 const FM_NAME_RULES = 'Names may use letters, numbers, spaces and . _ - ( ) + , @ = ~ (no leading or trailing spaces, at most 255 characters).';
 

@@ -1,5 +1,5 @@
 <?php
-/** POST api/settings — {action: general|password, ...}. */
+/** POST api/settings — {action: general|alerts|alerts-test|password, ...}. */
 require APP_ROOT . '/lib/mod_settings.php';
 require_post();
 csrf_check();
@@ -14,6 +14,12 @@ if ($action === 'general') {
         $b['health_warn_percent'] ?? null,
         $b['health_critical_percent'] ?? null
     );
+} elseif ($action === 'alerts') {
+    require_once APP_ROOT . '/lib/mod_alerts.php';
+    $res = alerts_save($b);
+} elseif ($action === 'alerts-test') {
+    require_once APP_ROOT . '/lib/mod_alerts.php';
+    $res = alerts_test();
 } elseif ($action === 'password') {
     $res = change_admin_password((string) ($b['current'] ?? ''), (string) ($b['new'] ?? ''));
 } else {

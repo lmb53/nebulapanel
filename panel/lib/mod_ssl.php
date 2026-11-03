@@ -177,11 +177,12 @@ function ssl_upload(string $domain, string $certificate, string $privateKey, str
     foreach ($sites as &$site) { if (($site['domain'] ?? '') === $domain) { $site['ssl'] = true; } }
     unset($site); sites_save($sites);
     audit('ssl.upload', $domain);
+    cache_forget('ssl-expiry');
     return ['ok' => true];
 }
 
 /** Issue a Let's Encrypt certificate for an existing nginx site. */
-function ssl_issue(string $domain, string $email = ''): array
+function ssl_issue(string $domain, string $email = '', ?callable $onOutput = null): array
 {
     $domain = ssl_canonical($domain);
     $email = trim($email);
@@ -192,8 +193,10 @@ function ssl_issue(string $domain, string $email = ''): array
         return ['ok' => false, 'error' => 'Invalid email.'];
     }
     $args = 'site-ssl ' . escapeshellarg($domain) . ($email !== '' ? (' ' . escapeshellarg($email)) : '');
-    [$c, $o] = helper_cmd($args, 300);
+    if ($onOutput) { $onOutput('==> Requesting a certificate for ' . $domain . " from Let's Encrypt\n", 'stdout'); }
+    [$c, $o] = $onOutput ? helper_cmd_stream($args, $onOutput, 300) : helper_cmd($args, 300);
     audit('ssl.issue', $domain);
+    cache_forget('ssl-expiry');
     if ($c !== 0) {
         return ['ok' => false, 'error' => trim($o) ?: 'site-ssl failed'];
     }
@@ -201,15 +204,17 @@ function ssl_issue(string $domain, string $email = ''): array
 }
 
 /** Renew all certificates, or a single named one. */
-function ssl_renew(string $name = ''): array
+function ssl_renew(string $name = '', ?callable $onOutput = null): array
 {
     $name = ssl_canonical($name);
     if ($name !== '' && !ssl_domain_ok($name)) {
         return ['ok' => false, 'error' => 'Invalid certificate name.'];
     }
     $args = 'cert-renew' . ($name !== '' ? (' ' . escapeshellarg($name)) : '');
-    [$c, $o] = helper_cmd($args, 300);
+    if ($onOutput) { $onOutput('==> Renewing ' . ($name !== '' ? $name : 'all eligible certificates') . "\n", 'stdout'); }
+    [$c, $o] = $onOutput ? helper_cmd_stream($args, $onOutput, 600) : helper_cmd($args, 300);
     audit('ssl.renew', $name);
+    cache_forget('ssl-expiry');
     if ($c !== 0) {
         return ['ok' => false, 'error' => trim($o) ?: 'cert-renew failed'];
     }
@@ -227,6 +232,7 @@ function ssl_delete(string $name): array
     foreach (ssl_custom_list() as $item) { if (($item['name'] ?? '') === $name) { $custom = true; break; } }
     [$c, $o] = helper_cmd(($custom ? 'cert-custom-delete ' : 'cert-delete ') . escapeshellarg($name));
     audit('ssl.delete', $name);
+    cache_forget('ssl-expiry');
     if ($c !== 0) {
         return ['ok' => false, 'error' => trim($o) ?: 'cert-delete failed'];
     }

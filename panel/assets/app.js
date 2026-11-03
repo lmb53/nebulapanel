@@ -196,7 +196,7 @@
 
   // Public API for per-module view scripts (available by DOMContentLoaded).
   window.Nebula = { api, apiGet, apiPost, streamPost, toast, copyText, fmtBytes, fmtDate, cmTheme, registerCM, registerRefresh, refreshAll,
-    confirm: confirmDialog, prompt: promptDialog, updateSvcBadge, updateSvcEnabled, dialog, validateForm, setFieldError, clearFieldError, setBusy, colorFor, openEditor,
+    confirm: confirmDialog, prompt: promptDialog, runTask, updateSvcBadge, updateSvcEnabled, dialog, validateForm, setFieldError, clearFieldError, setBusy, colorFor, openEditor,
     cssVar: (name) => cssVar(name), withAlpha: (color, alpha) => withAlpha(color, alpha) };
 
   // ---- Toasts -------------------------------------------------------------
@@ -362,6 +362,8 @@
         input = document.createElement('input'); input.className = 'input'; input.id = id; input.required = opts.input.required !== false;
         input.value = opts.input.value || ''; input.placeholder = opts.input.placeholder || ''; input.autocomplete = 'off';
         if (opts.input.mono) input.classList.add('mono');
+        if (opts.input.type) input.type = opts.input.type;
+        if (opts.input.autocomplete) input.autocomplete = opts.input.autocomplete;
         body.append(label, input);
       }
       if (opts.option) {
@@ -419,6 +421,89 @@
   async function confirmDialog(message, opts = {}) {
     if (typeof message === 'object') { opts = message; message = opts.message; }
     return (await dialog({ ...opts, message })).ok;
+  }
+  /**
+   * Run a slow streamed action with visible progress instead of a spinning
+   * button. Lines that start with "==> " become the step shown above the log.
+   * Resolves with the action's result once the dialog closes (a success closes
+   * itself after a moment; a failure stays open so its output can be read).
+   */
+  function runTask(opts = {}) {
+    return new Promise((resolve) => {
+      const returnFocus = document.activeElement;
+      const overlay = document.createElement('div');
+      overlay.className = 'modal-overlay';
+      const box = document.createElement('div');
+      box.className = 'modal modal-wide';
+      box.setAttribute('role', 'dialog');
+      box.setAttribute('aria-modal', 'true');
+      const titleId = 'task-' + Math.random().toString(36).slice(2);
+      box.setAttribute('aria-labelledby', titleId);
+      const head = document.createElement('div'); head.className = 'modal-header';
+      const icon = document.createElement('div'); icon.className = 'modal-icon task-icon';
+      icon.innerHTML = '<span class="task-spinner" aria-hidden="true"></span>';
+      const titleWrap = document.createElement('div'); titleWrap.style.minWidth = '0'; titleWrap.style.flex = '1';
+      const title = document.createElement('h2'); title.className = 'modal-title'; title.id = titleId; title.textContent = opts.title || 'Working…';
+      const step = document.createElement('div'); step.className = 'task-step'; step.setAttribute('aria-live', 'polite');
+      step.textContent = opts.initialStep || 'Starting…';
+      titleWrap.append(title, step);
+      const timer = document.createElement('span'); timer.className = 'task-timer mono'; timer.textContent = '0:00';
+      head.append(icon, titleWrap, timer);
+      const body = document.createElement('div'); body.className = 'task-body';
+      const log = document.createElement('pre'); log.className = 'log-pre task-log'; log.setAttribute('aria-label', 'Command output');
+      const details = document.createElement('details'); details.className = 'task-details';
+      const summary = document.createElement('summary'); summary.textContent = 'Show output';
+      details.append(summary, log);
+      if (opts.showOutput) details.open = true;
+      body.appendChild(details);
+      const foot = document.createElement('div'); foot.className = 'modal-footer';
+      const hint = document.createElement('span'); hint.className = 'field-help'; hint.style.marginRight = 'auto'; hint.textContent = 'Keep this tab open until the action finishes.';
+      const close = document.createElement('button'); close.type = 'button'; close.className = 'btn btn-secondary'; close.textContent = 'Close'; close.disabled = true;
+      foot.append(hint, close);
+      box.append(head, body, foot);
+      overlay.appendChild(box);
+      document.body.appendChild(overlay);
+      const started = Date.now();
+      const tick = setInterval(() => {
+        const s = Math.floor((Date.now() - started) / 1000);
+        timer.textContent = `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+      }, 1000);
+      let result = null;
+      const finish = () => {
+        clearInterval(tick);
+        overlay.remove();
+        document.removeEventListener('keydown', onKey, true);
+        returnFocus?.focus?.();
+        resolve(result || { ok: false, error: 'Cancelled' });
+      };
+      const onKey = (event) => { if (event.key === 'Escape' && !close.disabled) { event.preventDefault(); finish(); } };
+      document.addEventListener('keydown', onKey, true);
+      close.addEventListener('click', finish);
+      const append = (text) => {
+        const atEnd = log.scrollTop + log.clientHeight >= log.scrollHeight - 8;
+        log.textContent += text;
+        if (log.textContent.length > 200000) log.textContent = log.textContent.slice(-150000);
+        if (atEnd) log.scrollTop = log.scrollHeight;
+        const steps = text.split(/\r?\n/).filter((line) => line.startsWith('==> '));
+        if (steps.length) step.textContent = steps[steps.length - 1].slice(4);
+      };
+      streamPost(opts.endpoint, opts.body, (event) => {
+        if (event.type === 'output' && typeof event.text === 'string') append(event.text);
+        if (event.type === 'step' && event.text) { step.textContent = event.text; append('==> ' + event.text + '\n'); }
+      }).then((res) => {
+        result = res || { ok: false, error: 'No result' };
+        clearInterval(tick);
+        close.disabled = false;
+        hint.textContent = '';
+        icon.classList.add(result.ok ? 'success' : 'danger');
+        icon.innerHTML = `<i data-lucide="${result.ok ? 'circle-check' : 'circle-x'}"></i>`;
+        step.textContent = result.ok ? (opts.successMessage || 'Done') : (result.error || 'The action failed');
+        if (!result.ok) { details.open = true; if (result.error && !log.textContent.includes(result.error)) append('\n' + result.error + '\n'); }
+        if (window.lucide) lucide.createIcons();
+        close.focus();
+        if (result.ok && opts.autoClose !== false) setTimeout(() => { if (document.body.contains(overlay)) finish(); }, 1200);
+      });
+    });
   }
   async function promptDialog(label, value = '', opts = {}) {
     if (typeof label === 'object') { opts = label; label = opts.label; value = opts.value || ''; }
@@ -1026,6 +1111,12 @@
 
   // ---- Accessibility ------------------------------------------------------
   const ICON_LABELS = { x: 'Close', 'trash-2': 'Delete', pencil: 'Edit', 'square-pen': 'Edit', 'refresh-cw': 'Refresh', play: 'Start', square: 'Stop', 'rotate-cw': 'Restart', 'rotate-ccw': 'Restart', download: 'Download', copy: 'Copy', check: 'Confirm', info: 'Details', eye: 'View', 'scroll-text': 'Logs' };
+  // Any button with data-copy-text copies that text (used by command hints).
+  document.addEventListener('click', (event) => {
+    const button = event.target.closest?.('[data-copy-text]');
+    if (!button) return;
+    copyText(button.dataset.copyText).then((ok) => toast(ok ? 'Copied to the clipboard' : 'Copy failed — select the text instead', ok ? 'success' : 'error'));
+  });
   function wireAccessibility() {
     const dialogState = new WeakMap();
     // Name every icon-only control (aria-label + visible tooltip).

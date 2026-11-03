@@ -9,7 +9,8 @@ as unsupported until validated in disposable infrastructure.
 ## Local recovery
 
 Run `sudo nebula-recovery reset-admin` from the server console to rotate the
-administrator password and revoke sessions. Before first setup only,
+administrator password, turn off their two-factor sign-in, and revoke
+sessions. Before first setup only,
 `sudo nebula-recovery issue-bootstrap` issues a new one-hour token. Neither
 workflow requires making setup publicly reachable.
 
@@ -97,11 +98,30 @@ pools, then restore service.
 
 ## Backup and recovery
 
-The built-in file backup is not a disaster-recovery system. Until complete
-backup orchestration ships, independently back up and encrypt panel state, site
-roots, database-consistent dumps, mail/Maildir, DKIM keys, DNS zones,
-certificates, and relevant `/etc` configuration to an off-host destination.
-Test clean-host restores regularly and record recovery time/data-loss results.
+Backups archive each website's `public/` directory plus a consistent
+`mysqldump --single-transaction` of every database linked to it, with a
+SHA-256 manifest, under the panel's private `data/backups/`. The schedule
+(nightly or weekly) and keep-the-last-N retention run from
+`nebula-panel-scheduler.timer`; manual and pre-restore archives are never
+pruned. Restores verify the checksum, take a safety copy first, extract as the
+site's Unix user through a staging directory, and drop and re-import each
+selected database.
+
+These archives live on the same disk as the sites, so they protect against bad
+updates and deleted content, not against losing the server. Download or sync
+`data/backups/` off-host, and separately back up mail/Maildir, DKIM keys, DNS
+zones, certificates and relevant `/etc` configuration. Test clean-host restores
+regularly and record recovery time/data-loss results.
+
+## Scheduler and alerts
+
+`nebula-panel-scheduler.timer` runs `bin/scheduler.php` every five minutes as
+`nebula-panel`: it records resource history (`data/metrics-history.json`, 8
+days), runs due scheduled backups, and evaluates alerts. Its last report is in
+`data/scheduler.json`; delivery results of the last 20 alerts are in
+`data/alerts-state.json`. Run it by hand with
+`sudo -u nebula-panel php <panel-dir>/bin/scheduler.php`. The dashboard flags
+the scheduler as stopped when it has not run for 20 minutes.
 
 ## Capacity and hardening
 

@@ -22,6 +22,9 @@
           <div style="font-size:12px;color:var(--text-tertiary)">Sign in to continue</div>
         </div>
       </div>
+      <?php if (!$error && !empty($_GET['expired'])): ?>
+        <div class="notice notice-info" role="status" style="margin-bottom:16px"><i data-lucide="timer"></i><div>The two-factor step expired or had too many attempts. Sign in again.</div></div>
+      <?php endif; ?>
       <?php if ($error): ?>
         <div class="notice notice-danger" role="alert" style="margin-bottom:16px"><i data-lucide="circle-x"></i><div><?= e($error) ?></div></div>
       <?php endif; ?>

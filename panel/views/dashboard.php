@@ -55,8 +55,19 @@ $initialDiskPct = $initialDisk ? round($initialDisk['used'] / max(1, $initialDis
 
 <div class="grid grid-main-side" style="margin-bottom:16px">
   <div class="card">
-    <div class="card-header"><h3>Live resources</h3><span class="muted">Sampled every 5 seconds</span></div>
-    <div class="card-pad"><div class="chart-box"><canvas id="liveChart" data-cpu="<?= e($initialCpu ?? 0) ?>" data-mem="<?= e($initialMemPct ?? 0) ?>" aria-label="CPU and memory usage over time" role="img"></canvas></div></div>
+    <div class="card-header">
+      <div><h3>Resources</h3><span class="muted" id="chartCaption">Live · sampled every 5 seconds</span></div>
+      <div class="segmented" role="group" aria-label="Chart range">
+        <button type="button" class="seg-btn active" aria-pressed="true" data-range="live">Live</button>
+        <button type="button" class="seg-btn" aria-pressed="false" data-range="6h">6 h</button>
+        <button type="button" class="seg-btn" aria-pressed="false" data-range="24h">24 h</button>
+        <button type="button" class="seg-btn" aria-pressed="false" data-range="7d">7 days</button>
+      </div>
+    </div>
+    <div class="card-pad">
+      <div class="chart-box" id="liveBox"><canvas id="liveChart" data-cpu="<?= e($initialCpu ?? 0) ?>" data-mem="<?= e($initialMemPct ?? 0) ?>" aria-label="CPU and memory usage over time" role="img"></canvas></div>
+      <div class="chart-box hidden" id="historyBox"><canvas id="historyChart" aria-label="CPU, memory and disk history" role="img"></canvas><div class="chart-empty hidden" id="historyEmpty"></div></div>
+    </div>
   </div>
   <div class="card">
     <div class="card-header"><h3>Services</h3><a href="<?= e(url('services')) ?>" class="btn btn-secondary btn-sm">Manage<i data-lucide="arrow-right"></i></a></div>
@@ -158,6 +169,56 @@ document.addEventListener('DOMContentLoaded', () => {
   window.Nebula.registerRefresh(loadProcesses);
   const scheduleProcesses=async()=>{await loadProcesses();clearTimeout(processTimer);processTimer=setTimeout(scheduleProcesses,8000);};
   scheduleProcesses();document.addEventListener('visibilitychange',()=>{if(document.hidden)clearTimeout(processTimer);else{clearTimeout(processTimer);scheduleProcesses();}});
+  // ---- Resource history ----
+  const historyLabels = { '6h': 'Last 6 hours', '24h': 'Last 24 hours', '7d': 'Last 7 days' };
+  let historyChart = null;
+  const fmtTick = (ts, range) => {
+    const d = new Date(ts * 1000);
+    const time = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    return range === '7d' ? d.toLocaleDateString([], { weekday: 'short' }) + ' ' + time : time;
+  };
+  async function showRange(range) {
+    document.querySelectorAll('[data-range]').forEach((b) => { const on = b.dataset.range === range; b.classList.toggle('active', on); b.setAttribute('aria-pressed', on ? 'true' : 'false'); });
+    const live = range === 'live';
+    document.getElementById('liveBox').classList.toggle('hidden', !live);
+    document.getElementById('historyBox').classList.toggle('hidden', live);
+    const caption = document.getElementById('chartCaption');
+    if (live) { caption.textContent = 'Live · sampled every 5 seconds'; return; }
+    caption.textContent = historyLabels[range] + ' · loading…';
+    let res;
+    try { res = await apiGet('metrics-history&range=' + encodeURIComponent(range)); }
+    catch (error) { caption.textContent = error.message || 'Could not load history'; return; }
+    const empty = document.getElementById('historyEmpty');
+    const points = res.points || [];
+    caption.textContent = historyLabels[range] + (points.length ? ' · average per ' + (res.bucket >= 3600 ? res.bucket / 3600 + ' h' : res.bucket / 60 + ' min') + ', CPU peak dotted' : '');
+    empty.classList.toggle('hidden', points.length > 1);
+    empty.textContent = points.length > 1 ? '' : 'Not enough history yet. Samples are recorded every five minutes by the background scheduler' + (res.samples ? ' (' + res.samples + ' so far).' : '.');
+    const { cssVar, withAlpha } = window.Nebula;
+    const c1 = cssVar('--chart-1') || '#3CC4B8', c2 = cssVar('--chart-2') || '#E0A84A', c3 = cssVar('--purple-400') || '#A78BFA';
+    const data = {
+      labels: points.map((p) => fmtTick(p.t, range)),
+      datasets: [
+        { label: 'CPU %', data: points.map((p) => p.cpu), borderColor: c1, backgroundColor: withAlpha(c1, 0.12), fill: true, tension: .3, pointRadius: 0, borderWidth: 1.75, spanGaps: false },
+        { label: 'CPU peak %', data: points.map((p) => p.cpu_peak), borderColor: withAlpha(c1, 0.6), borderDash: [2, 3], pointRadius: 0, borderWidth: 1, tension: .3 },
+        { label: 'Memory %', data: points.map((p) => p.mem), borderColor: c2, pointRadius: 0, borderWidth: 1.75, tension: .3 },
+        { label: 'Disk %', data: points.map((p) => p.disk), borderColor: c3, pointRadius: 0, borderWidth: 1.5, tension: .3 },
+      ],
+    };
+    if (historyChart) { historyChart.data = data; historyChart.update(); return; }
+    historyChart = new Chart(document.getElementById('historyChart'), {
+      type: 'line', data,
+      options: {
+        animation: false, maintainAspectRatio: false, interaction: { mode: 'index', intersect: false },
+        plugins: { legend: { position: 'top', labels: { boxWidth: 8, boxHeight: 8, usePointStyle: true, color: cssVar('--chart-text') } },
+          tooltip: { callbacks: { label: (ctx) => `${ctx.dataset.label}: ${ctx.parsed.y == null ? 'n/a' : ctx.parsed.y}` } } },
+        scales: { x: { ticks: { maxTicksLimit: 8, autoSkip: true, maxRotation: 0, color: cssVar('--chart-text') }, grid: { display: false } },
+          y: { min: 0, max: 100, grid: { color: cssVar('--chart-grid') }, ticks: { color: cssVar('--chart-text') } } },
+      },
+    });
+  }
+  let currentRange = 'live';
+  document.querySelectorAll('[data-range]').forEach((b) => b.addEventListener('click', () => { currentRange = b.dataset.range; showRange(currentRange); }));
+  window.Nebula.registerRefresh(() => { if (currentRange !== 'live') showRange(currentRange); });
 });
 </script>
 <script>window.NEBULA_PAGE = 'dashboard';</script>

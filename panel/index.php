@@ -63,7 +63,9 @@ switch ($route) {
                 $minutes = max(1, (int) ceil($retry / 60));
                 $error = 'Too many sign-in attempts. Try again in ' . $minutes . ' minute' . ($minutes === 1 ? '' : 's') . '.';
                 $locked = true;
-            } elseif (attempt_login($loginName, $_POST['password'] ?? '')) {
+            } elseif (($login = attempt_login($loginName, $_POST['password'] ?? '')) === 'mfa') {
+                redirect('login-2fa');
+            } elseif ($login === true) {
                 redirect('dashboard');
             } else {
                 audit('login', 'failed for ' . ($_POST['username'] ?? '?'));
@@ -71,6 +73,54 @@ switch ($route) {
             }
         }
         render('login', ['error' => $error, 'username' => (string) ($_POST['username'] ?? ''), 'locked' => $locked ?? false], false);
+        return;
+
+    case 'login-2fa':
+        require_once APP_ROOT . '/lib/mod_mfa.php';
+        if (is_logged_in()) {
+            redirect('dashboard');
+        }
+        $pending = $_SESSION['mfa_pending'] ?? null;
+        if (!is_array($pending) || time() - (int) ($pending['at'] ?? 0) > MFA_LOGIN_TTL) {
+            unset($_SESSION['mfa_pending']);
+            redirect('login', ['expired' => 1]);
+        }
+        $error = null;
+        if ($method === 'POST') {
+            csrf_check();
+            if (!empty($_POST['cancel'])) {
+                unset($_SESSION['mfa_pending']);
+                redirect('login');
+            }
+            $throttleKey = 'mfa:' . (int) $pending['uid'];
+            $retry = reserve_login_attempt(null, $throttleKey);
+            if ($retry > 0) {
+                http_response_code(429);
+                header('Retry-After: ' . $retry);
+                audit('login', 'two-factor rate limited');
+                $error = 'Too many attempts. Try again in ' . max(1, (int) ceil($retry / 60)) . ' minutes.';
+            } else {
+                $res = mfa_login_verify((int) $pending['uid'], (int) $pending['version'], (string) ($_POST['code'] ?? ''));
+                if (!empty($res['ok'])) {
+                    record_login_attempt(true, null, $throttleKey);
+                    login_establish($res['user'], true);
+                    audit('login', 'success (two-factor ' . ($res['method'] === 'recovery' ? 'recovery code' : 'app code') . ')');
+                    if ($res['method'] === 'recovery') {
+                        $_SESSION['flash_warning'] = 'You signed in with a recovery code. ' . count((array) ($res['user']['mfa']['recovery'] ?? [])) . ' remain — generate new ones on your account page.';
+                    }
+                    redirect('dashboard');
+                }
+                usleep(300000);
+                $_SESSION['mfa_pending']['tries'] = (int) ($pending['tries'] ?? 0) + 1;
+                audit('login', 'two-factor code rejected');
+                if ($_SESSION['mfa_pending']['tries'] >= MFA_LOGIN_MAX_TRIES) {
+                    unset($_SESSION['mfa_pending']);
+                    redirect('login', ['expired' => 1]);
+                }
+                $error = (string) ($res['error'] ?? 'That code is not valid.');
+            }
+        }
+        render('login-2fa', ['error' => $error], false);
         return;
 
     case 'logout':

@@ -118,6 +118,20 @@ valid_email()  { [[ -z "$1" || "$1" =~ ^[^@[:space:]]+@[^@[:space:]]+$ ]] || die
 valid_user()   { [[ "$1" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] || die "invalid user"; }
 valid_group()  { [[ "$1" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] || die "invalid group"; }
 valid_site_id(){ [[ "$1" =~ ^[a-f0-9]{32}$ ]] || die "invalid site id"; }
+valid_db_name(){
+  [[ "$1" =~ ^[A-Za-z0-9_]{1,64}$ ]] || die "invalid database name"
+  case "$1" in mysql|information_schema|performance_schema|sys) die "system databases cannot be backed up here" ;; esac
+}
+# The panel's private backup store. Derived from root-owned configuration so
+# a request can never redirect archives elsewhere.
+backup_dir(){
+  local panel_root
+  [[ -r "$PANEL_ROOT_FILE" ]] || die "panel root is not configured"
+  panel_root="$(realpath "$(head -n 1 "$PANEL_ROOT_FILE")")"
+  [[ -d "$panel_root/data" && ! -L "$panel_root/data" ]] || die "panel data directory is missing"
+  [[ ! -L "$panel_root/data/backups" ]] || die "backup directory must not be a symlink"
+  printf '%s\n' "$panel_root/data/backups"
+}
 
 # Print the Let's Encrypt lineage directory holding a currently-valid
 # certificate for $1, or nothing when there is none.
@@ -797,6 +811,92 @@ case "$CMD" in
     echo "created $TARGET"
     ;;
 
+  # file-extract <archive> <destination-dir> <new-folder-name|.>
+  # Unpacks .zip/.tar/.tar.gz/.tgz/.tar.bz2/.tar.xz below FM_ROOT. Entries are
+  # vetted first, then extraction runs as the destination folder's owner in a
+  # private staging directory; "." extracts into the folder itself and refuses
+  # to overwrite anything already there.
+  file-extract)
+    RAW_ARCHIVE="${1:-}"; NEW_NAME="${3:-}"
+    [[ ! -L "$RAW_ARCHIVE" ]] || die "symlink operations are not allowed"
+    ARCHIVE="$(fm_confined_path "$RAW_ARCHIVE")"
+    DEST_DIR="$(fm_confined_path "${2:-}")"
+    [[ -f "$ARCHIVE" ]] || die "archive not found"
+    [[ -d "$DEST_DIR" ]] || die "destination folder not found"
+    case "${ARCHIVE,,}" in
+      *.zip) KIND=zip; TFLAG="" ;;
+      *.tar.gz|*.tgz) KIND=tar; TFLAG=z ;;
+      *.tar.bz2|*.tbz2) KIND=tar; TFLAG=j ;;
+      *.tar.xz|*.txz) KIND=tar; TFLAG=J ;;
+      *.tar) KIND=tar; TFLAG="" ;;
+      *) die "unsupported archive type (use .zip, .tar, .tar.gz, .tar.bz2 or .tar.xz)" ;;
+    esac
+    TARGET=""
+    if [[ "$NEW_NAME" != "." ]]; then TARGET="$(fm_confined_new_path "$DEST_DIR/$NEW_NAME")"; fi
+    OWNER="$(stat -c %U "$DEST_DIR")"; GROUP="$(stat -c %G "$DEST_DIR")"
+    [[ "$OWNER" != root && "$OWNER" != UNKNOWN ]] || die "extracting into a root-owned folder is not allowed; open a website folder first"
+    echo "==> Checking the archive"
+    LIST="$(mktemp)"; STAGE=""
+    trap 'rm -f "$LIST"; [[ -n "$STAGE" ]] && rm -rf --one-file-system "$STAGE"' EXIT
+    if [[ "$KIND" == zip ]]; then
+      command -v unzip >/dev/null 2>&1 || die "unzip is not installed; re-run install.sh"
+      unzip -Z1 "$ARCHIVE" > "$LIST" 2>/dev/null || die "not a valid zip archive"
+      TOTAL="$(unzip -Zt "$ARCHIVE" 2>/dev/null | awk '{print $3; exit}')"
+    else
+      tar -t${TFLAG}f "$ARCHIVE" > "$LIST" 2>/dev/null || die "not a valid tar archive"
+      TOTAL="$(tar -tv${TFLAG}f "$ARCHIVE" 2>/dev/null | awk '{s+=$3} END {printf "%.0f", s}')"
+      if tar -tv${TFLAG}f "$ARCHIVE" 2>/dev/null | grep -E ' link to (/|.*(^|/)\.\.(/|$))' >/dev/null; then
+        die "archive contains a hard link outside itself"
+      fi
+    fi
+    ENTRIES="$(wc -l < "$LIST" | tr -d ' ')"
+    [[ "$ENTRIES" -ge 1 ]] || die "the archive is empty"
+    [[ "$ENTRIES" -le 50000 ]] || die "archive exceeds the 50,000-entry safety limit"
+    grep -Eq '^/|(^|/)\.\.(/|$)' "$LIST" && die "archive contains an absolute or parent-directory path"
+    [[ "${TOTAL:-0}" =~ ^[0-9]+$ ]] || TOTAL=0
+    [[ "$TOTAL" -le 10737418240 ]] || die "archive expands to more than 10 GB"
+    FREE="$(df -P "$DEST_DIR" | awk 'NR==2 {print $4 * 1024}')"
+    [[ "${FREE:-0}" -gt $(( TOTAL + 67108864 )) ]] || die "not enough free disk space to extract"
+    echo "==> Extracting $ENTRIES entries ($TOTAL bytes)"
+    STAGE="$DEST_DIR/.nebula-extract-$(od -An -N6 -tx1 /dev/urandom | tr -d '[:space:]')"
+    install -d -m 0700 -o "$OWNER" -g "$GROUP" "$STAGE"
+    runuser -u "$OWNER" -- mkdir "$STAGE/out"
+    if [[ "$KIND" == zip ]]; then
+      # unzip needs a seekable file: the owner writes a private copy fed by root.
+      runuser -u "$OWNER" -- sh -c 'umask 077; cat > "$1"' _ "$STAGE/archive.zip" < "$ARCHIVE"
+      runuser -u "$OWNER" -- unzip -qq -o "$STAGE/archive.zip" -d "$STAGE/out" || die "extraction failed"
+      rm -f "$STAGE/archive.zip"
+    else
+      runuser -u "$OWNER" -- tar -x${TFLAG}f - -C "$STAGE/out" --no-same-owner < "$ARCHIVE" || die "extraction failed"
+    fi
+    runuser -u "$OWNER" -- find "$STAGE/out" -perm /6000 -exec chmod ug-s {} + 2>/dev/null || true
+    echo "==> Moving files into place"
+    if [[ -n "$TARGET" ]]; then
+      runuser -u "$OWNER" -- mv -- "$STAGE/out" "$TARGET"
+      RESULTS=("$TARGET")
+    else
+      RESULTS=(); CONFLICTS=()
+      while IFS= read -r -d '' ENTRY; do
+        BASE="$(basename "$ENTRY")"
+        if [[ -e "$DEST_DIR/$BASE" || -L "$DEST_DIR/$BASE" ]]; then CONFLICTS+=("$BASE"); fi
+        RESULTS+=("$DEST_DIR/$BASE")
+      done < <(find "$STAGE/out" -mindepth 1 -maxdepth 1 -print0)
+      if (( ${#CONFLICTS[@]} )); then
+        die "these items already exist in the folder: $(IFS=,; echo "${CONFLICTS[*]:0:10}") — extract into a new folder instead"
+      fi
+      find "$STAGE/out" -mindepth 1 -maxdepth 1 -print0 | runuser -u "$OWNER" -- xargs -0 -r mv -t "$DEST_DIR" --
+    fi
+    PANEL_USER="$(stat -c %U "$(realpath "$(head -n 1 "$PANEL_ROOT_FILE")")/data")"
+    ACL="u:${PANEL_USER}:rX"
+    getfacl -p "$DEST_DIR" 2>/dev/null | grep -q '^user:www-data:' && ACL="$ACL,u:www-data:rX"
+    for R in "${RESULTS[@]}"; do
+      [[ -e "$R" && ! -L "$R" ]] || continue
+      setfacl -R -P -m "$ACL" "$R" 2>/dev/null || true
+      [[ -d "$R" ]] && find "$R" -type d -exec setfacl -m "d:${ACL//,/,d:}" {} + 2>/dev/null || true
+    done
+    echo "extracted $ENTRIES entries"
+    ;;
+
   # ssh-keys-list <user> / ssh-key-add <user> <base64-key> / ssh-key-delete <user> <line>
   ssh-keys-list)
     USER_NAME="${1:-}"; INFO="$(human_user_info "$USER_NAME")"; HOME_DIR="${INFO#*:*:}"
@@ -980,33 +1080,120 @@ EOF
     printf '%s\t%s\n' "${BYTES:-0}" "${FILES:-0}"
     ;;
 
-  # site-backup <site-id> <archive-name>
+  # site-backup <site-id> <archive-name> [database ...]
+  # Archives public/ plus, optionally, a mysqldump of each named database
+  # under databases/<name>.sql. Lines starting with "==> " are progress steps.
   site-backup)
-    SITE_ID="${1:-}"; ARCHIVE_NAME="${2:-}"
+    SITE_ID="${1:-}"; ARCHIVE_NAME="${2:-}"; shift 2 || true
     valid_site_id "$SITE_ID"
+    DBS=("$@")
+    [[ ${#DBS[@]} -le 20 ]] || die "too many databases"
+    for DB in "${DBS[@]}"; do valid_db_name "$DB"; done
     exec 8>"/run/lock/nebula-site-${SITE_ID}.lock"
     flock -w 30 8 || die "another operation is running for this site"
     site_state_check "$SITE_ID"
     [[ "$ARCHIVE_NAME" =~ ^[A-Za-z0-9_.-]{1,100}-[0-9]{8}-[0-9]{6}\.tar\.gz$ ]] || die "invalid archive name"
-    [[ -r "$PANEL_ROOT_FILE" ]] || die "panel root is not configured"
-    PANEL_ROOT="$(realpath "$(head -n 1 "$PANEL_ROOT_FILE")")"
-    BACKUP_DIR="$PANEL_ROOT/data/backups"
-    [[ "$BACKUP_DIR" == "$PANEL_ROOT/data/backups" ]] || die "invalid backup directory"
-    install -d -m 0700 "$BACKUP_DIR"
+    BACKUP_DIR="$(backup_dir)"
+    PANEL_USER="$(stat -c %U "$(dirname "$BACKUP_DIR")")"
+    install -d -m 0700 -o "$PANEL_USER" -g "$PANEL_USER" "$BACKUP_DIR"
     DEST="$BACKUP_DIR/$ARCHIVE_NAME"; [[ ! -e "$DEST" ]] || die "backup already exists"
+    echo "==> Checking free disk space"
     FREE="$(df -P "$BACKUP_DIR" | awk 'NR==2 {print $4 * 1024}')"
     USED="$(du -sb "$SITE_BASE" | awk '{print $1}')"
     [[ "${FREE:-0}" -gt $(( ${USED:-0} + 16777216 )) ]] || die "insufficient free disk space"
     TMP="$BACKUP_DIR/.${ARCHIVE_NAME}.tmp"
-    trap 'rm -f "$TMP"' EXIT
-    tar --one-file-system --numeric-owner -czf "$TMP" -C "$SITE_BASE" public
+    STAGE="$(mktemp -d)"
+    trap 'rm -f "$TMP"; rm -rf "$STAGE"' EXIT
+    TAR_EXTRA=()
+    if (( ${#DBS[@]} )); then
+      command -v mysqldump >/dev/null 2>&1 || die "mysqldump is not installed; install MariaDB from Install Apps"
+      install -d -m 0700 "$STAGE/databases"
+      for DB in "${DBS[@]}"; do
+        echo "==> Dumping database $DB"
+        timeout 3600s mysqldump --single-transaction --quick --routines --triggers --events \
+          --no-tablespaces --default-character-set=utf8mb4 "$DB" > "$STAGE/databases/$DB.sql" \
+          || die "could not dump database $DB"
+      done
+      TAR_EXTRA=(-C "$STAGE" databases)
+    fi
+    echo "==> Archiving website files"
+    tar --one-file-system --numeric-owner -czf "$TMP" -C "$SITE_BASE" public "${TAR_EXTRA[@]}"
+    echo "==> Verifying the archive"
     gzip -t "$TMP"
     mv "$TMP" "$DEST"
-    PANEL_USER="$(stat -c %U "$PANEL_ROOT/data")"
     chown "$PANEL_USER:$PANEL_USER" "$DEST"; chmod 0600 "$DEST"
     echo "sha256=$(sha256sum "$DEST" | awk '{print $1}')"
     echo "bytes=$(stat -c %s "$DEST")"
     echo "entries=$(tar -tzf "$DEST" | wc -l | tr -d ' ')"
+    echo "databases=$(IFS=,; echo "${DBS[*]}")"
+    ;;
+
+  # site-restore <site-id> <archive-name> <yes|no: restore files> [database ...]
+  # Restores public/ into the site (as the site's own Unix user, through a
+  # private staging directory) and/or replaces each named database with its
+  # dump from the archive.
+  site-restore)
+    SITE_ID="${1:-}"; ARCHIVE_NAME="${2:-}"; RESTORE_FILES="${3:-}"; shift 3 || true
+    valid_site_id "$SITE_ID"
+    [[ "$RESTORE_FILES" == yes || "$RESTORE_FILES" == no ]] || die "invalid restore mode"
+    DBS=("$@")
+    [[ ${#DBS[@]} -le 20 ]] || die "too many databases"
+    for DB in "${DBS[@]}"; do valid_db_name "$DB"; done
+    [[ "$RESTORE_FILES" == yes || ${#DBS[@]} -gt 0 ]] || die "nothing selected to restore"
+    exec 8>"/run/lock/nebula-site-${SITE_ID}.lock"
+    flock -w 30 8 || die "another operation is running for this site"
+    site_state_check "$SITE_ID"
+    [[ "$ARCHIVE_NAME" =~ ^[A-Za-z0-9_.-]{1,100}-[0-9]{8}-[0-9]{6}\.tar\.gz$ ]] || die "invalid archive name"
+    BACKUP_DIR="$(backup_dir)"
+    ARCHIVE="$BACKUP_DIR/$ARCHIVE_NAME"
+    [[ -f "$ARCHIVE" && ! -L "$ARCHIVE" ]] || die "backup not found"
+    echo "==> Checking the archive"
+    LISTING="$(mktemp)"; STAGE=""
+    trap 'rm -f "$LISTING"; [[ -n "$STAGE" ]] && rm -rf --one-file-system "$STAGE"' EXIT
+    tar -tzf "$ARCHIVE" > "$LISTING" || die "the archive is unreadable or corrupt"
+    [[ "$(wc -l < "$LISTING")" -le 200000 ]] || die "archive exceeds the 200,000-entry safety limit"
+    if grep -Evq '^(public(/.*)?|databases/?|databases/[A-Za-z0-9_]{1,64}\.sql)$' "$LISTING"; then
+      die "archive contains entries outside public/ and databases/"
+    fi
+    grep -Eq '(^|/)\.\.(/|$)' "$LISTING" && die "archive contains an unsafe path"
+    if [[ "$RESTORE_FILES" == yes ]]; then
+      grep -Eq '^public/' "$LISTING" || die "archive contains no website files"
+    fi
+    for DB in "${DBS[@]}"; do
+      grep -qxF "databases/$DB.sql" "$LISTING" || die "archive has no dump for database $DB"
+    done
+    if [[ "$RESTORE_FILES" == yes ]]; then
+      echo "==> Unpacking website files"
+      STAGE="$SITE_BASE/.nebula-restore-$(od -An -N6 -tx1 /dev/urandom | tr -d '[:space:]')"
+      install -d -m 0700 -o "$SITE_USER" -g "$SITE_USER" "$STAGE"
+      # The archive is private to the panel; feed it on stdin so extraction
+      # runs entirely with the site user's privileges.
+      runuser -u "$SITE_USER" -- tar -xzpf - -C "$STAGE" --no-same-owner public < "$ARCHIVE" \
+        || die "could not unpack the website files"
+      [[ -d "$STAGE/public" && ! -L "$STAGE/public" ]] || die "archive has no public directory"
+      runuser -u "$SITE_USER" -- find "$STAGE/public" -perm /6000 -exec chmod ug-s {} + 2>/dev/null || true
+      echo "==> Replacing the live website files"
+      chown -hR "$SITE_USER:$SITE_USER" "$SITE_PUBLIC"
+      runuser -u "$SITE_USER" -- rsync -a --ignore-times --delete "$STAGE/public/" "$SITE_PUBLIC/" \
+        || die "could not replace the website files"
+      rm -rf --one-file-system "$STAGE"; STAGE=""
+      PANEL_USER="$(stat -c %U "$(dirname "$BACKUP_DIR")")"
+      setfacl -R -P -m "u:${PANEL_USER}:rX,u:www-data:rX" "$SITE_PUBLIC"
+      find "$SITE_PUBLIC" -type d -exec setfacl -m "d:u:${PANEL_USER}:rX,d:u:www-data:rX" {} +
+      echo "restored files into $SITE_PUBLIC"
+    fi
+    for DB in "${DBS[@]}"; do
+      command -v mysql >/dev/null 2>&1 || die "the mysql client is not installed"
+      echo "==> Restoring database $DB"
+      CHARSET="$(mysql -N -B -e "SELECT DEFAULT_CHARACTER_SET_NAME, DEFAULT_COLLATION_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME='${DB}'" 2>/dev/null || true)"
+      CREATE="CREATE DATABASE \`${DB}\`"
+      if [[ "$CHARSET" =~ ^([A-Za-z0-9_]+)[[:space:]]+([A-Za-z0-9_]+)$ ]]; then
+        CREATE="$CREATE CHARACTER SET ${BASH_REMATCH[1]} COLLATE ${BASH_REMATCH[2]}"
+      fi
+      mysql -e "DROP DATABASE IF EXISTS \`${DB}\`; ${CREATE};" || die "could not recreate database $DB"
+      tar -xzOf "$ARCHIVE" "databases/$DB.sql" | timeout 3600s mysql "$DB" || die "could not import database $DB"
+      echo "restored database $DB"
+    done
     ;;
 
   site-git-status)

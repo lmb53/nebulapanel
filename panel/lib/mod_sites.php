@@ -275,6 +275,7 @@ function site_ssl(string $domain, string $email = '', ?callable $onOutput = null
         return ['ok' => false, 'error' => 'TLS was issued, but panel state could not be updated.'];
     }
     audit('site.ssl', $domain);
+    cache_forget('ssl-expiry');
     return ['ok' => true];
 }
 
