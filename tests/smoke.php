@@ -546,6 +546,24 @@ require_once APP_ROOT . '/lib/mod_apps.php';
 $check(php_latest_version() === '8.5', 'the latest supported PHP version is not 8.5');
 $check(strpos($installerSource, 'PANEL_PHP="${PANEL_PHP:-8.5}"') !== false, 'the installer does not default the panel to PHP 8.5');
 
+// Browsers compile pattern="" with the RegExp `v` flag, which rejects an
+// unescaped "-" at the edge of a character class and unescaped ( ) [ { } / |
+// inside one. An invalid pattern silently disables that field's validation.
+$badPatterns = [];
+foreach (glob(APP_ROOT . '/views/*.php') ?: [] as $viewFile) {
+    preg_match_all('/\bpattern="([^"]*)"/', (string) file_get_contents($viewFile), $found);
+    foreach ($found[1] as $pattern) {
+        preg_match_all('/(?<!\\\\)\[((?:\\\\.|[^\]\\\\])*)\]/', $pattern, $classes);
+        foreach ($classes[1] as $class) {
+            $body = ltrim($class, '^');
+            if (preg_match('/^-|(?<!\\\\)-$|(?<!\\\\)[(){}\[\/|]/', $body)) {
+                $badPatterns[] = basename($viewFile) . ': ' . $pattern;
+            }
+        }
+    }
+}
+$check(!$badPatterns, 'pattern attributes the browser rejects under the v flag: ' . implode('; ', $badPatterns));
+
 @unlink(DATA_DIR . '/setup.lock');
 @unlink(fm_state_file());
 @unlink(fm_state_file() . '.lock');

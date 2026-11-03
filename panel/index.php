@@ -24,6 +24,11 @@ switch ($route) {
         $error = null;
         if ($method === 'POST') {
             csrf_check();
+            // A typo here would lock the operator out: the token is single-use.
+            if ((string) ($_POST['password'] ?? '') !== (string) ($_POST['password_confirm'] ?? '')) {
+                render('setup', ['error' => 'The passwords do not match.', 'username' => (string) ($_POST['username'] ?? '')], false);
+                return;
+            }
             $res = create_admin(
                 $_POST['username'] ?? '',
                 $_POST['password'] ?? '',

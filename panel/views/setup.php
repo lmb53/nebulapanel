@@ -28,9 +28,11 @@
         <label class="field-label" for="setup-bootstrap-token-1">Bootstrap token</label>
         <input id="setup-bootstrap-token-1" class="input mono" type="password" name="bootstrap_token" required minlength="32" maxlength="128" autocomplete="one-time-code" autofocus style="margin-bottom:14px">
         <label class="field-label" for="setup-username-2">Username</label>
-        <input id="setup-username-2" class="input" type="text" name="username" required minlength="3" maxlength="64" pattern="[A-Za-z0-9_.-]+" value="<?= e($username ?? '') ?>" autocomplete="username" style="margin-bottom:14px">
+        <input id="setup-username-2" class="input" type="text" name="username" required minlength="3" maxlength="64" pattern="[A-Za-z0-9_.\-]+" value="<?= e($username ?? '') ?>" autocomplete="username" style="margin-bottom:14px">
         <label class="field-label" for="setup-password">Password <span style="color:var(--text-tertiary);font-weight:400">(min 12 characters)</span></label>
-        <input id="setup-password" class="input" type="password" name="password" required minlength="12" maxlength="1024" autocomplete="new-password" style="margin-bottom:18px">
+        <input id="setup-password" class="input" type="password" name="password" required minlength="12" maxlength="1024" autocomplete="new-password" style="margin-bottom:14px">
+        <label class="field-label" for="setup-password-confirm">Confirm password</label>
+        <input id="setup-password-confirm" class="input" type="password" name="password_confirm" required minlength="12" maxlength="1024" autocomplete="new-password" style="margin-bottom:18px">
         <button class="btn btn-primary" type="submit" style="width:100%"><i data-lucide="user-plus"></i>Create account &amp; sign in</button>
       </form>
     </div>

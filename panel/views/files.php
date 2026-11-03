@@ -672,6 +672,8 @@ document.addEventListener('DOMContentLoaded', () => {
     if (!paths.length && fallbackRow?.dataset.path) paths.push(fallbackRow.dataset.path);
     return Array.from(new Set(paths));
   };
+  const nItems = (n) => `${n} item${n === 1 ? '' : 's'}`;
+  const writeClipboard = (value) => { try { if (value) localStorage.setItem('nebula.fm.clipboard', JSON.stringify(value)); else localStorage.removeItem('nebula.fm.clipboard'); return true; } catch (e) { return false; } };
   const readClipboard = () => { try { const c = JSON.parse(localStorage.getItem('nebula.fm.clipboard') || 'null'); return c?.paths?.length && ['copy', 'move'].includes(c.op) ? c : null; } catch (e) { return null; } };
   function syncSelection() {
     const rows = checkedRows();
@@ -681,7 +683,7 @@ document.addEventListener('DOMContentLoaded', () => {
     document.querySelectorAll('[data-needs-selection]').forEach((btn) => { btn.disabled = !rows.length; });
     const paste = document.getElementById('fmPaste');
     const clip = readClipboard();
-    if (paste) { paste.disabled = !clip; paste.title = clip ? `Paste ${clip.paths.length} item(s) here (${clip.op === 'move' ? 'move' : 'copy'})` : 'Clipboard is empty'; }
+    if (paste) { paste.disabled = !clip; paste.title = clip ? `Paste ${nItems(clip.paths.length)} here (${clip.op === 'move' ? 'move' : 'copy'})` : 'Clipboard is empty'; }
     const all = document.getElementById('fmSelectAll');
     if (all) {
       const boxes = listView?.querySelectorAll('.fm-row:not(.hidden) .row-check') || [];
@@ -811,28 +813,29 @@ document.addEventListener('DOMContentLoaded', () => {
   function setClipboard(op, fallbackRow = null) {
     const paths = selectedPaths(fallbackRow);
     if (!paths.length) { toast('Select at least one item', 'warning'); return; }
-    localStorage.setItem('nebula.fm.clipboard', JSON.stringify({ op, paths }));
-    toast(`${paths.length} item(s) ${op === 'move' ? 'cut — paste in another folder to move them' : 'copied'}`, 'success');
+    if (!writeClipboard({ op, paths })) { toast('The clipboard needs browser storage, which is blocked here.', 'error'); return; }
+    toast(`${nItems(paths.length)} ${op === 'move' ? 'cut — paste in another folder to move them' : 'copied'}`, 'success');
     syncSelection();
   }
   async function pasteClipboard() {
     const clip = readClipboard();
     if (!clip) { toast('Clipboard is empty', 'warning'); return; }
     let ok = 0;
+    const remaining = [];
     for (const path of clip.paths) {
       const res = await apiPost('file-op', { path, dest: CURDIR, op: clip.op });
-      if (res.ok) ok++; else toast(`${path}: ${res.error || 'Paste failed'}`, 'error');
+      if (res.ok) ok++; else { remaining.push(path); toast(`${path}: ${res.error || 'Paste failed'}`, 'error'); }
     }
-    if (ok) {
-      if (clip.op === 'move' && ok === clip.paths.length) localStorage.removeItem('nebula.fm.clipboard');
-      toast(`Pasted ${ok} item(s)`, 'success'); reload();
-    }
+    // Moved items no longer exist at their old paths; keep only the failures.
+    if (clip.op === 'move') writeClipboard(remaining.length ? { op: 'move', paths: remaining } : null);
+    if (ok) { toast(`${clip.op === 'move' ? 'Moved' : 'Pasted'} ${nItems(ok)}`, 'success'); reload(); }
+    else syncSelection();
   }
   async function compressPaths(paths) {
     if (!paths.length) { toast('Select at least one item', 'warning'); return; }
     const suggested = paths.length === 1 ? (paths[0].split('/').pop() || 'archive') : 'archive';
     const name = await askText({ title: 'Compress', label: 'Archive name (.zip or .tar.gz)', value: suggested.replace(/\.(tar\.gz|[^.]+)$/i, '') + '.zip',
-      validate: (v) => validName(v) || (/\.(zip|tar\.gz|tgz)$/i.test(v) ? '' : 'End the name with .zip or .tar.gz'), selectStem: true, confirmLabel: 'Create archive' });
+      validate: (v) => validName(v) || (/\.(zip|tar\.gz)$/i.test(v) ? '' : 'End the name with .zip or .tar.gz'), selectStem: true, confirmLabel: 'Create archive' });
     if (!name) return;
     const res = await apiPost('file-compress', { paths, dest: CURDIR, name });
     if (res.ok) { toast(`Created ${name}`, 'success'); reload(); }

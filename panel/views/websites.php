@@ -45,7 +45,7 @@ $apacheStatus = service_status('apache2');
       <form class="form-grid" id="wsCreateForm" style="--cols:minmax(0,1fr) 160px minmax(0,240px) auto" novalidate>
         <div>
           <label class="field-label" for="wsDomain">Domain<span class="req" aria-hidden="true">*</span></label>
-          <input class="input mono" id="wsDomain" required placeholder="example.com" pattern="^(?=.{1,253}$)([A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$" autocomplete="off" data-pattern-message="Enter a domain name such as example.com (no http:// or paths).">
+          <input class="input mono" id="wsDomain" required placeholder="example.com" pattern="^(?=.{1,253}$)([A-Za-z0-9](?:[A-Za-z0-9\-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$" autocomplete="off" data-pattern-message="Enter a domain name such as example.com (no http:// or paths).">
         </div>
         <div>
           <label class="field-label" for="wsPhp">PHP version</label>

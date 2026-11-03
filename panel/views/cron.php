@@ -7,14 +7,14 @@ $whoami = trim(shell_exec('whoami 2>/dev/null') ?: 'web user');
 $scheduled = array_values(array_filter($jobs, fn($j) => ($j['type'] ?? '') === 'job'));
 ?>
 <div class="page-header">
-  <div><h1 class="page-title">Cron Jobs</h1><p class="page-subtitle"><?= count($scheduled) ?> scheduled tasks · running as <span class="mono"><?= e($whoami) ?></span></p></div>
+  <div><h1 class="page-title">Cron Jobs</h1><p class="page-subtitle"><?= count($scheduled) ?> scheduled task<?= count($scheduled) === 1 ? '' : 's' ?> · running as <span class="mono"><?= e($whoami) ?></span></p></div>
   <?php if ($available): ?><div class="page-actions"><button class="btn btn-primary" type="button" id="cronNew"><i data-lucide="plus"></i>New cron job</button></div><?php endif; ?>
 </div>
 <?php if (!$available): ?>
   <?= requirement_missing('clock', 'crontab is not available', 'The <span class="mono">crontab</span> command was not found or cannot be run by the panel user.') ?>
 <?php else: ?>
 <div class="card" style="margin-bottom:16px">
-  <div class="card-header"><h3>Scheduled jobs</h3><span class="muted"><?= count($scheduled) ?> jobs</span></div>
+  <div class="card-header"><h3>Scheduled jobs</h3><span class="muted"><?= count($scheduled) ?> job<?= count($scheduled) === 1 ? '' : 's' ?></span></div>
   <div class="table-wrap"><table class="data-table"><thead><tr><th>Schedule</th><th>Command</th><th>User</th><th>Status</th><th class="actions-col"><span class="sr-only">Actions</span></th></tr></thead><tbody>
   <?php foreach ($scheduled as $job): $enabled = ($job['enabled'] ?? true) === true; ?>
     <tr class="<?= $enabled ? '' : 'cron-disabled' ?>" data-cron-raw="<?= e($job['raw'] ?? '') ?>">
