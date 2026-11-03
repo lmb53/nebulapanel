@@ -1,6 +1,6 @@
 <?php
 require_once APP_ROOT . '/lib/mod_notifications.php';
-$items = notifications_items();
+$items = items_linkable_for_role(notifications_items());
 $unread = count(array_filter($items, fn($item) => empty($item['read'])));
 ?>
 <div class="page-header">
@@ -19,7 +19,8 @@ $unread = count(array_filter($items, fn($item) => empty($item['read'])));
   <?php foreach ($items as $i => $item): ?>
     <div class="service-row notification-row" data-level="<?= e($item['level'] ?? 'info') ?>" data-read="<?= !empty($item['read']) ? '1' : '0' ?>" style="padding:16px;border-radius:0;<?= $i ? 'border-top:1px solid var(--border-subtle);' : '' ?>">
       <div class="svc-icon"><i data-lucide="<?= e($item['icon'] ?? 'bell') ?>" style="color:<?= ($item['level'] ?? '') === 'critical' ? 'var(--red-400)' : (($item['level'] ?? '') === 'warning' ? 'var(--orange-400)' : 'var(--blue-400)') ?>"></i></div>
-      <a href="<?= e(url($item['route'] ?? 'dashboard')) ?>" style="flex:1;text-decoration:none;color:inherit"><div style="font-size:13px;font-weight:600"><?= e($item['title'] ?? '') ?></div><div class="text-tertiary" style="font-size:12px;margin-top:3px"><?= e($item['detail'] ?? '') ?></div></a>
+      <?php $notifTag = !empty($item['route']) ? 'a href="' . e(url((string) $item['route'])) . '"' : 'div'; ?>
+      <<?= $notifTag ?> style="flex:1;text-decoration:none;color:inherit"><div style="font-size:13px;font-weight:600"><?= e($item['title'] ?? '') ?></div><div class="text-tertiary" style="font-size:12px;margin-top:3px"><?= e($item['detail'] ?? '') ?></div></<?= !empty($item['route']) ? 'a' : 'div' ?>>
       <span class="badge <?= !empty($item['read']) ? 'badge-slate' : 'badge-blue' ?>"><?= !empty($item['read']) ? 'Read' : 'New' ?></span>
       <?php if (empty($item['read'])): ?><button class="icon-btn" type="button" data-notif-read="<?= e($item['id']) ?>" title="Mark as read" aria-label="Mark “<?= e($item['title'] ?? '') ?>” as read"><i data-lucide="check"></i></button><?php else: ?><span class="icon-btn-spacer" aria-hidden="true"></span><?php endif; ?>
       <button class="icon-btn" type="button" data-notif-delete="<?= e($item['id']) ?>" title="Dismiss" aria-label="Dismiss “<?= e($item['title'] ?? '') ?>”"><i data-lucide="x"></i></button>

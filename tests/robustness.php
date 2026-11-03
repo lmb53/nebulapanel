@@ -183,6 +183,28 @@ $check(cron_line_error($lines, 1, '0 2 * * * b') === null && cron_line_error($li
 $check(cron_line_error($lines, 1, '0 1 * * * a') !== null && cron_line_error($lines, 5, null) !== null,
     'a shifted or missing crontab line is refused');
 
+$check(cron_validate('0 2 * * *', 'date +%F') !== null && cron_validate('0 2 * * *', 'date +\\%F') === null,
+    'a bare % (a line break to cron) must be escaped');
+
+// A stub crontab: STATE holds the table; MODE=none|fail controls `crontab -l`.
+$cronBin = $tmp . '/bin';
+mkdir($cronBin, 0700, true);
+file_put_contents($cronBin . '/crontab', "#!/bin/sh\nD=\"$tmp/cron\"\nif [ \"\$1\" = -l ]; then\n"
+    . "  case \"\$(cat \"\$D.mode\" 2>/dev/null)\" in none) echo 'no crontab for www-data' >&2; exit 1;; fail) echo 'crontab: permission denied' >&2; exit 1;; esac\n"
+    . "  cat \"\$D.state\"; exit 0\nfi\ncp \"\$1\" \"\$D.state\"\n");
+chmod($cronBin . '/crontab', 0700);
+putenv('PATH=' . $cronBin . ':' . getenv('PATH'));
+file_put_contents($tmp . '/cron.mode', 'none');
+$check(cron_read_lines() === [] && !empty(cron_add('@daily', 'echo first')['ok']),
+    'a missing crontab reads as empty and can be created');
+file_put_contents($tmp . '/cron.mode', 'ok');
+$check(cron_read_lines() === ['@daily echo first'], 'a job is written to the crontab');
+file_put_contents($tmp . '/cron.mode', 'fail');
+$check(cron_read_lines() === null && empty(cron_add('@hourly', 'echo second')['ok']),
+    'a crontab that cannot be read is never overwritten');
+file_put_contents($tmp . '/cron.mode', 'ok');
+$check((string) file_get_contents($tmp . '/cron.state') === "@daily echo first\n", 'existing jobs survive a failed read');
+
 // --- Firewall / Fail2Ban -----------------------------------------------------------
 $check(fw_rule_key("22/tcp                     ALLOW IN    Anywhere") === fw_rule_key("22/tcp ALLOW IN Anywhere"),
     'firewall rules compare independently of column padding');

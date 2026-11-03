@@ -105,8 +105,10 @@ document.addEventListener('DOMContentLoaded', () => {
       empty.append(icon, copy); box.appendChild(empty);
     } else {
       res.items.forEach((item) => {
-        const row = document.createElement('a');
-        row.className = 'service-row'; row.href = <?= json_encode(base_url() . '/?r=') ?> + encodeURIComponent(item.route);
+        // A null route means the current role cannot open the related page.
+        const row = document.createElement(item.route ? 'a' : 'div');
+        row.className = 'service-row';
+        if (item.route) row.href = <?= json_encode(base_url() . '/?r=') ?> + encodeURIComponent(item.route);
         row.style.marginBottom = '8px';
         const iconWrap = document.createElement('div'); iconWrap.className = 'svc-icon';
         const icon = document.createElement('i'); icon.dataset.lucide = item.icon; icon.style.color = (levelMap[item.level] || [null, null, 'var(--blue-400)'])[2];
@@ -116,7 +118,9 @@ document.addEventListener('DOMContentLoaded', () => {
         const detail = document.createElement('div'); detail.className = 'text-tertiary'; detail.style.fontSize = '12px'; detail.style.marginTop = '2px'; detail.textContent = item.detail;
         copy.append(title, detail);
         const arrow = document.createElement('i'); arrow.dataset.lucide = 'chevron-right'; arrow.style.color = 'var(--text-tertiary)'; arrow.setAttribute('aria-hidden', 'true');
-        row.append(iconWrap, copy, arrow); box.appendChild(row);
+        row.append(iconWrap, copy);
+        if (item.route) row.append(arrow);
+        box.appendChild(row);
       });
     }
     if (window.lucide) lucide.createIcons();

@@ -57,10 +57,12 @@ function backup_create(string $siteId, string $label): array
     if (!$site) return ['ok' => false, 'error' => 'Managed site not found.'];
     $label = trim($label);
     if ($label === '') {
-        $label = (string) ($site['domain'] ?? 'site');
+        // Domains can exceed the 60-character label limit; derive a safe default.
+        $label = substr(trim((string) preg_replace('/[^A-Za-z0-9_.-]+/', '-', (string) ($site['domain'] ?? '')), '.-'), 0, 60);
+        if ($label === '') { $label = 'site'; }
     }
     if (!preg_match('/^[A-Za-z0-9_.-]{1,60}$/', $label)) {
-        return ['ok' => false, 'error' => 'Label may only contain letters, numbers, _ . -'];
+        return ['ok' => false, 'error' => 'Label must be 1–60 letters, numbers, _ . or -'];
     }
     $fname = $label . '-' . date('Ymd-His') . '.tar.gz';
     [$c, $o] = helper_cmd('site-backup ' . escapeshellarg($siteId) . ' ' . escapeshellarg($fname), 900);

@@ -178,6 +178,17 @@ function require_capability(string $capability): void
     exit('Forbidden');
 }
 
+/** Clear the route of items (health alerts, notifications) the current role cannot open. */
+function items_linkable_for_role(array $items): array
+{
+    return array_map(static function ($item) {
+        if (is_array($item) && isset($item['route']) && !role_route_allowed((string) $item['route'])) {
+            $item['route'] = null;
+        }
+        return $item;
+    }, $items);
+}
+
 function role_route_allowed(string $route, ?string $role = null): bool
 {
     $role = $role ?? current_role();

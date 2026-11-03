@@ -114,7 +114,7 @@ function nav_link(string $route, string $icon, string $label, string $active): s
       </div>
       <div class="topbar-spacer"></div>
       <button class="search-trigger" id="searchTrigger" type="button" aria-haspopup="dialog" aria-controls="cmdk" aria-label="Search pages (Ctrl+K)"><i data-lucide="search" aria-hidden="true"></i><span>Search or jump to…</span><span class="kbd" aria-hidden="true">⌘K</span></button>
-      <?php if ($navActive !== ''): ?>
+      <?php if ($navActive !== '' && role_route_allowed($navActive)): ?>
       <button class="icon-btn" id="pinToggle" type="button" data-route="<?= e($navActive) ?>" aria-pressed="false" title="Pin this page to the sidebar" aria-label="Pin this page to the sidebar"><i data-lucide="star"></i></button>
       <?php endif; ?>
       <button class="icon-btn" id="themeToggle" type="button" title="Toggle theme" aria-label="Toggle theme"><i data-lucide="moon"></i></button>

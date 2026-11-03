@@ -20,8 +20,8 @@ function settings_update_general(?string $panelName, $sessionTimeout, $healthWar
     $ov = settings_overrides();
     if ($panelName !== null) {
         $panelName = trim($panelName);
-        if ($panelName === '' || strlen($panelName) > 60) {
-            return ['ok' => false, 'error' => 'Panel name must be 1–60 characters.'];
+        if ($panelName === '' || mb_strlen($panelName, 'UTF-8') > 60 || preg_match('/[\x00-\x1F\x7F]/', $panelName)) {
+            return ['ok' => false, 'error' => 'Panel name must be 1–60 characters with no control characters.'];
         }
         $ov['panel_name'] = $panelName;
     }

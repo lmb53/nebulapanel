@@ -658,8 +658,9 @@
         }
         items.forEach((item) => {
           const row = document.createElement('div'); row.className = 'notification-menu-item' + (item.read ? '' : ' unread');
-          const icon = document.createElement('a'); icon.className = 'notif-icon'; icon.href = `${BASE}/?r=${encodeURIComponent(item.route || 'dashboard')}`; icon.innerHTML = `<i data-lucide="${/^[a-z0-9-]+$/.test(item.icon || '') ? item.icon : 'bell'}" aria-hidden="true"></i>`; icon.style.color = color(item.level); icon.tabIndex = -1;
-          const copy = document.createElement('a'); copy.className = 'notification-menu-copy'; copy.href = icon.href;
+          const href = item.route ? `${BASE}/?r=${encodeURIComponent(item.route)}` : null;
+          const icon = document.createElement(href ? 'a' : 'span'); icon.className = 'notif-icon'; if (href) icon.href = href; icon.innerHTML = `<i data-lucide="${/^[a-z0-9-]+$/.test(item.icon || '') ? item.icon : 'bell'}" aria-hidden="true"></i>`; icon.style.color = color(item.level); icon.tabIndex = -1;
+          const copy = document.createElement(href ? 'a' : 'div'); copy.className = 'notification-menu-copy'; if (href) copy.href = href;
           const title = document.createElement('strong'); title.textContent = item.title || '';
           const detail = document.createElement('span'); detail.textContent = item.detail || ''; detail.title = item.detail || '';
           copy.append(title, detail);

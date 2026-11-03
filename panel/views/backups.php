@@ -30,7 +30,7 @@ $sites = sites_list();
       </div>
       <div>
         <label class="field-label" for="bkLabel">Label <span class="text-tertiary" style="font-weight:400">(optional)</span></label>
-        <input class="input" id="bkLabel" maxlength="40" placeholder="before-upgrade">
+        <input class="input" id="bkLabel" maxlength="60" pattern="[A-Za-z0-9_.\-]+" data-pattern-message="Use letters, numbers, dots, dashes or underscores (no spaces)." placeholder="before-upgrade">
       </div>
       <button class="btn btn-primary" type="submit" id="bkCreate"><i data-lucide="archive"></i>Create backup</button>
     </form>

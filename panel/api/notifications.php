@@ -16,5 +16,5 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
     json_out($ok ? ['ok' => true] : ['ok' => false, 'error' => 'Could not update notification state.'], $ok ? 200 : 400);
 }
-$items = notifications_items();
+$items = items_linkable_for_role(notifications_items());
 json_out(['ok' => true, 'unread' => count(array_filter($items, fn($item) => empty($item['read']))), 'items' => $items]);

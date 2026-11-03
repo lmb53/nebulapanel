@@ -50,7 +50,7 @@ $scheduled = array_values(array_filter($jobs, fn($j) => ($j['type'] ?? '') === '
       <label><span>Weekday</span><select class="input" data-cron-part="4"><option value="*">Every day</option><?php foreach(['Sun','Mon','Tue','Wed','Thu','Fri','Sat'] as $i=>$day): ?><option value="<?= $i ?>"><?= $day ?></option><?php endforeach; ?></select></label>
     </div><p class="muted" id="cronBuilderHint" style="font-size:11px;margin-top:8px">The dropdowns update the five-part cron expression below.</p></div>
     <div style="margin-bottom:18px"><label class="field-label" for="cronSchedule">Schedule expression</label><input class="input mono" id="cronSchedule" value="0 2 * * *"><p class="muted" style="font-size:11px;margin-top:6px">Advanced ranges, steps, lists, and @keywords are supported.</p></div>
-    <div><label class="field-label" for="cronCommand">Command</label><textarea class="input mono" id="cronCommand" rows="6" placeholder="/usr/bin/php /var/www/site/artisan schedule:run"></textarea></div>
+    <div><label class="field-label" for="cronCommand">Command</label><textarea class="input mono" id="cronCommand" rows="4" placeholder="/usr/bin/php /var/www/site/artisan schedule:run" aria-describedby="cronCommandHelp"></textarea><p class="muted" id="cronCommandHelp" style="font-size:11px;margin-top:6px">A single line. Write every <span class="mono">%</span> as <span class="mono">\%</span> — cron reads a bare <span class="mono">%</span> as a line break.</p></div>
   </div>
   <div class="drawer-footer"><button class="btn btn-secondary" data-close-cron>Cancel</button><button class="btn btn-primary" id="cronSave"><i data-lucide="save"></i>Save job</button></div>
 </div></div>

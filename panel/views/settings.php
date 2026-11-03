@@ -19,7 +19,7 @@ $healthCritical = (int) ($config['health_critical_percent'] ?? 90);
     <form class="card-pad form-stack" id="settingsForm" novalidate>
       <div>
         <label class="field-label" for="setPanelName">Panel name<span class="req" aria-hidden="true">*</span></label>
-        <input class="input" id="setPanelName" required maxlength="64" value="<?= e($panelName) ?>">
+        <input class="input" id="setPanelName" required maxlength="60" value="<?= e($panelName) ?>">
         <div class="field-help">Shown in the sidebar, the sign-in page and browser tabs.</div>
       </div>
       <div>

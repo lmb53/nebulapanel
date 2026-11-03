@@ -10,18 +10,63 @@ function cron_available(): bool
     return has_cmd('crontab');
 }
 
+/**
+ * Crontab lines, [] when the account has no crontab yet, or null when it
+ * could not be read. Callers that write must treat null as an error: saving
+ * after a failed read would replace every existing job.
+ */
+function cron_read_lines(): ?array
+{
+    [$code, $out] = run_cmd('crontab -l 2>&1');
+    if ($code !== 0) {
+        return stripos($out, 'no crontab for') !== false ? [] : null;
+    }
+    $raw = rtrim($out, "\n");
+    return $raw === '' ? [] : preg_split('/\r?\n/', $raw);
+}
+
 /** Raw crontab text (empty string if none / not available). */
 function cron_raw(): string
 {
-    [$code, $out] = run_cmd('crontab -l 2>/dev/null');
-    return $code === 0 ? $out : '';
+    $lines = cron_read_lines();
+    return $lines ? implode("\n", $lines) . "\n" : '';
 }
 
-/** Current crontab as an array of lines (no trailing blank). */
+/** Current crontab as an array of lines (no trailing blank). Read-only use. */
 function cron_current_lines(): array
 {
-    $raw = rtrim(cron_raw(), "\n");
-    return $raw === '' ? [] : preg_split('/\r?\n/', $raw);
+    return cron_read_lines() ?? [];
+}
+
+/**
+ * Serialise read-modify-write cycles so two concurrent edits cannot undo
+ * each other. $mutator receives the current lines and returns
+ * [newLines|null, result]; null lines means "do not save".
+ */
+function cron_mutate(callable $mutator): array
+{
+    $handle = @fopen(DATA_DIR . '/cron.lock', 'c');
+    if ($handle === false || !@flock($handle, LOCK_EX)) {
+        if (is_resource($handle)) { fclose($handle); }
+        return ['ok' => false, 'error' => 'Could not lock the crontab for editing.'];
+    }
+    try {
+        $lines = cron_read_lines();
+        if ($lines === null) {
+            return ['ok' => false, 'error' => 'The current crontab could not be read, so it was not changed.'];
+        }
+        [$next, $result] = $mutator($lines);
+        if ($next === null) { return $result; }
+        $saved = cron_save($next);
+        if (empty($saved['ok'])) { return $saved; }
+        // Audit only what was actually written.
+        if (isset($result['_audit'])) { audit($result['_audit'][0], $result['_audit'][1]); }
+        unset($result['_audit']);
+        return $result;
+    } finally {
+        @flock($handle, LOCK_UN);
+        fclose($handle);
+    }
 }
 
 /** Parse the crontab into structured entries keyed by line index. */
@@ -105,6 +150,11 @@ function cron_validate(string $schedule, string $command): ?string
     if (preg_match('/[\x00-\x08\x0A-\x1F\x7F]/', $schedule . $command)) {
         return 'Schedule and command must each be a single line.';
     }
+    // cron turns an unescaped % into a newline, silently cutting the command
+    // short (e.g. `date +%F`), while "Run now" in a shell would still work.
+    if (preg_match('/(?<!\\\\)%/', $command)) {
+        return 'Escape every % in the command as \\% — cron treats a bare % as a line break.';
+    }
     if ($schedule[0] === '@') {
         return in_array(strtolower($schedule), CRON_KEYWORDS, true)
             ? null : 'Unknown schedule keyword. Use one of ' . implode(', ', CRON_KEYWORDS) . '.';
@@ -144,53 +194,54 @@ function cron_add(string $schedule, string $command): array
     if (($error = cron_validate($schedule, $command)) !== null) {
         return ['ok' => false, 'error' => $error];
     }
-    $lines = cron_current_lines();
-    $lines[] = $schedule . ' ' . $command;
-    $res = cron_save($lines);
-    if ($res['ok']) {
-        audit('cron.add', $schedule . ' ' . $command);
-    }
-    return $res;
+    return cron_mutate(static function (array $lines) use ($schedule, $command): array {
+        $lines[] = $schedule . ' ' . $command;
+        return [$lines, ['ok' => true, '_audit' => ['cron.add', $schedule . ' ' . $command]]];
+    });
 }
 
 function cron_delete(int $index, ?string $expect = null): array
 {
-    $lines = cron_current_lines();
-    if (($error = cron_line_error($lines, $index, $expect)) !== null) {
-        return ['ok' => false, 'error' => $error];
-    }
-    $removed = $lines[$index];
-    array_splice($lines, $index, 1);
-    $res = cron_save($lines);
-    if ($res['ok']) {
-        audit('cron.delete', $removed);
-    }
-    return $res;
+    return cron_mutate(static function (array $lines) use ($index, $expect): array {
+        if (($error = cron_line_error($lines, $index, $expect)) !== null) {
+            return [null, ['ok' => false, 'error' => $error]];
+        }
+        $removed = $lines[$index];
+        array_splice($lines, $index, 1);
+        return [$lines, ['ok' => true, '_audit' => ['cron.delete', $removed]]];
+    });
 }
 
 function cron_update(int $index,string $schedule,string $command,?string $expect=null): array
 {
-    $schedule=trim($schedule);$command=trim($command);$lines=cron_current_lines();
-    if(($error=cron_line_error($lines,$index,$expect))!==null)return ['ok'=>false,'error'=>$error];
-    if(($error=cron_validate($schedule,$command))!==null)return ['ok'=>false,'error'=>$error];
-    $disabled = str_starts_with(trim($lines[$index]), '# NEBULA_DISABLED ');
-    $lines[$index]=($disabled?'# NEBULA_DISABLED ':'').$schedule.' '.$command;$res=cron_save($lines);if(!empty($res['ok']))audit('cron.update',$lines[$index]);return $res;
+    $schedule = trim($schedule);
+    $command = trim($command);
+    if (($error = cron_validate($schedule, $command)) !== null) {
+        return ['ok' => false, 'error' => $error];
+    }
+    return cron_mutate(static function (array $lines) use ($index, $schedule, $command, $expect): array {
+        if (($error = cron_line_error($lines, $index, $expect)) !== null) {
+            return [null, ['ok' => false, 'error' => $error]];
+        }
+        $disabled = str_starts_with(trim($lines[$index]), '# NEBULA_DISABLED ');
+        $lines[$index] = ($disabled ? '# NEBULA_DISABLED ' : '') . $schedule . ' ' . $command;
+        return [$lines, ['ok' => true, '_audit' => ['cron.update', $lines[$index]]]];
+    });
 }
 
 function cron_toggle(int $index, bool $enabled, ?string $expect = null): array
 {
-    $lines = cron_current_lines();
-    if (($error = cron_line_error($lines, $index, $expect)) !== null) { return ['ok' => false, 'error' => $error]; }
-    $trimmed = trim($lines[$index]);
-    $currentlyDisabled = str_starts_with($trimmed, '# NEBULA_DISABLED ');
-    $jobLine = $currentlyDisabled ? substr($trimmed, strlen('# NEBULA_DISABLED ')) : $trimmed;
-    if (cron_parse_job_line($jobLine, $index) === null) {
-        return ['ok' => false, 'error' => 'Only cron jobs can be enabled or disabled.'];
-    }
-    $lines[$index] = $enabled ? $jobLine : '# NEBULA_DISABLED ' . $jobLine;
-    $res = cron_save($lines);
-    if (!empty($res['ok'])) { audit('cron.' . ($enabled ? 'enable' : 'disable'), $jobLine); }
-    return $res;
+    return cron_mutate(static function (array $lines) use ($index, $enabled, $expect): array {
+        if (($error = cron_line_error($lines, $index, $expect)) !== null) { return [null, ['ok' => false, 'error' => $error]]; }
+        $trimmed = trim($lines[$index]);
+        $currentlyDisabled = str_starts_with($trimmed, '# NEBULA_DISABLED ');
+        $jobLine = $currentlyDisabled ? substr($trimmed, strlen('# NEBULA_DISABLED ')) : $trimmed;
+        if (cron_parse_job_line($jobLine, $index) === null) {
+            return [null, ['ok' => false, 'error' => 'Only cron jobs can be enabled or disabled.']];
+        }
+        $lines[$index] = $enabled ? $jobLine : '# NEBULA_DISABLED ' . $jobLine;
+        return [$lines, ['ok' => true, '_audit' => ['cron.' . ($enabled ? 'enable' : 'disable'), $jobLine]]];
+    });
 }
 
 function cron_runs_file(): string { return DATA_DIR.'/cron-runs.json'; }
@@ -198,5 +249,5 @@ function cron_runs(): array { $runs=@json_decode((string)@file_get_contents(cron
 function cron_run_now(int $index, ?string $expect = null): array
 {
     $lines=cron_current_lines();if(($error=cron_line_error($lines,$index,$expect))!==null)return ['ok'=>false,'error'=>$error];$parsed=null;foreach(cron_list() as $job)if(($job['index']??-1)===$index&&($job['type']??'')==='job'){$parsed=$job;break;}if(!$parsed)return ['ok'=>false,'error'=>'Only cron jobs can be run.'];
-    [$code,$out]=run_cmd((string)$parsed['command'],60);$runs=cron_runs();array_unshift($runs,['time'=>date('c'),'schedule'=>$parsed['schedule'],'command'=>$parsed['command'],'exit'=>$code,'output'=>substr($out,0,4000)]);write_json_file(cron_runs_file(),array_slice($runs,0,30));audit('cron.run',$parsed['command'].' (exit '.$code.')');return ['ok'=>$code===0,'exit'=>$code,'output'=>$out,'error'=>$code===0?'':('Command exited with code '.$code)];
+    [$code,$out]=run_cmd(str_replace('\\%','%',(string)$parsed['command']),60);$runs=cron_runs();array_unshift($runs,['time'=>date('c'),'schedule'=>$parsed['schedule'],'command'=>$parsed['command'],'exit'=>$code,'output'=>substr($out,0,4000)]);write_json_file(cron_runs_file(),array_slice($runs,0,30));audit('cron.run',$parsed['command'].' (exit '.$code.')');return ['ok'=>$code===0,'exit'=>$code,'output'=>$out,'error'=>$code===0?'':('Command exited with code '.$code)];
 }

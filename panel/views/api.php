@@ -1,6 +1,8 @@
 <?php
 require_once APP_ROOT . '/lib/mod_api.php';
 $tokens = array_map('api_token_public', api_tokens_load());
+$isExpired = static fn(array $t): bool => ($ts = strtotime((string) ($t['expires_at'] ?? ''))) !== false && $ts < time();
+$activeCount = count(array_filter($tokens, fn($t) => !$isExpired($t)));
 ?>
 <div class="page-header">
   <div><h1 class="page-title">API Tokens</h1><p class="page-subtitle">Named, expiring bearer credentials for automation (<span class="mono">/?r=api/v1/&lt;endpoint&gt;</span>)</p></div>
@@ -31,21 +33,24 @@ $tokens = array_map('api_token_public', api_tokens_load());
 </div>
 </div>
 <div class="card">
-  <div class="card-header"><h3>Active tokens</h3><span class="muted"><?= count($tokens) ?> active</span></div>
-  <div class="table-wrap"><table class="data-table"><thead><tr><th>Name</th><th>Role / scopes</th><th>Expires</th><th>Last used</th><th class="actions-col"><span class="sr-only">Actions</span></th></tr></thead><tbody>
+  <div class="card-header"><h3>Tokens</h3><span class="muted" id="apiActiveCount"><?= $activeCount ?> active<?= count($tokens) > $activeCount ? ' · ' . (count($tokens) - $activeCount) . ' expired' : '' ?></span></div>
+  <div class="table-wrap"><table class="data-table"><thead><tr><th>Name</th><th>Role / scopes</th><th>Expires</th><th>Last used</th><th class="actions-col"><span class="sr-only">Actions</span></th></tr></thead><tbody id="apiTokenRows">
   <?php foreach ($tokens as $token): ?><tr>
     <td style="font-weight:600"><?= e($token['label']) ?></td>
     <td><span class="badge badge-blue"><?= e(panel_roles()[$token['role'] ?? 'auditor']['label'] ?? ($token['role'] ?? 'auditor')) ?></span> <span class="mono text-tertiary" style="font-size:12px"><?= e(implode(', ', (array) ($token['scopes'] ?? []))) ?></span><?php if(!empty($token['allowed_ips'])): ?><div class="mono text-tertiary" style="font-size:12px;margin-top:3px"><?= e(implode(', ', $token['allowed_ips'])) ?></div><?php endif; ?></td>
-    <td><?= e(fmt_datetime($token['expires_at'] ?? '')) ?></td>
+    <td><?= e(fmt_datetime($token['expires_at'] ?? '')) ?><?php if ($isExpired($token)): ?> <span class="badge badge-red">Expired</span><?php endif; ?></td>
     <td class="text-tertiary"><?= !empty($token['last_used_at']) ? e(fmt_datetime($token['last_used_at'])) : 'Never' ?></td>
     <td class="actions-col"><button class="btn btn-danger btn-sm" type="button" data-api-revoke="<?= e($token['id']) ?>">Revoke</button></td>
   </tr><?php endforeach; ?>
-  <?php if (!$tokens): ?><tr class="empty-row"><td colspan="5">No active API tokens.</td></tr><?php endif; ?>
+  <?php if (!$tokens): ?><tr class="empty-row" id="apiNoTokens"><td colspan="5">No API tokens yet.</td></tr><?php endif; ?>
   </tbody></table></div>
 </div>
 <script>
 document.addEventListener('DOMContentLoaded',()=>{const{apiPost,toast}=window.Nebula;
-document.getElementById('apiForm').onsubmit=async(event)=>{event.preventDefault();if(!window.Nebula.validateForm(event.currentTarget))return;const label=document.getElementById('apiLabel').value.trim();const role=document.getElementById('apiRole').value,ttl_days=Number(document.getElementById('apiTtl').value),scopes=document.getElementById('apiScopes').value.split(',').map(x=>x.trim()).filter(Boolean),allowed_ips=document.getElementById('apiIps').value.split(',').map(x=>x.trim()).filter(Boolean);const r=await apiPost('tokens',{action:'generate',label,role,scopes,ttl_days,allowed_ips});if(!r.ok)return toast(r.error||'Failed','error');document.getElementById('apiPlain').value=r.token;document.getElementById('apiReveal').classList.remove('hidden');};
+document.getElementById('apiForm').onsubmit=async(event)=>{event.preventDefault();if(!window.Nebula.validateForm(event.currentTarget))return;const label=document.getElementById('apiLabel').value.trim();const role=document.getElementById('apiRole').value,ttl_days=Number(document.getElementById('apiTtl').value),scopes=document.getElementById('apiScopes').value.split(',').map(x=>x.trim()).filter(Boolean),allowed_ips=document.getElementById('apiIps').value.split(',').map(x=>x.trim()).filter(Boolean);const btn=document.getElementById('apiGenerate');if(btn.disabled)return;window.Nebula.setBusy(btn,true);const r=await apiPost('tokens',{action:'generate',label,role,scopes,ttl_days,allowed_ips});window.Nebula.setBusy(btn,false);if(!r.ok)return toast(r.error||'Could not generate the token','error');document.getElementById('apiPlain').value=r.token;document.getElementById('apiReveal').classList.remove('hidden');addRow(r.record||{label,role,scopes,allowed_ips});toast('Token created','success');};
+// Show the new token in the list straight away; a reload would hide the one-time value above.
+function addRow(t){document.getElementById('apiNoTokens')?.remove();const roleLabels={auditor:'Auditor',operator:'Operator',developer:'Developer',admin:'Administrator'};const tr=document.createElement('tr');const cell=(text,cls)=>{const td=document.createElement('td');if(cls)td.className=cls;if(text!==undefined)td.textContent=text;return td;};const name=cell(t.label);name.style.fontWeight='600';const roleTd=cell();const badge=document.createElement('span');badge.className='badge badge-blue';badge.textContent=roleLabels[t.role]||t.role;const sc=document.createElement('span');sc.className='mono text-tertiary';sc.style.fontSize='12px';sc.textContent=' '+(t.scopes||[]).join(', ');roleTd.append(badge,sc);if((t.allowed_ips||[]).length){const ips=document.createElement('div');ips.className='mono text-tertiary';ips.style.cssText='font-size:12px;margin-top:3px';ips.textContent=t.allowed_ips.join(', ');roleTd.appendChild(ips);}const act=cell(undefined,'actions-col');if(t.id){const rv=document.createElement('button');rv.type='button';rv.className='btn btn-danger btn-sm';rv.dataset.apiRevoke=t.id;rv.textContent='Revoke';bindRevoke(rv);act.appendChild(rv);}tr.append(name,roleTd,cell(window.Nebula.fmtDate(t.expires_at)),cell('Never','text-tertiary'),act);document.getElementById('apiTokenRows').prepend(tr);}
 document.getElementById('apiCopy').onclick=async()=>{const ok=await window.Nebula.copyText(document.getElementById('apiPlain').value);toast(ok?'Token copied':'Copy failed — select the value and copy it manually',ok?'success':'error');};
-document.querySelectorAll('[data-api-revoke]').forEach(b=>b.onclick=async()=>{if(!await window.Nebula.confirm({title:'Revoke this token?',message:'Automation using it will stop working immediately.',danger:true,confirmLabel:'Revoke'}))return;const r=await apiPost('tokens',{action:'revoke',id:b.dataset.apiRevoke});if(r.ok)location.reload();else toast(r.error||'Failed','error');});});
+function bindRevoke(b){b.onclick=async()=>{if(!await window.Nebula.confirm({title:'Revoke this token?',message:'Automation using it will stop working immediately.',danger:true,confirmLabel:'Revoke'}))return;const r=await apiPost('tokens',{action:'revoke',id:b.dataset.apiRevoke});if(r.ok)location.reload();else toast(r.error||'Could not revoke the token','error');};}
+document.querySelectorAll('[data-api-revoke]').forEach(bindRevoke);});
 </script>
