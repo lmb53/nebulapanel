@@ -2918,12 +2918,15 @@ EOF
 /* Managed by Nebula Panel. */
 \$config = [];
 \$config['db_dsnw'] = 'sqlite:////var/lib/nebula-mail/roundcube.db?mode=0640';
-    \$config['imap_host'] = 'ssl://${HOSTFQDN}:993';
-    \$config['smtp_host'] = 'tls://${HOSTFQDN}:587';
+// Dovecot and Postfix run on this server: connect over loopback (the
+// public name may not resolve to, or route back to, this machine from
+// itself) while still verifying the certificate issued for ${HOSTFQDN}.
+\$config['imap_host'] = 'ssl://127.0.0.1:993';
+\$config['smtp_host'] = 'tls://127.0.0.1:587';
 \$config['smtp_user'] = '%u';
 \$config['smtp_pass'] = '%p';
-    \$config['imap_conn_options'] = ['ssl' => ['verify_peer' => true, 'verify_peer_name' => true]];
-    \$config['smtp_conn_options'] = ['ssl' => ['verify_peer' => true, 'verify_peer_name' => true]];
+\$config['imap_conn_options'] = ['ssl' => ['verify_peer' => true, 'verify_peer_name' => true, 'peer_name' => '${HOSTFQDN}']];
+\$config['smtp_conn_options'] = ['ssl' => ['verify_peer' => true, 'verify_peer_name' => true, 'peer_name' => '${HOSTFQDN}']];
 \$config['support_url'] = '';
 \$config['product_name'] = 'Nebula Webmail';
 \$config['des_key'] = '${DESKEY:0:24}';
@@ -2936,6 +2939,19 @@ EOF
     install -d -m 0750 -o nebula-webapps -g nebula-webapps /var/lib/nebula-mail/rc-logs /var/lib/nebula-mail/rc-temp
     chown -R nebula-webapps:nebula-webapps "$TARGET"
     trap - EXIT
+    # Tell the administrator now, rather than at the first sign-in, if
+    # webmail will not be able to reach IMAP over verified TLS.
+    if command -v openssl >/dev/null 2>&1; then
+      RC_TLS="$(timeout 15 openssl s_client -connect 127.0.0.1:993 -servername "$HOSTFQDN" \
+        -verify_hostname "$HOSTFQDN" -verify_return_error </dev/null 2>&1 || true)"
+      if grep -q 'Verify return code: 0 (ok)' <<<"$RC_TLS"; then
+        echo "-- IMAP check: 127.0.0.1:993 answers with a valid certificate for $HOSTFQDN"
+      else
+        echo "-- WARNING: webmail cannot open a verified IMAP connection to 127.0.0.1:993 for $HOSTFQDN:"
+        grep -m3 -E 'errno|refused|verify error|Verify return code|connect:' <<<"$RC_TLS" | sed 's/^/     /' || true
+        echo "     Check: systemctl status dovecot; and that Dovecot uses the certificate for $HOSTFQDN"
+      fi
+    fi
     echo "roundcube installed at $TARGET"
     ;;
 
