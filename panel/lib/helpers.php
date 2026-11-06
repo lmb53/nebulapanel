@@ -29,6 +29,31 @@ function asset(string $path): string
     return base_url() . '/assets/' . $path . (is_file($file) ? '?v=' . (int) filemtime($file) : '');
 }
 
+/**
+ * The Nebula brand glyph (ringed planet + spark) drawn in currentColor so it
+ * sits on the accent .logo-mark tile. Each call gets its own mask id.
+ */
+function brand_mark_svg(): string
+{
+    static $n = 0;
+    $id = 'nbMask' . (++$n);
+    return '<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">'
+        . '<defs><mask id="' . $id . '"><rect width="24" height="24" fill="#fff"/>'
+        . '<path d="M1.5 13A10.5 2.8 0 0 0 22.5 13" transform="rotate(-22 12 13)" fill="none" stroke="#000" stroke-width="3.4"/></mask></defs>'
+        . '<circle cx="12" cy="13" r="5.8" fill="currentColor" stroke="none" mask="url(#' . $id . ')"/>'
+        . '<ellipse cx="12" cy="13" rx="10.5" ry="2.8" transform="rotate(-22 12 13)" fill="none" stroke="currentColor" stroke-width="1.6"/>'
+        . '<path d="M19.5 1.2l.75 2.05 2.05.75-2.05.75-.75 2.05-.75-2.05-2.05-.75 2.05-.75z" fill="currentColor" stroke="none"/>'
+        . '</svg>';
+}
+
+/** <link> tags for the browser tab icon and home-screen icon. */
+function favicon_tags(): string
+{
+    return '<link rel="icon" type="image/svg+xml" href="' . e(asset('favicon.svg')) . '">'
+        . '<link rel="alternate icon" type="image/png" sizes="32x32" href="' . e(asset('favicon-32.png')) . '">'
+        . '<link rel="apple-touch-icon" href="' . e(asset('apple-touch-icon.png')) . '">';
+}
+
 function csp_nonce(): string
 {
     return defined('CSP_NONCE') ? CSP_NONCE : '';

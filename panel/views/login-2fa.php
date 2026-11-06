@@ -5,6 +5,7 @@
 <meta charset="UTF-8">
 <title>Two-factor sign-in · <?= e($config['panel_name']) ?></title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<?= favicon_tags() ?>
 <script src="<?= e(asset('vendor/lucide-1.8.0.min.js')) ?>"></script>
 <?= theme_boot_script() ?>
 <link rel="stylesheet" href="<?= e(asset('style.css')) ?>">
@@ -15,7 +16,7 @@
     <div class="card-pad">
       <div style="display:flex;align-items:center;gap:10px;margin-bottom:20px">
         <div class="logo-mark lg" aria-hidden="true">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 3 14h7l-1 8 10-12h-7l1-8z"/></svg>
+          <?= brand_mark_svg() ?>
         </div>
         <div>
           <div class="auth-brand"><?= e($config['panel_name']) ?></div>

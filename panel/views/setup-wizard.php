@@ -35,6 +35,7 @@ $items[] = ['key' => 'phpmyadmin', 'label' => 'phpMyAdmin', 'desc' => 'Web-based
 <meta charset="UTF-8">
 <title>Set up your server · <?= e($config['panel_name']) ?></title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<?= favicon_tags() ?>
 <script src="<?= e(asset('vendor/lucide-1.8.0.min.js')) ?>"></script>
 <?= theme_boot_script() ?>
 <link rel="stylesheet" href="<?= e(asset('style.css')) ?>">
@@ -47,7 +48,7 @@ $items[] = ['key' => 'phpmyadmin', 'label' => 'phpMyAdmin', 'desc' => 'Web-based
 
     <div style="display:flex;align-items:center;gap:12px;margin-bottom:6px">
       <div class="logo-mark lg">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 3 14h7l-1 8 10-12h-7l1-8z"/></svg>
+          <?= brand_mark_svg() ?>
       </div>
       <div>
         <h1 class="page-title" style="margin:0">Set up your server</h1>

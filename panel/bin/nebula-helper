@@ -10,6 +10,23 @@
 #
 set -euo pipefail
 
+# The panel reaches this helper through sudo from inside PHP-FPM. Many
+# php*-fpm.service units ship systemd sandboxing (ProtectSystem=full etc.),
+# and sudo inherits that mount namespace: /usr and /etc are read-only, so
+# apt/dpkg fail ("Read-only file system"), useradd cannot lock /etc/passwd,
+# and certbot cannot open /etc/letsencrypt. When that is detected, re-run
+# this exact invocation as a transient systemd unit, which starts from PID 1's
+# unrestricted namespace. stdin/stdout/stderr and the exit code are preserved.
+if [[ "${NEBULA_HELPER_UNSANDBOXED:-}" != 1 && "$(id -u)" == 0 ]] \
+    && { [[ ! -w /etc ]] || [[ ! -w /usr/lib ]] || [[ ! -w /var/lib ]]; } \
+    && command -v systemd-run >/dev/null 2>&1; then
+  exec systemd-run --quiet --pipe --wait --collect \
+    --unit="nebula-helper-$(date +%s)-$$-$RANDOM" \
+    --setenv=NEBULA_HELPER_UNSANDBOXED=1 \
+    --setenv=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+    -- "$(realpath "$0")" "$@"
+fi
+
 NGINX_AV=/etc/nginx/sites-available
 NGINX_EN=/etc/nginx/sites-enabled
 FM_ROOT_FILE=/etc/nebula-panel/fm-root
@@ -1837,7 +1854,18 @@ EOF
   # cert-list  -> raw `certbot certificates` output (parsed by the panel)
   cert-list)
     command -v certbot >/dev/null || die "certbot not installed"
-    certbot certificates 2>/dev/null
+    # No renewal configs means certbot has never issued anything on this
+    # server: report an empty list instead of letting certbot bootstrap
+    # /etc/letsencrypt (and fail on an unprepared or locked-down host).
+    if ! compgen -G '/etc/letsencrypt/renewal/*.conf' >/dev/null; then
+      echo "No certificates found."
+      exit 0
+    fi
+    CERT_ERR="$(mktemp)"; trap 'rm -f "$CERT_ERR"' EXIT
+    if ! certbot certificates 2>"$CERT_ERR"; then
+      grep -v '^Saving debug log' "$CERT_ERR" | tail -n 5 >&2
+      exit 1
+    fi
     ;;
 
   # cert-renew [name]  -> renew all, or one certificate by name

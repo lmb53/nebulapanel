@@ -14,15 +14,8 @@ foreach (nebula_modules() as $route => $m) {
     if (!role_route_allowed($route)) { continue; }
     $nav[$m[2]][] = [$route, $m[0], $m[1]];
 }
-// Server identity for the sidebar card and the top-bar breadcrumb.
+// Server identity for the top-bar breadcrumb.
 $shellFacts = system_facts();
-$shellMem = mem_info();
-$shellMeta = array_values(array_filter([
-    // "Ubuntu 24.04.1 LTS" -> "Ubuntu 24.04" keeps the card on one line.
-    preg_replace(['/\s*\(.*\)$/', '/\s+LTS$/i', '/^(\D+\d+\.\d+)\.\d+/'], ['', '', '$1'], (string) $shellFacts['os']),
-    $shellFacts['cpu_cores'] ? $shellFacts['cpu_cores'] . ' vCPU' : '',
-    $shellMem ? human_bytes((int) $shellMem['total']) : '',
-]));
 $navSection = $navActive !== '' ? (nebula_modules()[$navActive][2] ?? '') : '';
 $crumbParts = array_values(array_filter([(string) $shellFacts['hostname'], $navSection]));
 // One shared explanation when privileged features cannot work, instead of
@@ -47,6 +40,7 @@ function nav_link(string $route, string $icon, string $label, string $active): s
 <meta charset="UTF-8">
 <title><?= e(($pageTitle !== '' ? $pageTitle . ' · ' : '') . $config['panel_name']) ?></title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<?= favicon_tags() ?>
 <?= theme_boot_script() ?>
 <link rel="preload" href="<?= e(base_url() . '/assets/vendor/fonts/instrument-sans-latin.woff2') ?>" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="<?= e(base_url() . '/assets/vendor/fonts/bricolage-grotesque-latin.woff2') ?>" as="font" type="font/woff2" crossorigin>
@@ -65,18 +59,9 @@ function nav_link(string $route, string $icon, string $label, string $active): s
   <div class="sidebar-backdrop" id="sidebarBackdrop"></div>
   <aside class="sidebar" id="sidebar" aria-label="Main navigation">
     <a class="sidebar-brand" href="<?= e(url('dashboard')) ?>" title="<?= e($config['panel_name']) ?>">
-      <span class="logo-mark" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 3 14h7l-1 8 10-12h-7l1-8z"/></svg></span>
+      <span class="logo-mark" aria-hidden="true"><?= brand_mark_svg() ?></span>
       <span class="brand-name"><?= e($config['panel_name']) ?></span>
     </a>
-    <?php if (role_route_allowed('sysinfo')): ?>
-    <a class="server-card" href="<?= e(url('sysinfo')) ?>" title="System information for <?= e($shellFacts['hostname']) ?>">
-    <?php else: ?>
-    <div class="server-card">
-    <?php endif; ?>
-      <span class="status-dot" aria-hidden="true"></span>
-      <span class="sc-text"><b><?= e($shellFacts['hostname']) ?></b><small><?= e(implode(' · ', $shellMeta)) ?></small></span>
-      <?php if (role_route_allowed('sysinfo')): ?><i data-lucide="chevron-right" aria-hidden="true"></i></a><?php else: ?></div><?php endif; ?>
-    <label class="nav-filter"><i data-lucide="search" aria-hidden="true"></i><input id="navFilter" type="search" placeholder="Find a tool" autocomplete="off" aria-label="Filter navigation" aria-controls="sidebarNav"></label>
     <nav class="sidebar-scroll" id="sidebarNav">
       <div class="nav-group nav-pinned hidden" id="navPinned">
         <div class="nav-section-title static"><span class="nav-section-label">Pinned</span></div>
@@ -93,7 +78,6 @@ function nav_link(string $route, string $icon, string $label, string $active): s
           </div>
         </div>
       <?php endforeach; ?>
-      <div class="nav-empty hidden" id="navEmpty">No tools match. Press Enter to search everything.</div>
     </nav>
     <div class="quota" id="miniHealth" role="group" aria-label="Server resources">
       <div class="q-item" title="CPU usage"><div class="q-row"><span>CPU</span><span data-mh="cpu">–</span></div><div class="q-bar" role="progressbar" aria-label="CPU usage" aria-valuemin="0" aria-valuemax="100"><div data-mh-bar="cpu" style="width:0"></div></div></div>

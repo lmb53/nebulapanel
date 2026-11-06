@@ -147,7 +147,11 @@ repair_legacy_modsecurity_loader() {
 repair_legacy_modsecurity_loader
 log "Installing packages (Nginx, PHP-FPM, tooling)…"
 export DEBIAN_FRONTEND=noninteractive
+# Finish any interrupted dpkg run (e.g. an earlier failed panel install) so
+# later package operations do not halt on a half-configured package.
+dpkg --configure -a >/dev/null 2>&1 || warn "dpkg --configure -a reported errors; continuing."
 apt-get update -qq
+apt-get install -f -y -qq >/dev/null 2>&1 || true
 apt-get install -y -qq nginx \
   rsync ufw sudo curl ca-certificates tar zip unzip openssl git acl \
   certbot python3-certbot-nginx >/dev/null
@@ -594,6 +598,33 @@ security.limit_extensions = .php
 php_admin_value[disable_functions] = exec,passthru,shell_exec,system,proc_open,popen
 EOF
 install -d -m 0700 -o "$PANEL_USER" -g "$PANEL_USER" "$DEST/data/sessions" "$DEST/data/tmp"
+# Some php*-fpm.service units (notably newer PPA builds) enable systemd
+# sandboxing such as ProtectSystem=full. Privileged helper calls made through
+# sudo inherit that namespace, so /usr and /etc become read-only and package
+# installs, useradd and certbot all fail. The panel pool is the server's
+# control plane, so lift the filesystem restrictions for every FPM unit.
+for _fpm_dir in /etc/php/*/fpm; do
+  [[ -d "$_fpm_dir" ]] || continue
+  _fpm_ver="$(basename "$(dirname "$_fpm_dir")")"
+  [[ "$_fpm_ver" =~ ^[0-9]+\.[0-9]+$ ]] || continue
+  install -d -m 0755 "/etc/systemd/system/php${_fpm_ver}-fpm.service.d"
+  cat > "/etc/systemd/system/php${_fpm_ver}-fpm.service.d/nebula-panel.conf" <<'EOF'
+# Managed by Nebula Panel install.sh. The panel's privileged helper runs
+# apt, useradd and certbot via sudo from this service, so it must see a
+# writable /usr and /etc.
+[Service]
+ProtectSystem=no
+ProtectHome=no
+PrivateDevices=no
+ProtectKernelModules=no
+ProtectKernelTunables=no
+ProtectControlGroups=no
+RestrictSUIDSGID=no
+ReadOnlyPaths=
+InaccessiblePaths=
+EOF
+done
+systemctl daemon-reload
 systemctl restart "$FPM_SVC"
 [[ -S "$PANEL_FPM_SOCK" ]] || die "Dedicated panel FPM socket was not created."
 

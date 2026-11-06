@@ -900,48 +900,6 @@
     window.addEventListener('storage', (event) => { if (event.key === PIN_KEY) renderPins(); });
   }
 
-  // ---- Sidebar "Find a tool" filter ------------------------------------------
-  function wireNavFilter() {
-    const input = document.getElementById('navFilter');
-    const sidebar = document.getElementById('sidebar');
-    if (!input || !sidebar) return;
-    const empty = document.getElementById('navEmpty');
-    const keywords = new Map();
-    document.querySelectorAll('#cmdkList .cmdk-item[data-href]').forEach((item) => keywords.set(item.dataset.href, item.dataset.label || ''));
-    const apply = () => {
-      const q = input.value.trim().toLowerCase();
-      sidebar.classList.toggle('filtering', q !== '');
-      let shown = 0;
-      document.querySelectorAll('.nav-group[data-nav-group]').forEach((group) => {
-        let groupShown = 0;
-        group.querySelectorAll('.nav-item').forEach((item) => {
-          const hay = (item.textContent + ' ' + (keywords.get(item.getAttribute('href')) || '')).toLowerCase();
-          const match = q === '' || q.split(/\s+/).every((t) => hay.includes(t));
-          item.classList.toggle('filtered-out', !match);
-          if (match) groupShown++;
-        });
-        group.classList.toggle('filtered-out', groupShown === 0);
-        shown += groupShown;
-      });
-      document.getElementById('navPinned')?.classList.toggle('filtered-out', q !== '');
-      empty?.classList.toggle('hidden', q === '' || shown > 0);
-    };
-    input.addEventListener('input', apply);
-    input.addEventListener('keydown', (event) => {
-      if (event.key === 'Escape' && input.value) { event.stopPropagation(); input.value = ''; apply(); }
-      if (event.key === 'Enter') {
-        event.preventDefault();
-        const first = document.querySelector('.nav-group[data-nav-group]:not(.filtered-out) .nav-item:not(.filtered-out)');
-        if (first && input.value.trim()) window.location.href = first.getAttribute('href');
-        else if (input.value.trim()) document.getElementById('searchTrigger')?.click();
-      }
-      if (event.key === 'ArrowDown') {
-        const first = document.querySelector('.nav-group[data-nav-group]:not(.filtered-out) .nav-item:not(.filtered-out)');
-        if (first) { event.preventDefault(); first.focus(); }
-      }
-    });
-  }
-
   function wireChrome() {
     const sidebar = document.getElementById('sidebar');
     const collapseBtn = document.getElementById('collapseBtn');
@@ -1009,7 +967,6 @@
     });
 
     wirePins();
-    wireNavFilter();
 
     wireMenu(document.getElementById('accountTrigger'), document.getElementById('accountMenu'));
     document.getElementById('refreshBtn')?.addEventListener('click', () => { pollMetrics(); refreshAll(); toast('Dashboard refreshed', 'info'); });
