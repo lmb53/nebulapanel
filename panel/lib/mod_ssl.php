@@ -98,11 +98,15 @@ function ssl_list(): array
         $days = null;
         $valid = true;
         if (preg_match('/^\s*Expiry Date:\s*(.+)$/m', $block, $m)) {
-            $expiry = trim($m[1]);
-            if (preg_match('/VALID:\s*(\d+)\s*day/i', $expiry, $dm)) {
+            // Certbot prints "2027-02-04 12:00:00+00:00 (VALID: 89 days)".
+            // Keep only the timestamp so it parses; the status goes into
+            // 'days' and 'valid' instead.
+            $raw = trim($m[1]);
+            if (preg_match('/VALID:\s*(\d+)\s*day/i', $raw, $dm)) {
                 $days = (int) $dm[1];
             }
-            $valid = (stripos($expiry, 'INVALID') === false && stripos($expiry, 'EXPIRED') === false);
+            $valid = (stripos($raw, 'INVALID') === false && stripos($raw, 'EXPIRED') === false);
+            $expiry = trim((string) preg_replace('/\s*\(.*\)\s*$/', '', $raw));
         }
 
         if ($name === '') {

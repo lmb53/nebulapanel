@@ -152,6 +152,73 @@ function fm_link_path(string $abs): ?string
     return fm_rel($real);
 }
 
+/**
+ * Website folders are named after the site's immutable 32-character ID
+ * (/srv/nebula/sites/<id>/public). That keeps renames and confinement safe on
+ * disk, but it is meaningless to a person, so the File Manager shows each
+ * site's primary domain instead. Returns [realpath of site base => domain].
+ */
+function fm_site_labels(): array
+{
+    static $labels = null;
+    if ($labels !== null) {
+        return $labels;
+    }
+    global $config;
+    $labels = [];
+    $root = realpath(rtrim((string) ($config['sites_root'] ?? '/srv/nebula/sites'), '/'));
+    $file = APP_ROOT . '/data/sites.json';
+    if ($root === false || !is_file($file)) {
+        return $labels;
+    }
+    $sites = json_decode((string) @file_get_contents($file), true);
+    foreach (is_array($sites) ? $sites : [] as $site) {
+        $id = (string) ($site['id'] ?? '');
+        $domain = (string) ($site['domain'] ?? '');
+        if ($domain !== '' && preg_match('/^[a-f0-9]{32}$/', $id)) {
+            $labels[$root . '/' . $id] = $domain;
+        }
+    }
+    return $labels;
+}
+
+/** True when $absDir is a managed website's base folder (sites_root/<id>). */
+function fm_is_site_base(string $absDir): bool
+{
+    global $config;
+    $root = realpath(rtrim((string) ($config['sites_root'] ?? '/srv/nebula/sites'), '/'));
+    return $root !== false && dirname($absDir) === $root
+        && (bool) preg_match('/^[a-f0-9]{32}$/', basename($absDir));
+}
+
+/** The name to show for an entry: a site's domain for its ID folder. */
+function fm_display_name(string $abs, string $name): string
+{
+    return fm_site_labels()[rtrim($abs, '/')] ?? $name;
+}
+
+/** A File Manager-relative path for display, with a site's ID shown as its domain. */
+function fm_display_path(string $rel): string
+{
+    $rel = trim(str_replace('\\', '/', $rel), '/');
+    if ($rel === '') {
+        return '';
+    }
+    $parts = explode('/', $rel);
+    $parts[0] = fm_display_name(fm_root() . '/' . $parts[0], $parts[0]);
+    return implode('/', $parts);
+}
+
+/**
+ * A site's `sessions/` and `tmp/` folders hold PHP-FPM runtime data owned by
+ * the site's own Unix user. They are not website content, so the File
+ * Manager only shows `public/` inside a site folder.
+ */
+function fm_entry_hidden(string $absDir, string $name): bool
+{
+    return ($name === 'sessions' || $name === 'tmp') && fm_is_site_base($absDir);
+}
+
 /** Directory listings stop building full rows after this many entries. */
 const FM_LIST_LIMIT = 2000;
 
@@ -170,7 +237,7 @@ function fm_list(string $absDir, int $limit = FM_LIST_LIMIT): array
     $dirNames = [];
     $fileNames = [];
     while (($entry = readdir($handle)) !== false) {
-        if ($entry === '.' || $entry === '..') {
+        if ($entry === '.' || $entry === '..' || fm_entry_hidden($absDir, $entry)) {
             continue;
         }
         if (is_dir($absDir . '/' . $entry)) {
@@ -198,6 +265,7 @@ function fm_list(string $absDir, int $limit = FM_LIST_LIMIT): array
             if ($entryReal !== false && fm_path_forbidden($entryReal)) { continue; }
             $item = [
                 'name'     => $entry,
+                'label'    => fm_display_name($full, $entry),
                 'rel'      => fm_rel($full),
                 'is_dir'   => $isDir,
                 'size'     => $isDir ? null : (@filesize($full) ?: 0),
@@ -215,6 +283,8 @@ function fm_list(string $absDir, int $limit = FM_LIST_LIMIT): array
             }
         }
     }
+    // Site folders are listed by domain, so sort them by what is shown.
+    usort($dirs, static fn(array $a, array $b): int => strnatcasecmp($a['label'], $b['label']));
     return ['dirs' => $dirs, 'files' => $files, 'total' => $total, 'truncated' => $truncated];
 }
 
@@ -223,9 +293,10 @@ function fm_breadcrumbs(string $rel): array
 {
     $crumbs = [['name' => 'root', 'rel' => '']];
     $acc = '';
+    $root = fm_root();
     foreach (array_filter(explode('/', $rel)) as $seg) {
         $acc = $acc === '' ? $seg : $acc . '/' . $seg;
-        $crumbs[] = ['name' => $seg, 'rel' => $acc];
+        $crumbs[] = ['name' => fm_display_name($root . '/' . $acc, $seg), 'rel' => $acc];
     }
     return $crumbs;
 }

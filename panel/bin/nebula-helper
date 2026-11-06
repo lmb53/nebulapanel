@@ -51,6 +51,211 @@ DKIM_DIR="$MAIL_DIR/dkim"
 
 die() { echo "$*" >&2; exit 2; }
 
+# ---------------------------------------------------------------------------
+# Package operations (apt/dpkg)
+#
+# An apt run that is killed half way leaves dpkg "interrupted", and every
+# later install then fails with "you must manually run dpkg --configure -a".
+# Panel-driven installs used to be killed in three ordinary ways:
+#   * a package (any php*-* module) triggers a PHP-FPM restart, and PHP-FPM is
+#     the very process serving the request, so its cgroup takes sudo, the
+#     helper and dpkg down with it;
+#   * the browser disconnects or the request times out, closing the pipe;
+#   * unattended-upgrades holds the dpkg lock on a freshly booted server.
+# So every package operation (a) runs in its own transient systemd unit that
+# outlives the request, while the caller just follows its log, (b) waits for
+# other package managers and repairs an interrupted dpkg before starting, and
+# (c) defers PHP-FPM restarts until the panel request has finished.
+# ---------------------------------------------------------------------------
+PKG_OP_DIR=/run/nebula-panel-ops
+PKG_RESTARTS="$PKG_OP_DIR/deferred-restarts"
+PKG_PREPARED=""
+
+# Wait (bounded) for apt/dpkg locks held by another process.
+pkg_wait_for_locks() {
+  local waited=0
+  command -v fuser >/dev/null 2>&1 || return 0
+  while fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock \
+              /var/lib/apt/lists/lock /var/cache/apt/archives/lock >/dev/null 2>&1; do
+    if (( waited == 0 )); then
+      echo "-- waiting for another package manager to finish (on a new server this is usually the automatic security updates)…"
+    fi
+    sleep 3; waited=$((waited + 3))
+    if (( waited >= 900 )); then
+      echo "-- package database still locked after 15 minutes; apt will keep waiting for it"
+      break
+    fi
+  done
+}
+
+# Finish whatever an earlier, interrupted dpkg run left half configured.
+pkg_repair_interrupted() {
+  if [[ -n "$(ls -A /var/lib/dpkg/updates 2>/dev/null)" || -n "$(dpkg --audit 2>/dev/null)" ]]; then
+    echo "-- finishing an interrupted package operation (dpkg --configure -a)…"
+    DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 \
+      dpkg --force-confdef --force-confold --configure -a || true
+    DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 \
+      command apt-get -o Dpkg::Use-Pty=0 -o APT::Color=0 -o DPkg::Lock::Timeout=600 \
+        -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold -f install -y || true
+  fi
+}
+
+# Every apt-get call in this helper goes through this wrapper: wait for locks
+# and repair interrupted state once per operation, never prompt about config
+# files, wait for the lock instead of failing, and skip needrestart (which
+# would otherwise restart PHP-FPM out from under the panel).
+apt-get() {
+  if [[ -z "$PKG_PREPARED" ]]; then
+    PKG_PREPARED=1
+    pkg_wait_for_locks
+    pkg_repair_interrupted
+  fi
+  DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 NEEDRESTART_MODE=l \
+    command apt-get -o DPkg::Lock::Timeout=600 \
+      -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@"
+}
+
+# Copy a package's web tree, following symlinks into /usr/share/javascript,
+# but skip links whose target is absent (an optional library that was not
+# installed) instead of failing the whole install on them.
+copy_tree_deref() {
+  local src="$1" dst="$2" skip
+  skip="$(mktemp)"
+  (cd "$src" && find . -xtype l) > "$skip"
+  if [[ -s "$skip" ]]; then
+    echo "-- skipping $(wc -l < "$skip") optional file(s) whose library is not installed"
+  fi
+  mkdir -p "$dst"
+  tar -C "$src" --no-wildcards --exclude-from="$skip" -chf - . | tar -C "$dst" -xpf -
+  rm -f "$skip"
+}
+
+# PHP-FPM restart requests raised by package scripts are recorded here and
+# refused (exit 101 = "action forbidden"), then replayed by
+# pkg_replay_restarts once the panel's request is over. The policy expires on
+# its own if the operation that installed it is gone. An administrator's own
+# policy-rc.d is never replaced.
+pkg_policy_install() {
+  [[ -e /usr/sbin/policy-rc.d ]] && return 1
+  cat > /usr/sbin/policy-rc.d <<EOF
+#!/bin/sh
+# Temporary: written by Nebula Panel while a panel-driven package operation
+# runs, removed when it ends, and inert once process $$ has exited.
+kill -0 $$ 2>/dev/null || exit 0
+while [ "\${1#-}" != "\$1" ]; do shift; done
+case "\$1" in php[0-9]*-fpm|php[0-9]*-fpm.service) ;; *) exit 0 ;; esac
+case "\$2" in
+  restart|reload|force-reload|try-restart)
+    echo "\${1%.service}" >> "$PKG_RESTARTS"; exit 101 ;;
+esac
+exit 0
+EOF
+  chmod 0755 /usr/sbin/policy-rc.d
+}
+
+pkg_policy_remove() {
+  grep -q 'written by Nebula Panel' /usr/sbin/policy-rc.d 2>/dev/null && rm -f /usr/sbin/policy-rc.d
+  return 0
+}
+
+# Wait for the process that is relaying output to the panel to exit, give the
+# request a moment to send its result, then restart PHP-FPM.
+pkg_replay_restarts() {
+  local front="$1" units waited=0
+  [[ -s "$PKG_RESTARTS" ]] || return 0
+  units="$(sed 's/\.service$//' "$PKG_RESTARTS" | grep -E '^php[0-9]+\.[0-9]+-fpm$' | sort -u | tr '\n' ' ')"
+  rm -f "$PKG_RESTARTS"
+  [[ -n "$units" ]] || return 0
+  if [[ "$front" =~ ^[0-9]+$ ]]; then
+    while kill -0 "$front" 2>/dev/null && (( waited < 3600 )); do sleep 1; waited=$((waited + 1)); done
+  fi
+  sleep 5
+  # shellcheck disable=SC2086
+  systemctl try-restart $units >/dev/null 2>&1 || true
+}
+
+# Commands that install or remove packages.
+is_package_command() {
+  local request
+  case "$1" in
+    php-install|php-extension|composer-install|modsec-install|modsec-uninstall|compose-install|pma-install|mail-setup|roundcube-install|apache-install|apache-uninstall)
+      return 0 ;;
+    broker-command)
+      # Only the apt requests; firewall requests stay in-process. (The
+      # request itself is fully validated later, by the inner invocation.)
+      request="$(printf '%s' "${2:-}" | base64 -d 2>/dev/null || true)"
+      [[ "$request" =~ ^(DEBIAN_FRONTEND=noninteractive[[:space:]]+)?apt-get[[:space:]] ]] ;;
+    *) return 1 ;;
+  esac
+}
+
+# Run "$@" (a helper command) in its own transient unit and relay its output
+# until it finishes. If this relaying process is killed or its stdout closes,
+# the operation still runs to completion.
+run_package_operation() {
+  local unit log offset=0 size rc gone=0
+  install -d -m 0700 -o root -g root "$PKG_OP_DIR"
+  log="$(mktemp "$PKG_OP_DIR/op.XXXXXXXX")"
+  unit="nebula-pkg-$(date +%s)-$$-$RANDOM"
+  systemd-run --quiet --collect --unit="$unit" \
+    --setenv=NEBULA_HELPER_UNSANDBOXED=1 --setenv=NEBULA_HELPER_DETACHED=1 \
+    --setenv=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+    -- "$(realpath "$0")" __package-worker "$log" "$$" "$@" >/dev/null 2>&1 \
+    || return 125
+  trap '' PIPE
+  while :; do
+    size="$(stat -c %s "$log" 2>/dev/null || echo 0)"
+    if (( size > offset )); then
+      { tail -c +"$((offset + 1))" "$log" | head -c "$((size - offset))"; } 2>/dev/null || true
+      offset="$size"
+    fi
+    if [[ -e "$log.rc" ]]; then
+      size="$(stat -c %s "$log" 2>/dev/null || echo 0)"
+      (( size > offset )) && { tail -c +"$((offset + 1))" "$log" 2>/dev/null || true; }
+      rc="$(cat "$log.rc" 2>/dev/null || echo 1)"
+      break
+    fi
+    if ! systemctl is-active --quiet "$unit" 2>/dev/null; then
+      gone=$((gone + 1))
+      if (( gone > 4 )); then
+        echo "the package operation stopped unexpectedly; see: journalctl -u $unit" >&2
+        rc=1; break
+      fi
+    fi
+    sleep 0.5
+  done
+  rm -f "$log" "$log.rc"
+  [[ "$rc" =~ ^[0-9]+$ ]] || rc=1
+  return "$rc"
+}
+
+# Internal entry point for the transient unit started above. Only reachable
+# from systemd-run: sudo resets the environment, so a sudo caller can never set
+# NEBULA_HELPER_DETACHED.
+if [[ "${1:-}" == __package-worker ]]; then
+  [[ "${NEBULA_HELPER_DETACHED:-}" == 1 && "$(id -u)" == 0 ]] || die "unknown command: __package-worker"
+  WORKER_LOG="${2:-}"; WORKER_FRONT="${3:-}"; shift 3
+  [[ "$WORKER_LOG" =~ ^/run/nebula-panel-ops/op\.[A-Za-z0-9]{8}$ && -f "$WORKER_LOG" && ! -L "$WORKER_LOG" ]] \
+    || die "invalid operation log"
+  [[ "$WORKER_FRONT" =~ ^[0-9]+$ ]] || die "invalid caller"
+  POLICY=0; pkg_policy_install && POLICY=1
+  WORKER_RC=0
+  "$(realpath "$0")" "$@" >"$WORKER_LOG" 2>&1 </dev/null || WORKER_RC=$?
+  (( POLICY )) && pkg_policy_remove
+  echo "$WORKER_RC" > "$WORKER_LOG.rc"
+  (( POLICY )) && pkg_replay_restarts "$WORKER_FRONT"
+  exit 0
+fi
+
+# Every caller of a package command gets the detached, self-healing path.
+if [[ "${NEBULA_HELPER_DETACHED:-}" != 1 && "$(id -u)" == 0 ]] \
+    && command -v systemd-run >/dev/null 2>&1 && is_package_command "${1:-}" "${2:-}"; then
+  PKG_RC=0
+  run_package_operation "$@" || PKG_RC=$?
+  # 125: systemd-run itself failed; fall back to running in-process.
+  (( PKG_RC == 125 )) || exit "$PKG_RC"
+fi
+
 # Decode a Base64 argument without ever storing untrusted binary data in a
 # Bash variable. Command substitution silently removes NUL bytes, so checking
 # a variable against $'\0' rejects every payload while still failing to detect
@@ -332,12 +537,50 @@ human_user_info() {
   printf '%s:%s:%s\n' "$uid" "$gid" "$home"
 }
 
+# Nginx owns ports 80/443. Apache, when present, is configured as a local
+# backend on 127.0.0.1:8080 so the two never fight over a port (Apache's
+# packaged default is to bind :80, which fails and leaves apache2.service
+# "failed" on every boot).
+APACHE_BACKEND_PORT=8080
+apache_installed() {
+  dpkg-query -W -f='${Status}' apache2 2>/dev/null | grep -q 'ok installed'
+}
+apache_as_backend() {
+  [[ -d /etc/apache2 ]] || return 0
+  cat > /etc/apache2/ports.conf <<EOF
+# Managed by Nebula Panel. Nginx serves ports 80 and 443; Apache listens only
+# on the loopback interface as a backend that Nginx can proxy to.
+Listen 127.0.0.1:${APACHE_BACKEND_PORT}
+EOF
+  if [[ -f /etc/apache2/sites-available/000-default.conf ]]; then
+    sed -i -E "s#<VirtualHost \*:80>#<VirtualHost 127.0.0.1:${APACHE_BACKEND_PORT}>#" \
+      /etc/apache2/sites-available/000-default.conf
+  fi
+  if command -v a2dissite >/dev/null 2>&1; then a2dissite -q default-ssl >/dev/null 2>&1 || true; fi
+  if [[ -d /etc/apache2/conf-available ]]; then
+    printf '%s\n' '# Managed by Nebula Panel: silences "could not reliably determine the FQDN".' \
+      'ServerName localhost' > /etc/apache2/conf-available/nebula-servername.conf
+    if command -v a2enconf >/dev/null 2>&1; then a2enconf -q nebula-servername >/dev/null 2>&1 || true; fi
+  fi
+}
+# A web app package (phpMyAdmin, Roundcube) can drag Apache in as a
+# dependency. Nobody asked for it, so make it harmless and keep it stopped.
+apache_tame_if_pulled_in() {
+  local had="$1"
+  [[ "$had" == yes ]] && return 0
+  apache_installed || return 0
+  echo "-- Apache was installed as a dependency; moving it off port 80 and leaving it stopped (Nginx serves the panel and your sites)"
+  apache_as_backend
+  systemctl disable --now apache2 >/dev/null 2>&1 || true
+  systemctl reset-failed apache2 >/dev/null 2>&1 || true
+}
+
 CMD="${1:-}"; shift || true
 
 # Serialize every action that may invoke apt/dpkg. Resource-specific locks are
 # acquired separately inside the relevant action.
 case "$CMD" in
-  php-install|php-extension|composer-install|modsec-install|modsec-uninstall|compose-install|pma-install|pma-remove|mail-setup|roundcube-install|roundcube-remove|webmail-remove)
+  php-install|php-extension|composer-install|modsec-install|modsec-uninstall|compose-install|pma-install|pma-remove|mail-setup|roundcube-install|roundcube-remove|webmail-remove|apache-install|apache-uninstall)
     exec 7>/run/lock/nebula-panel-packages.lock
     flock -w 120 7 || die "another package operation is running"
     repair_legacy_modsecurity_loader \
@@ -378,12 +621,44 @@ case "$CMD" in
       flock -w 120 9 || die "another package operation is running"
       repair_legacy_modsecurity_loader \
         || die "repair the ModSecurity configuration before installing packages"
-      timeout 900s /bin/bash -c "$REQUEST"
+      # The validated request runs through `bash -c`; export the apt-get
+      # wrapper so it gets the same lock waiting and dpkg repair.
+      export PKG_PREPARED
+      export -f apt-get pkg_wait_for_locks pkg_repair_interrupted
+      timeout 1800s /bin/bash -c "$REQUEST"
     elif [[ "$REQUEST_KIND" == ufw ]]; then
       timeout 60s /bin/bash -c "$REQUEST"
     else
       die "command is not an allowed broker operation"
     fi
+    ;;
+
+  # system-power <reboot|poweroff> [force]
+  # Schedules the action a few seconds out so the panel can answer the
+  # request first. Refuses while a package operation is running (cutting
+  # power mid-install is what leaves dpkg "interrupted") unless forced.
+  system-power)
+    ACTION="${1:-}"; FORCE="${2:-}"
+    [[ "$ACTION" == reboot || "$ACTION" == poweroff ]] || die "invalid power action"
+    [[ -z "$FORCE" || "$FORCE" == force ]] || die "invalid power option"
+    if [[ "$FORCE" != force ]]; then
+      exec 7>/run/lock/nebula-panel-packages.lock
+      flock -n 7 || die "a panel package install is still running; wait for it to finish"
+      if command -v fuser >/dev/null 2>&1 \
+          && fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock >/dev/null 2>&1; then
+        die "apt/dpkg is installing packages right now (possibly automatic updates); wait for it to finish"
+      fi
+      exec 7>&-
+    fi
+    if command -v systemd-run >/dev/null 2>&1 \
+        && systemd-run --quiet --collect --on-active=5 --unit="nebula-power-$(date +%s)" \
+             /bin/systemctl "$ACTION" >/dev/null 2>&1; then
+      :
+    else
+      ( sleep 5; systemctl "$ACTION" ) </dev/null >/dev/null 2>&1 &
+      disown || true
+    fi
+    echo "server ${ACTION} scheduled in 5 seconds"
     ;;
 
   db-query)
@@ -1794,17 +2069,47 @@ EOF
     fi
     ;;
 
+  # apache-install: Apache as a loopback backend next to Nginx.
+  apache-install)
+    apt-get -o Dpkg::Use-Pty=0 -o APT::Color=0 update || true
+    apt-get -o Dpkg::Use-Pty=0 -o APT::Color=0 install -y apache2 \
+      || die "Apache package install failed"
+    apache_as_backend
+    apachectl configtest || die "Apache configuration test failed"
+    systemctl enable apache2 >/dev/null 2>&1 || true
+    systemctl restart apache2 || die "Apache installed but did not start; see: journalctl -u apache2"
+    echo "Apache is running on 127.0.0.1:${APACHE_BACKEND_PORT} (Nginx keeps ports 80 and 443)"
+    ;;
+
+  # apache-uninstall
+  apache-uninstall)
+    apache_installed || { echo "Apache is not installed"; exit 0; }
+    systemctl disable --now apache2 >/dev/null 2>&1 || true
+    apt-get -o Dpkg::Use-Pty=0 -o APT::Color=0 remove -y apache2 \
+      || die "Apache package removal failed"
+    echo "Apache removed"
+    ;;
+
   # pma-install <targetdir>
   pma-install)
     TARGET="${1:-}"
     valid_path "$TARGET"
     export DEBIAN_FRONTEND=noninteractive
-    apt-get -o Dpkg::Use-Pty=0 -o APT::Color=0 install -y phpmyadmin \
+    # The panel serves its own copy and manages access itself: tell the
+    # package not to create a database or reconfigure a web server, and skip
+    # Recommends (they include Apache, which would fight Nginx for port 80).
+    printf '%s\n' \
+      'phpmyadmin phpmyadmin/dbconfig-install boolean false' \
+      'phpmyadmin phpmyadmin/reconfigure-webserver multiselect' \
+      | debconf-set-selections
+    HAD_APACHE=no; apache_installed && HAD_APACHE=yes
+    apt-get -o Dpkg::Use-Pty=0 -o APT::Color=0 update || true
+    apt-get -o Dpkg::Use-Pty=0 -o APT::Color=0 install -y --no-install-recommends phpmyadmin \
       || die "distribution-verified phpMyAdmin package install failed"
+    apache_tame_if_pulled_in "$HAD_APACHE"
     SRC=/usr/share/phpmyadmin
     [[ -f "$SRC/index.php" ]] || die "phpMyAdmin package layout unexpected"
-    mkdir -p "$TARGET"
-    cp -aL "$SRC"/. "$TARGET"/
+    copy_tree_deref "$SRC" "$TARGET"
     # Avoid an infinite producer piped into head: with pipefail, head closing
     # the pipe makes tr exit on SIGPIPE and aborts an otherwise good install.
     SECRET="$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')"
@@ -2543,13 +2848,20 @@ EOF
       apt-get -o Dpkg::Use-Pty=0 -o APT::Color=0 install -y \
         "php${PHP_VER}-sqlite3" "php${PHP_VER}-intl" "php${PHP_VER}-xml" \
         "php${PHP_VER}-mbstring" "php${PHP_VER}-zip" "php${PHP_VER}-gd" \
-        "php${PHP_VER}-curl" "php${PHP_VER}-imagick" >/dev/null 2>&1 || true
+        "php${PHP_VER}-curl" "php${PHP_VER}-imagick" || true
     fi
-    apt-get -o Dpkg::Use-Pty=0 -o APT::Color=0 install -y roundcube-core roundcube-sqlite3 \
+    # Roundcube keeps its own SQLite database (configured below), so the
+    # package must not try to set one up; skip Recommends, which pull Apache.
+    printf '%s\n' 'roundcube-core roundcube/dbconfig-install boolean false' \
+      'roundcube-core roundcube/reconfigure-webserver multiselect' \
+      | debconf-set-selections
+    HAD_APACHE=no; apache_installed && HAD_APACHE=yes
+    apt-get -o Dpkg::Use-Pty=0 -o APT::Color=0 install -y --no-install-recommends roundcube-core roundcube-sqlite3 \
       || die "distribution-verified Roundcube package install failed"
+    apache_tame_if_pulled_in "$HAD_APACHE"
     SRC=/usr/share/roundcube
     [[ -f "$SRC/index.php" ]] || die "Roundcube package layout unexpected"
-    mkdir -p "$TARGET"; cp -aL "$SRC"/. "$TARGET"/
+    copy_tree_deref "$SRC" "$TARGET"
     rm -rf "$TARGET/installer"
     install -d -m 0750 -o nebula-webapps -g nebula-webapps /var/lib/nebula-mail
     DESKEY="$(od -An -N24 -tx1 /dev/urandom | tr -d ' \n')"

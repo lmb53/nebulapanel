@@ -123,6 +123,10 @@ function nav_link(string $route, string $icon, string $label, string $active): s
           <div class="menu-list">
             <a class="menu-item" href="<?= e(url('account')) ?>"><i data-lucide="user-round-cog" aria-hidden="true"></i>My account &amp; password</a>
             <button class="menu-item" type="button" data-theme-toggle><i data-lucide="sun-moon" aria-hidden="true"></i>Switch theme</button>
+            <?php if (role_can('system.power')): ?>
+            <button class="menu-item" type="button" data-power-action="reboot"><i data-lucide="rotate-ccw" aria-hidden="true"></i>Restart server</button>
+            <button class="menu-item danger" type="button" data-power-action="poweroff"><i data-lucide="power" aria-hidden="true"></i>Shut down server</button>
+            <?php endif; ?>
             <form method="post" action="<?= e(url('logout')) ?>" style="margin:0"><?= csrf_field() ?><button class="menu-item danger" type="submit"><i data-lucide="log-out" aria-hidden="true"></i>Sign out</button></form>
           </div>
         </div>

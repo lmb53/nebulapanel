@@ -101,7 +101,7 @@ document.addEventListener('DOMContentLoaded', () => {
   <a href="<?= e(url('php', ['version' => $version])) ?>" class="card php-version-card<?= $selected ? ' selected' : '' ?>"<?= $selected ? ' aria-current="true"' : '' ?>>
     <div class="flex items-center gap-3" style="margin-bottom:14px">
       <div style="width:42px;height:42px;border-radius:12px;background:rgba(99,102,241,.14);display:flex;align-items:center;justify-content:center"><i data-lucide="code-2" style="color:var(--blue-400)"></i></div>
-      <div style="flex:1"><div style="font-size:18px;font-weight:700">PHP <?= e($version) ?></div><div class="muted" style="font-size:12px">FPM + CLI</div></div>
+      <div style="flex:1"><div style="font-size:18px;font-weight:700">PHP <?= e((string) ($summary['full'] ?? $version)) ?></div><div class="muted" style="font-size:12px">FPM + CLI</div></div>
       <?php if (!empty($summary['default'])): ?><span class="badge badge-blue">Default</span><?php endif; ?>
     </div>
     <div class="flex gap-2" style="flex-wrap:wrap;margin-bottom:13px">
@@ -248,7 +248,7 @@ document.addEventListener('DOMContentLoaded', () => {
   </section>
 
   <section data-tab-panel id="php-health" class="card hidden">
-    <div class="card-header"><h3>Runtime health</h3><span class="muted">PHP <?= e($sel) ?></span></div>
+    <div class="card-header"><h3>Runtime health</h3><span class="muted">PHP <?= e(php_full_version($sel)) ?></span></div>
     <div class="card-pad grid grid-3" style="gap:14px">
       <?php $selectedSummary = current(array_filter($summaries, fn($summary) => $summary['version'] === $sel)) ?: []; $selectedSupport = $selectedSummary['support'] ?? php_support_status($sel); ?>
       <?php $fpmOk = ($selectedSummary['status'] ?? '') === 'active'; ?><div class="service-row"><div class="svc-icon"><i data-lucide="<?= $fpmOk ? 'heart-pulse' : 'triangle-alert' ?>" style="color:<?= $fpmOk ? 'var(--emerald-400)' : 'var(--orange-400)' ?>"></i></div><div><strong>PHP-FPM <?= $fpmOk ? 'running' : 'not running' ?></strong><div class="muted" style="font-size:12px"><?= $fpmOk ? 'Serving requests normally' : 'Start php' . e($sel) . '-fpm from Services' ?></div></div></div>

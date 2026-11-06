@@ -917,3 +917,13 @@ a.service-row{color:inherit}a.service-row:hover{background:var(--bg-surface-hove
 .audit-filters{display:flex;flex-wrap:wrap;gap:8px;padding:10px 16px;border-bottom:1px solid var(--border-subtle)}
 .audit-filters .input,.audit-filters .select{width:auto;min-width:140px;flex:1 1 140px}
 .audit-filters #auditQ{flex:2 1 200px}
+/* Editor sidebar file management */
+.editor-sidebar-head>.editor-sidebar-actions{flex-direction:row;align-items:center;gap:2px;flex-shrink:0}
+.editor-file-row{position:relative;display:flex;align-items:center;border-radius:8px}
+.editor-file-row .editor-file-link{flex:1;min-width:0}
+.editor-file-actions{position:absolute;right:4px;top:50%;transform:translateY(-50%);display:none;gap:2px;padding-left:6px;background:var(--bg-surface-hover);border-radius:6px}
+.editor-file-row.active .editor-file-actions{background:color-mix(in srgb,var(--accent) 12%,var(--bg-surface-2))}
+.editor-file-actions .icon-btn{width:24px;height:24px}
+.editor-file-actions .icon-btn svg{width:13px;height:13px}
+.editor-file-row:hover .editor-file-actions,.editor-file-row:focus-within .editor-file-actions{display:flex}
+@media(hover:none){.editor-file-actions{display:flex;position:static;transform:none;background:transparent}}

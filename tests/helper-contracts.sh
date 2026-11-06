@@ -22,4 +22,8 @@ expect_reject "injected database name" site-backup 0123456789abcdef0123456789abc
 expect_reject "bad restore mode" site-restore 0123456789abcdef0123456789abcdef x-20260101-000000.tar.gz maybe
 expect_reject "empty restore" site-restore 0123456789abcdef0123456789abcdef x-20260101-000000.tar.gz no
 expect_reject "extract outside root" file-extract /etc/passwd /tmp out
+expect_reject "unknown power action" system-power halt
+expect_reject "unknown power option" system-power reboot now
+# The detached package worker is only reachable from systemd-run, never sudo.
+expect_reject "package worker without systemd-run" __package-worker /run/nebula-panel-ops/op.AAAAAAAA 1 pma-install /tmp/x
 echo "helper argument validation contracts passed"

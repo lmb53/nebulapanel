@@ -25,19 +25,24 @@ $siblingFiles = array_values(array_filter(array_slice($siblingListing['files'], 
 ?>
 <div class="editor-workspace">
 <aside class="editor-sidebar">
-  <div class="editor-sidebar-head"><div><strong><?= e(basename(dirname($rel)) ?: 'root') ?></strong><span class="mono"><?= e($dir ?: '/') ?></span></div><a class="icon-btn" href="<?= e(url('files',['path'=>$dir])) ?>" target="_blank" rel="opener" title="Open folder in File Manager" aria-label="Open folder in File Manager"><i data-lucide="folder-open"></i></a></div>
-  <div class="editor-file-list"><?php foreach ($siblingFiles as $file): ?><a class="editor-file-link<?= $file['rel'] === $rel ? ' active' : '' ?>"<?= $file['rel'] === $rel ? ' aria-current="page"' : '' ?> title="<?= e($file['name']) ?>" href="<?= e(url('file-edit',['path'=>$file['rel']])) ?>"><i data-lucide="file-code-2"></i><span><?= e($file['name']) ?></span></a><?php endforeach; ?></div>
+  <div class="editor-sidebar-head">
+    <div><strong><?= e(fm_display_name(dirname($abs), basename(dirname($rel))) ?: 'root') ?></strong><span class="mono"><?= e(fm_display_path($dir) ?: '/') ?></span></div>
+    <div class="editor-sidebar-actions">
+      <button class="icon-btn" type="button" id="fnewFile" title="New file in this folder" aria-label="New file in this folder"><i data-lucide="file-plus"></i></button>
+      <a class="icon-btn" href="<?= e(url('files',['path'=>$dir])) ?>" target="_blank" rel="opener" title="Open folder in File Manager" aria-label="Open folder in File Manager"><i data-lucide="folder-open"></i></a>
+    </div>
+  </div>
+  <div class="editor-file-list"><?php foreach ($siblingFiles as $file): $isActive = $file['rel'] === $rel; ?><div class="editor-file-row<?= $isActive ? ' active' : '' ?>" data-path="<?= e($file['rel']) ?>" data-name="<?= e($file['name']) ?>"><a class="editor-file-link<?= $isActive ? ' active' : '' ?>"<?= $isActive ? ' aria-current="page"' : '' ?> title="<?= e($file['name']) ?>" href="<?= e(url('file-edit',['path'=>$file['rel']])) ?>"><i data-lucide="file-code-2"></i><span><?= e($file['name']) ?></span></a><span class="editor-file-actions"><button class="icon-btn" type="button" data-file-rename title="Rename" aria-label="Rename <?= e($file['name']) ?>"><i data-lucide="pencil"></i></button><button class="icon-btn danger" type="button" data-file-delete title="Delete" aria-label="Delete <?= e($file['name']) ?>"><i data-lucide="trash-2"></i></button></span></div><?php endforeach; ?></div>
 </aside>
 <section class="editor-main">
 <div class="page-header">
-  <div><div class="breadcrumb"><a href="<?= e(url('files', ['path' => $dir])) ?>"><i data-lucide="arrow-left"></i>Back to folder</a></div><h1 class="page-title editor-title"><?= e(basename($rel)) ?></h1><p class="page-subtitle"><span class="mono"><?= e($rel) ?></span> · <?= e(human_bytes($size)) ?></p></div>
+  <div><h1 class="page-title editor-title"><?= e(basename($rel)) ?></h1><p class="page-subtitle"><span class="mono"><?= e(fm_display_path($rel)) ?></span> · <?= e(human_bytes($size)) ?></p></div>
   <div class="page-actions">
     <span id="fsaved" class="editor-save-state hidden" role="status"></span>
     <button class="btn btn-secondary btn-sm" type="button" id="fwrap" aria-pressed="false"><i data-lucide="wrap-text"></i>Wrap</button>
     <button class="btn btn-secondary btn-sm" type="button" id="ffind"><i data-lucide="search"></i>Find</button>
     <button class="icon-btn" type="button" id="ffindPrev" title="Previous match" aria-label="Previous match"><i data-lucide="chevron-up"></i></button>
     <button class="icon-btn" type="button" id="ffindNext" title="Next match" aria-label="Next match"><i data-lucide="chevron-down"></i></button>
-    <button class="icon-btn" type="button" id="themeToggle" title="Toggle theme" aria-label="Toggle theme"><i data-lucide="moon"></i></button>
     <button class="btn btn-primary btn-sm" type="button" id="fsave"><i data-lucide="save"></i>Save</button>
   </div>
 </div>
@@ -65,6 +70,8 @@ $siblingFiles = array_values(array_filter(array_slice($siblingListing['files'], 
 <script src="<?= e(asset('vendor/codemirror-yaml-5.65.16.min.js')) ?>"></script>
 <script>
 const FEDIT_PATH = <?= json_encode($rel) ?>;
+const FEDIT_DIR = <?= json_encode($dir) ?>;
+const FEDIT_EDIT_URL = <?= json_encode(url('file-edit')) ?>;
 let FEDIT_HASH = <?= json_encode(hash_file('sha256', $abs) ?: '') ?>;
 document.addEventListener('DOMContentLoaded', () => {
   const { apiPost, toast } = window.Nebula;
@@ -119,6 +126,48 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('ffindNext')?.addEventListener('click',()=>editor?.execCommand('findNext'));
   document.getElementById('fwrap')?.addEventListener('click',(event)=>{wrapping=!wrapping;if(editor)editor.setOption('lineWrapping',wrapping);else ta.style.whiteSpace=wrapping?'pre-wrap':'pre';event.currentTarget.classList.toggle('active',wrapping);event.currentTarget.setAttribute('aria-pressed',wrapping?'true':'false');});
   document.addEventListener('keydown',(event)=>{if((event.ctrlKey||event.metaKey)&&event.key.toLowerCase()==='s'){event.preventDefault();save();}if(event.key==='F3'){event.preventDefault();editor?.execCommand(event.shiftKey?'findPrev':'findNext');}});
+  // ---- Sidebar file management: new / rename / delete -------------------
+  const editUrl=(path)=>FEDIT_EDIT_URL+(FEDIT_EDIT_URL.includes('?')?'&':'?')+'path='+encodeURIComponent(path);
+  const joinPath=(dir,name)=>dir?dir+'/'+name:name;
+  const go=(href)=>{allowNavigation=true;location.href=href;};
+  const forgetTab=(path)=>{const i=openTabs.findIndex((item)=>item.path===path);if(i>=0)openTabs.splice(i,1);delete drafts[path];persistTabs();persistDrafts();};
+  document.getElementById('fnewFile')?.addEventListener('click',async()=>{
+    const name=await window.Nebula.prompt('New file name','',{title:'New file',confirmLabel:'Create',mono:true,placeholder:'index.php'});
+    if(!name)return;
+    const res=await apiPost('file-mkfile',{dir:FEDIT_DIR,name:name.trim()});
+    if(!res.ok){toast(res.error||'Could not create file','error');return;}
+    toast('File created','success');go(editUrl(joinPath(FEDIT_DIR,name.trim())));
+  });
+  document.querySelectorAll('.editor-file-row').forEach((row)=>{
+    const path=row.dataset.path,name=row.dataset.name;
+    row.querySelector('[data-file-rename]')?.addEventListener('click',async(event)=>{
+      event.preventDefault();
+      const next=await window.Nebula.prompt('New name',name,{title:`Rename "${name}"`,confirmLabel:'Rename',selectStem:true,mono:true});
+      if(!next||next.trim()===name)return;
+      if(path===FEDIT_PATH&&dirty&&!await window.Nebula.confirm({title:'Rename with unsaved changes?',message:'Save first to keep your edits. Unsaved changes stay in this tab as a draft only.',confirmLabel:'Rename anyway'}))return;
+      const res=await apiPost('file-rename',{path,name:next.trim()});
+      if(!res.ok){toast(res.error||'Rename failed','error');return;}
+      const newPath=joinPath(FEDIT_DIR,next.trim());
+      const tab=openTabs.find((item)=>item.path===path);
+      if(tab){tab.path=newPath;tab.name=next.trim();tab.href=editUrl(newPath);}
+      if(drafts[path]){drafts[newPath]=drafts[path];delete drafts[path];}
+      persistTabs();persistDrafts();
+      toast('Renamed','success');
+      go(path===FEDIT_PATH?editUrl(newPath):location.href);
+    });
+    row.querySelector('[data-file-delete]')?.addEventListener('click',async(event)=>{
+      event.preventDefault();
+      if(!await window.Nebula.confirm({title:`Delete "${name}"?`,message:'It moves to the File Manager trash, where it can be restored.',danger:true,confirmLabel:'Delete'}))return;
+      const res=await apiPost('file-delete',{path});
+      if(!res.ok){toast(res.error||'Delete failed','error');return;}
+      forgetTab(path);
+      toast(res.notice||'Moved to trash','success');
+      if(path!==FEDIT_PATH){row.remove();renderTabs();return;}
+      dirty=false;
+      if(openTabs.length)go(openTabs[openTabs.length-1].href);
+      else{const next=document.querySelector(`.editor-file-row:not([data-path="${CSS.escape(path)}"]) a`);if(next)go(next.href);else window.close();}
+    });
+  });
   window.addEventListener('beforeunload',(event)=>{if(dirty&&!allowNavigation){event.preventDefault();event.returnValue='';}});
 });
 </script>

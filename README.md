@@ -70,7 +70,7 @@ the URL (runtime state is migrated), or use a fixed name. Options (env vars):
 | **Dashboard** — live charts plus 6-hour / 24-hour / 7-day CPU, memory and disk history, load, services, top processes and actionable health alerts (including SSL certificates about to expire) | ✅ |
 | **Alerts** — email or webhook (Slack, Discord, ntfy, generic JSON) notifications for low disk, failed services, old or failing backups, expiring certificates and panel problems; notifies on change, with reminders and recovery messages | ✅ |
 | **Services** — tabbed per-instance manager, virtual hosts, logs, start / stop / restart + boot state | ✅ sudo |
-| **Install Apps** — install apache2/redis/mariadb/fail2ban/ModSecurity + extra PHP versions with live output, each shown with its official brand logo | ✅ sudo/helper |
+| **Install Apps** — install apache2/redis/mariadb/fail2ban/ModSecurity + extra PHP versions with live output, each shown with its official brand logo. Every install runs in its own systemd unit, so a closed tab, a timeout or a PHP-FPM restart cannot leave dpkg half-configured; an interrupted dpkg is repaired automatically before the next install. Apache runs as a loopback backend (127.0.0.1:8080) beside Nginx | ✅ sudo/helper |
 | **Updates** — list upgradable, update one/all, with persistent streaming apt output | ✅ sudo |
 | **Users & RBAC** — panel accounts with administrator/operator/developer/auditor roles, plus system-account inventory | ✅ |
 | **SSH Keys** — list/add/revoke authorized keys for interactive users | ✅ helper |
@@ -89,7 +89,7 @@ the URL (runtime state is migrated), or use a fixed name. Options (env vars):
 | **Diagnostics** — environment + per-privilege sudo checks with fix hints | ✅ |
 | **Backups** — website files plus a `mysqldump` of every linked database, **restore** (into the original site or a re-created one, with an automatic safety copy first), nightly or weekly **schedule** with keep-the-last-N retention, verify / download / delete | ✅ helper |
 | **Terminal** — audited non-interactive command runner | ✅ |
-| **System Info** — OS, kernel, CPU, RAM, disk, network | ✅ |
+| **System Info** — OS, kernel, CPU, RAM, disk, network, plus **Restart server / Shut down** for administrators (also in the account menu; refused while packages are installing unless confirmed) | ✅ helper |
 | **Panel updates** — self-update from GitHub (check + apply), as the *Nebula Panel* tab of **Updates** | ✅ |
 | **Settings** — panel name, session timeout, health thresholds, alerts · **My account** — password, two-factor sign-in and active sessions for every role · searchable, filterable **audit log** with CSV/JSON export under **Security** | ✅ |
 | **Notifications** — live operational inbox, top-bar dropdown, mark-read and delete state | ✅ |

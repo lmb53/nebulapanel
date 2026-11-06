@@ -79,6 +79,7 @@ $trashCount = count(fm_trash_list());
 foreach ($listing['dirs'] as $d) {
     $fmEntries[] = [
         'name'     => $d['name'],
+        'label'    => $d['label'] ?? $d['name'],
         'rel'      => $d['rel'],
         'is_dir'   => true,
         'size_h'   => '—',
@@ -98,6 +99,7 @@ foreach ($listing['files'] as $f) {
     [$ic, $icColor] = $fmIcon($f['ext']);
     $fmEntries[] = [
         'name'     => $f['name'],
+        'label'    => $f['label'] ?? $f['name'],
         'rel'      => $f['rel'],
         'is_dir'   => false,
         'size_h'   => human_bytes($f['size']),
@@ -208,9 +210,9 @@ if ($rel !== '') {
         <?php endforeach; ?>
         <?php foreach ($listing['dirs'] as $d): ?>
           <div class="tree-node" data-tree-row>
-            <button class="tree-toggle" type="button" data-tree-path="<?= e($d['rel']) ?>" aria-expanded="false" aria-label="Expand <?= e($d['name']) ?>"><i data-lucide="chevron-right"></i></button>
+            <button class="tree-toggle" type="button" data-tree-path="<?= e($d['rel']) ?>" aria-expanded="false" aria-label="Expand <?= e($d['label']) ?>"><i data-lucide="chevron-right"></i></button>
             <i data-lucide="folder" class="folder-ic" aria-hidden="true" style="color:var(--purple-400)"></i>
-            <a href="<?= e(url('files', ['path' => $d['rel']])) ?>" title="<?= e($d['name']) ?>"><span><?= e($d['name']) ?></span></a>
+            <a href="<?= e(url('files', ['path' => $d['rel']])) ?>" title="<?= e($d['label']) ?>"><span><?= e($d['label']) ?></span></a>
           </div>
         <?php endforeach; ?>
         <?php foreach ($listing['files'] as $file): ?>
@@ -261,6 +263,7 @@ if ($rel !== '') {
                     class="fm-row"
                     tabindex="-1"
                     data-name="<?= e($en['name']) ?>"
+                    data-label="<?= e($en['label']) ?>"
                     data-path="<?= e($en['rel']) ?>"
                     data-isdir="<?= $en['is_dir'] ? '1' : '0' ?>"
                     data-size="<?= e($en['size_h']) ?>"
@@ -278,7 +281,7 @@ if ($rel !== '') {
                   <td class="c-name">
                     <div class="fm-name-cell">
                       <span class="f-ic-wrap" aria-hidden="true"><i data-lucide="<?= e($en['icon']) ?>" style="color:<?= e($en['color']) ?>"></i></span>
-                      <a class="fname" href="<?= e($en['href']) ?>" title="<?= e($en['name']) ?>"><?= e($en['name']) ?></a>
+                      <a class="fname" href="<?= e($en['href']) ?>" title="<?= e($en['label']) ?>"><?= e($en['label']) ?></a>
                     </div>
                   </td>
                   <td class="c-size num mono text-tertiary"><?= e($en['size_h']) ?></td>
@@ -315,6 +318,7 @@ if ($rel !== '') {
           <?php foreach ($fmEntries as $en): ?>
             <div class="fm-card fm-row"
                  data-name="<?= e($en['name']) ?>"
+                 data-label="<?= e($en['label']) ?>"
                  data-path="<?= e($en['rel']) ?>"
                  data-isdir="<?= $en['is_dir'] ? '1' : '0' ?>"
                  data-size="<?= e($en['size_h']) ?>"
@@ -331,7 +335,7 @@ if ($rel !== '') {
               <input type="checkbox" class="row-check" aria-label="Select <?= e($en['name']) ?>">
               <button class="icon-btn fm-card-details" type="button" data-fm-details title="Details" aria-label="Details for <?= e($en['name']) ?>"><i data-lucide="info"></i></button>
               <span class="f-ic-wrap" aria-hidden="true"><i data-lucide="<?= e($en['icon']) ?>" style="color:<?= e($en['color']) ?>"></i></span>
-              <a class="fname" href="<?= e($en['href']) ?>" title="<?= e($en['name']) ?>"><?= e($en['name']) ?></a>
+              <a class="fname" href="<?= e($en['href']) ?>" title="<?= e($en['label']) ?>"><?= e($en['label']) ?></a>
               <span class="fm-card-meta"><?= $en['is_dir'] ? 'Folder' : e($en['size_h']) ?></span>
             </div>
           <?php endforeach; ?>
@@ -663,7 +667,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const search = document.getElementById('fmSearch');
   search?.addEventListener('input', () => {
     const q = search.value.trim().toLowerCase();
-    document.querySelectorAll('.fm-row').forEach((row) => row.classList.toggle('hidden', !!q && !(row.dataset.name || '').toLowerCase().includes(q)));
+    document.querySelectorAll('.fm-row').forEach((row) => row.classList.toggle('hidden', !!q && !((row.dataset.label || row.dataset.name || '').toLowerCase().includes(q))));
   });
 
   // ---- Selection: the row checkbox is the single source of truth ----------
@@ -758,7 +762,7 @@ document.addEventListener('DOMContentLoaded', () => {
     propsReturn = document.activeElement;
     const d = row.dataset;
     const isDir = d.isdir === '1';
-    document.getElementById('fmPropName').textContent = d.name;
+    document.getElementById('fmPropName').textContent = d.label || d.name;
     document.getElementById('fmPropPath').textContent = '/' + (d.path || '');
     document.getElementById('fmPropSize').textContent = isDir ? '—' : d.size;
     document.getElementById('fmPropType').textContent = d.type;

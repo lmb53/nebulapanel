@@ -20,6 +20,12 @@ $rows = [
     <h1 class="page-title">System Info</h1>
     <p class="page-subtitle">Hardware, operating system and network details</p>
   </div>
+  <?php if (role_can('system.power')): ?>
+  <div class="page-actions">
+    <button class="btn btn-secondary" type="button" data-power-action="reboot"><i data-lucide="rotate-ccw"></i>Restart server</button>
+    <button class="btn btn-danger" type="button" data-power-action="poweroff"><i data-lucide="power"></i>Shut down</button>
+  </div>
+  <?php endif; ?>
 </div>
 
 <div class="grid grid-split">

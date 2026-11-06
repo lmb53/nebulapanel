@@ -15,7 +15,7 @@
 function app_catalog(): array
 {
     return [
-        'apache2'     => ['label' => 'Apache',      'pkg' => 'apache2',        'unit' => 'apache2',      'icon' => 'server',       'logo' => 'logos/apache.svg',      'desc' => 'Apache HTTP server'],
+        'apache2'     => ['label' => 'Apache',      'pkg' => 'apache2',        'unit' => 'apache2',      'icon' => 'server',       'logo' => 'logos/apache.svg',      'desc' => 'Apache HTTP server (runs behind Nginx on 127.0.0.1:8080)', 'helper' => 'apache'],
         'mariadb'     => ['label' => 'MariaDB',     'pkg' => 'mariadb-server', 'unit' => 'mariadb',      'icon' => 'database-zap', 'logo' => 'logos/mariadb.svg',     'desc' => 'MariaDB database server'],
         'redis'       => ['label' => 'Redis',       'pkg' => 'redis-server',   'unit' => 'redis-server', 'icon' => 'zap',          'logo' => 'logos/redis.svg',       'desc' => 'In-memory data store & cache'],
         'memcached'   => ['label' => 'Memcached',   'pkg' => 'memcached',      'unit' => 'memcached',    'icon' => 'memory-stick',          'logo' => '',                      'desc' => 'Distributed memory cache'],

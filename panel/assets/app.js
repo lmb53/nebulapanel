@@ -957,6 +957,45 @@
     };
     document.getElementById('themeToggle')?.addEventListener('click', toggleTheme);
     document.querySelectorAll('[data-theme-toggle]').forEach((btn) => btn.addEventListener('click', () => { toggleTheme(); closeMenus(); }));
+    // Restart / shut down the server (administrators only; rendered server-side).
+    document.querySelectorAll('[data-power-action]').forEach((btn) => btn.addEventListener('click', async () => {
+      closeMenus();
+      const reboot = btn.dataset.powerAction === 'reboot';
+      const ok = await confirmDialog({
+        title: reboot ? 'Restart the server?' : 'Shut down the server?',
+        message: reboot
+          ? 'Every website, database and service goes offline while the server restarts, usually for a minute or two. The panel reconnects by itself.'
+          : 'Every website, database and service stops, and the panel becomes unreachable. You will need your hosting provider\'s console to power the server back on.',
+        danger: true,
+        confirmLabel: reboot ? 'Restart server' : 'Shut down',
+      });
+      if (!ok) return;
+      const body = { action: btn.dataset.powerAction };
+      let res = await apiPost('power', body);
+      if (!res.ok && res.busy && await confirmDialog({
+        title: 'Packages are being installed',
+        message: (res.error || 'A package operation is running.') + '. Interrupting it can leave packages half-installed. Continue anyway?',
+        danger: true,
+        confirmLabel: reboot ? 'Restart anyway' : 'Shut down anyway',
+      })) res = await apiPost('power', { ...body, force: true });
+      if (!res.ok) { if (res.error) toast(res.error, 'error'); return; }
+      toast(reboot ? 'Server restarting in 5 seconds…' : 'Server shutting down in 5 seconds…', 'warning');
+      if (reboot) waitForServerReturn();
+    }));
+    // After a restart, wait until the server has gone down and come back,
+    // then reload (which also lands on the sign-in page if needed).
+    function waitForServerReturn() {
+      let wentDown = false;
+      const started = Date.now();
+      const probe = async () => {
+        let up = false;
+        try { up = (await fetch(location.href, { method: 'HEAD', cache: 'no-store' })).status < 500; } catch (e) { up = false; }
+        if (!up) wentDown = true;
+        if (up && (wentDown || Date.now() - started > 120000)) { location.reload(); return; }
+        if (Date.now() - started < 600000) setTimeout(probe, 4000);
+      };
+      setTimeout(probe, 8000);
+    }
     // Follow theme changes made in another window (e.g. the editor popup).
     window.addEventListener('storage', (event) => {
       if (event.key === 'nebula-theme') applyTheme(event.newValue === 'light' || (!event.newValue && prefersLight()));

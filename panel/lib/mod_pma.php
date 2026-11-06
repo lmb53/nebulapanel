@@ -243,7 +243,7 @@ function pma_install(?callable $onOutput = null): array
     $name = 'dbadmin-' . bin2hex(random_bytes(4));
     $target = dirname(APP_ROOT) . '/' . $name;
     $args = 'pma-install ' . escapeshellarg($target);
-    [$c, $o] = $onOutput ? helper_cmd_stream($args, $onOutput, 300) : helper_cmd($args, 300);
+    [$c, $o] = $onOutput ? helper_cmd_stream($args, $onOutput, 900) : helper_cmd($args, 900);
     if ($c !== 0) {
         return ['ok' => false, 'error' => trim($o) ?: 'install failed'];
     }

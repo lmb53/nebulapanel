@@ -246,6 +246,32 @@ function php_support_status(string $version): array
     return ['key' => $dates[$version][0], 'label' => $dates[$version][0] === 'active' ? 'Active support' : 'Security fixes', 'until' => $dates[$version][1]];
 }
 
+/**
+ * Full release number for an installed minor version, e.g. "8.5" -> "8.5.1".
+ * Asks the PHP binary itself, falling back to the package version; returns
+ * the minor version unchanged when neither answers.
+ */
+function php_full_version(string $version): string
+{
+    if (!php_valid_version($version)) { return $version; }
+    return (string) cache_remember('php-full-' . $version, 300, static function () use ($version): string {
+        foreach (["/usr/bin/php$version", "/usr/sbin/php-fpm$version"] as $bin) {
+            if (!is_executable($bin)) { continue; }
+            [$code, $out] = run_cmd(escapeshellarg($bin) . ' -n -v 2>/dev/null', 10);
+            if ($code === 0 && preg_match('/^PHP\s+(\d+\.\d+\.\d+)/', $out, $m) && str_starts_with($m[1], $version . '.')) {
+                return $m[1];
+            }
+        }
+        foreach (["php$version-fpm", "php$version-cli"] as $pkg) {
+            [$code, $out] = run_cmd('dpkg-query -W -f=\'${Version}\' ' . escapeshellarg($pkg) . ' 2>/dev/null', 10);
+            if ($code === 0 && preg_match('/^(?:\d+:)?(\d+\.\d+\.\d+)/', trim($out), $m) && str_starts_with($m[1], $version . '.')) {
+                return $m[1];
+            }
+        }
+        return $version;
+    });
+}
+
 function php_version_summaries(): array
 {
     require_once APP_ROOT . '/lib/mod_sites.php';
@@ -256,6 +282,7 @@ function php_version_summaries(): array
         [$code, $memory] = run_cmd('systemctl show ' . escapeshellarg("php$version-fpm") . ' -p MemoryCurrent --value 2>/dev/null');
         $summaries[] = [
             'version' => $version,
+            'full' => php_full_version($version),
             'status' => service_status("php$version-fpm"),
             'memory' => $code === 0 && ctype_digit(trim($memory)) ? (int) trim($memory) : 0,
             'sites' => count($used),
