@@ -2887,6 +2887,22 @@ EOF
       sed -i "s#define('INSTALL_PATH', '/var/lib/roundcube/');#define('INSTALL_PATH', dirname(__DIR__, 2) . '/');#" "$RC_INISET"
       grep -q "dirname(__DIR__, 2)" "$RC_INISET" || die "could not point Roundcube at its own install directory"
     fi
+    # PHP 8.5 added a native array_first(). Roundcube 1.6.6 (Ubuntu 24.04)
+    # declares its own unconditionally, so every request dies with "Cannot
+    # redeclare function array_first()" (HTTP 500). Keep Roundcube's version
+    # only where PHP lacks one, as upstream does from 1.6.11. Also stop its
+    # bootstrap from touching E_STRICT, whose deprecation notice (PHP 8.4+)
+    # is emitted before Roundcube turns display_errors off.
+    RC_BOOT="$TARGET/program/lib/Roundcube/bootstrap.php"
+    if grep -q '^function array_first(\$array)$' "$RC_BOOT"; then
+      sed -i 's/^function array_first(\$array)$/function rcube_compat_array_first($array)/' "$RC_BOOT"
+      printf '\n%s\n' "if (!function_exists('array_first')) { function array_first(\$array) { return rcube_compat_array_first(\$array); } }" >> "$RC_BOOT"
+    fi
+    sed -i 's/E_ALL & ~E_NOTICE & ~E_STRICT,/E_ALL \& ~E_NOTICE \& ~E_DEPRECATED,/' "$RC_BOOT"
+    RC_PHP="$(command -v "php${PHP_VER}" || command -v php || true)"
+    if [[ -n "$RC_PHP" ]]; then
+      "$RC_PHP" -l "$RC_BOOT" >/dev/null || die "patched Roundcube bootstrap failed PHP validation"
+    fi
     install -d -m 0755 "$TARGET/config"
     cp /etc/roundcube/defaults.inc.php "$TARGET/config/defaults.inc.php"
     if [[ -f /etc/roundcube/mimetypes.php ]]; then cp /etc/roundcube/mimetypes.php "$TARGET/config/mimetypes.php"; fi
