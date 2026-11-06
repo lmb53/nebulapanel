@@ -86,8 +86,12 @@ function su_apply(): array
     [$listCode,$listing,$listError]=run_cmd('tar -tzf '.escapeshellarg($tar),120);
     if($listCode!==0){run_cmd('rm -rf '.escapeshellarg($work));return ['ok'=>false,'error'=>'Downloaded archive is invalid: '.trim($listError?:$listing),'log'=>$log];}
     $topLevels=[];
-    foreach(preg_split('/\r?\n/',$listing) as $entry){
-        if($entry===''||str_starts_with($entry,'/')||preg_match('#(^|/)\.\.(/|$)#',$entry)){
+    // `tar -t` ends its listing with a newline; that trailing empty line is
+    // not an archive entry and must not be mistaken for an unsafe one.
+    $entries=array_values(array_filter(preg_split('/\r?\n/',rtrim($listing,"\r\n")),static fn($entry)=>$entry!==''));
+    if(!$entries){run_cmd('rm -rf '.escapeshellarg($work));return ['ok'=>false,'error'=>'Downloaded archive is empty.','log'=>$log];}
+    foreach($entries as $entry){
+        if(str_starts_with($entry,'/')||preg_match('#(^|/)\.\.(/|$)#',$entry)){
             run_cmd('rm -rf '.escapeshellarg($work));
             return ['ok'=>false,'error'=>'Downloaded archive contains an unsafe path.','log'=>$log];
         }

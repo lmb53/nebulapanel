@@ -2858,11 +2858,43 @@ EOF
     HAD_APACHE=no; apache_installed && HAD_APACHE=yes
     apt-get -o Dpkg::Use-Pty=0 -o APT::Color=0 install -y --no-install-recommends roundcube-core roundcube-sqlite3 \
       || die "distribution-verified Roundcube package install failed"
+    # archive, zipdownload and managesieve ship separately from the core.
+    apt-get -o Dpkg::Use-Pty=0 -o APT::Color=0 install -y --no-install-recommends roundcube-plugins \
+      || echo "-- roundcube-plugins is unavailable; webmail will run without its optional plugins"
     apache_tame_if_pulled_in "$HAD_APACHE"
+    # Debian splits Roundcube over three places: program files in
+    # /usr/share/roundcube, configuration in /etc/roundcube, and a web root in
+    # /var/lib/roundcube that symlinks the two together. The defaults ship as
+    # conffiles; restore them if an earlier removal or purge deleted them.
+    if [[ ! -f /etc/roundcube/defaults.inc.php ]]; then
+      echo "-- /etc/roundcube/defaults.inc.php is missing; restoring Roundcube's packaged configuration"
+      apt-get -o Dpkg::Use-Pty=0 -o APT::Color=0 install -y --reinstall --no-install-recommends \
+        -o Dpkg::Options::=--force-confmiss roundcube-core || true
+    fi
+    [[ -f /etc/roundcube/defaults.inc.php ]] \
+      || die "Roundcube's default configuration (/etc/roundcube/defaults.inc.php) is missing and could not be restored"
     SRC=/usr/share/roundcube
-    [[ -f "$SRC/index.php" ]] || die "Roundcube package layout unexpected"
+    [[ -f "$SRC/index.php" && -f "$SRC/program/include/iniset.php" ]] || die "Roundcube package layout unexpected"
+    [[ ! -e "$TARGET" ]] || die "webmail target already exists: $TARGET"
+    # From here on, a failure removes the half-built copy.
+    trap 'rm -rf -- "$TARGET"' EXIT
     copy_tree_deref "$SRC" "$TARGET"
     rm -rf "$TARGET/installer"
+    # The packaged iniset.php pins INSTALL_PATH to /var/lib/roundcube/, which
+    # would make this copy read /etc/roundcube instead of its own config/.
+    RC_INISET="$TARGET/program/include/iniset.php"
+    if grep -q "define('INSTALL_PATH', '/var/lib/roundcube/')" "$RC_INISET"; then
+      sed -i "s#define('INSTALL_PATH', '/var/lib/roundcube/');#define('INSTALL_PATH', dirname(__DIR__, 2) . '/');#" "$RC_INISET"
+      grep -q "dirname(__DIR__, 2)" "$RC_INISET" || die "could not point Roundcube at its own install directory"
+    fi
+    install -d -m 0755 "$TARGET/config"
+    cp /etc/roundcube/defaults.inc.php "$TARGET/config/defaults.inc.php"
+    if [[ -f /etc/roundcube/mimetypes.php ]]; then cp /etc/roundcube/mimetypes.php "$TARGET/config/mimetypes.php"; fi
+    # Only enable plugins that are actually present.
+    RC_PLUGINS=""
+    for plugin in archive zipdownload managesieve; do
+      if [[ -f "$TARGET/plugins/$plugin/$plugin.php" ]]; then RC_PLUGINS+="${RC_PLUGINS:+, }'$plugin'"; fi
+    done
     install -d -m 0750 -o nebula-webapps -g nebula-webapps /var/lib/nebula-mail
     DESKEY="$(od -An -N24 -tx1 /dev/urandom | tr -d ' \n')"
     cat > "$TARGET/config/config.inc.php" <<EOF
@@ -2879,7 +2911,7 @@ EOF
 \$config['support_url'] = '';
 \$config['product_name'] = 'Nebula Webmail';
 \$config['des_key'] = '${DESKEY:0:24}';
-\$config['plugins'] = ['archive', 'zipdownload', 'managesieve'];
+\$config['plugins'] = [${RC_PLUGINS}];
 \$config['skin'] = 'elastic';
 \$config['enable_installer'] = false;
 \$config['log_dir'] = '/var/lib/nebula-mail/rc-logs/';
@@ -2887,6 +2919,7 @@ EOF
 EOF
     install -d -m 0750 -o nebula-webapps -g nebula-webapps /var/lib/nebula-mail/rc-logs /var/lib/nebula-mail/rc-temp
     chown -R nebula-webapps:nebula-webapps "$TARGET"
+    trap - EXIT
     echo "roundcube installed at $TARGET"
     ;;
 
