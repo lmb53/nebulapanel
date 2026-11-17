@@ -2,12 +2,10 @@
 /**
  * Databases module — MariaDB/MySQL administration through the typed helper.
  *
- * SECURITY: identifiers (db / user names) are validated against a strict
- * whitelist regex before ever touching SQL; host strings likewise. String
- * values (passwords) are SQL-escaped via db_sql_str(). SQL is Base64-wrapped
- * for transport to the typed helper, decoded to a private temporary file, and
- * supplied to mysql on stdin so statements and passwords never appear in the
- * process list.
+ * SECURITY: the panel never sends SQL. Every operation is a typed helper
+ * action (`nebula-helper db-action <op> ...`) that re-validates identifiers
+ * and builds the statement itself; passwords travel Base64-encoded and reach
+ * mysql on stdin, so they never appear in the process list.
  */
 
 const SYSTEM_DBS = ['mysql', 'information_schema', 'performance_schema', 'sys'];
@@ -127,27 +125,27 @@ function db_host_ok(string $s): bool
     return (bool) preg_match('/^[A-Za-z0-9_.%-]+$/', $s) && strlen($s) <= 255;
 }
 
-/** Quote + escape a SQL string literal. */
-function db_sql_str(string $v): string
+/** Database accounts the panel must never create, change or drop. */
+const DB_RESERVED_USERS = ['root', 'mysql', 'mariadb', 'mariadb.sys', 'debian-sys-maint', 'admin',
+    'mysql.sys', 'mysql.session', 'mysql.infoschema'];
+
+function db_user_reserved(string $user): bool
 {
-    return "'" . str_replace(["\\", "'"], ["\\\\", "\\'"], $v) . "'";
+    return in_array(strtolower($user), DB_RESERVED_USERS, true);
 }
 
-/** Run SQL as root via socket auth. Returns [code, out, err]. */
-function db_run(string $sql): array
+/** Run one typed database action through the helper. Returns [code, out, err]. */
+function db_action(string $op, array $args = [], int $timeout = 120): array
 {
-    return helper_cmd('db-query ' . escapeshellarg(base64_encode($sql)), 120);
+    $line = 'db-action ' . escapeshellarg($op);
+    foreach ($args as $arg) { $line .= ' ' . escapeshellarg((string) $arg); }
+    return helper_cmd($line, $timeout);
 }
 
 /** List databases with total (data+index) size in bytes. */
 function db_list(): array
 {
-    $sql = "SELECT s.schema_name, COALESCE(SUM(t.data_length+t.index_length),0), "
-        . "COUNT(t.table_name), s.default_collation_name "
-        . "FROM information_schema.schemata s "
-        . "LEFT JOIN information_schema.tables t ON t.table_schema=s.schema_name "
-        . "GROUP BY s.schema_name,s.default_collation_name;";
-    [$c, $o] = db_run($sql);
+    [$c, $o] = db_action('list');
     if ($c !== 0) {
         return ['ok' => false, 'error' => db_error($o, $c), 'databases' => []];
     }
@@ -175,21 +173,21 @@ function db_list(): array
 /** Database engine/version string. */
 function db_version(): string
 {
-    [$c, $o] = db_run('SELECT VERSION();');
+    [$c, $o] = db_action('version');
     return $c === 0 ? trim((string) $o) : '';
 }
 
 /** Users with explicit schema privileges, keyed by database name. */
 function db_schema_users(): array
 {
-    [$c, $o] = db_run("SELECT TABLE_SCHEMA,GRANTEE FROM information_schema.SCHEMA_PRIVILEGES GROUP BY TABLE_SCHEMA,GRANTEE ORDER BY TABLE_SCHEMA,GRANTEE;");
+    [$c, $o] = db_action('schema-users');
     if ($c !== 0) {
         return [];
     }
     $map = [];
     foreach (preg_split('/\r?\n/', trim($o)) as $line) {
         if ($line === '') { continue; }
-        [$database, $grantee] = array_pad(explode("\t", $line, 2), 2, '');
+        [$database, $grantee] = array_pad(explode("\t", $line, 3), 3, '');
         $map[$database][] = trim($grantee, "'");
     }
     return $map;
@@ -272,7 +270,7 @@ function db_create_bundle(string $name, string $user, string $host, string $pass
 /** List database user accounts. */
 function db_users(): array
 {
-    [$c, $o] = db_run("SELECT User,Host FROM mysql.user ORDER BY User;");
+    [$c, $o] = db_action('users');
     if ($c !== 0) {
         return ['ok' => false, 'error' => db_error($o, $c), 'users' => []];
     }
@@ -296,7 +294,7 @@ function db_create(string $name): array
     if (in_array($name, SYSTEM_DBS, true)) {
         return ['ok' => false, 'error' => 'Refusing to create a system database.'];
     }
-    [$c, $o] = db_run("CREATE DATABASE `$name`");
+    [$c, $o] = db_action('create', [$name]);
     if ($c !== 0) {
         return ['ok' => false, 'error' => db_error($o, $c)];
     }
@@ -313,7 +311,7 @@ function db_drop(string $name): array
     if (in_array($name, SYSTEM_DBS, true)) {
         return ['ok' => false, 'error' => 'Refusing to drop a system database.'];
     }
-    [$c, $o] = db_run("DROP DATABASE `$name`");
+    [$c, $o] = db_action('drop', [$name]);
     if ($c !== 0) {
         return ['ok' => false, 'error' => db_error($o, $c)];
     }
@@ -332,8 +330,9 @@ function db_drop(string $name): array
  */
 function db_password_error(string $password): ?string
 {
-    if (strlen($password) < 8 || strlen($password) > 256 || strpos($password, "\0") !== false) {
-        return 'Database user passwords must be 8–256 characters.';
+    if (strlen($password) < 8 || strlen($password) > 256 || !preg_match('/^[\x20-\x7E]+$/', $password)
+        || str_contains($password, '\\')) {
+        return 'Database user passwords must be 8–256 printable characters without a backslash.';
     }
     return null;
 }
@@ -353,13 +352,10 @@ function db_create_user(string $user, string $host, string $password, string $gr
     if (($passwordError = db_password_error($password)) !== null) {
         return ['ok' => false, 'error' => $passwordError];
     }
-    // user/host are regex-validated, so safe to inline inside the quotes.
-    $sql = "CREATE USER '" . $user . "'@'" . $host . "' IDENTIFIED BY " . db_sql_str($password) . ";";
-    if ($grantDb !== '') {
-        $sql .= " GRANT ALL PRIVILEGES ON `" . $grantDb . "`.* TO '" . $user . "'@'" . $host . "';";
+    if (db_user_reserved($user)) {
+        return ['ok' => false, 'error' => 'That is a reserved system account name.'];
     }
-    $sql .= " FLUSH PRIVILEGES;";
-    [$c, $o] = db_run($sql);
+    [$c, $o] = db_action('user-create', array_merge([$user, $host, base64_encode($password)], $grantDb !== '' ? [$grantDb] : []));
     if ($c !== 0) {
         return ['ok' => false, 'error' => db_error($o, $c)];
     }
@@ -376,7 +372,10 @@ function db_drop_user(string $user, string $host): array
     if (!db_host_ok($host)) {
         return ['ok' => false, 'error' => 'Invalid host.'];
     }
-    [$c, $o] = db_run("DROP USER '" . $user . "'@'" . $host . "';");
+    if (db_user_reserved($user)) {
+        return ['ok' => false, 'error' => 'System database accounts cannot be dropped from the panel.'];
+    }
+    [$c, $o] = db_action('user-drop', [$user, $host]);
     if ($c !== 0) {
         return ['ok' => false, 'error' => db_error($o, $c)];
     }

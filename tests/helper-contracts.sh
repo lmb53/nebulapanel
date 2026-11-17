@@ -24,6 +24,15 @@ expect_reject "empty restore" site-restore 0123456789abcdef0123456789abcdef x-20
 expect_reject "extract outside root" file-extract /etc/passwd /tmp out
 expect_reject "unknown power action" system-power halt
 expect_reject "unknown power option" system-power reboot now
+expect_reject "log path traversal" log-read-file /var/log/nginx/../../etc/shadow.log 100
+expect_reject "log path outside the allowlist" log-read-file /etc/shadow 100
+expect_reject "raw SQL action removed" db-query U0VMRUNUIDE7
+expect_reject "unknown database action" db-action shell
+expect_reject "web app outside the web root" pma-remove /etc
+expect_reject "web app wrong name" webmail-remove /var/www/html/data
+expect_reject "ssh key for a system user" ssh-key-add root c3NoLWVkMjU1MTkgQUFBQQ==
+expect_reject "file op outside the root" file-chmod /etc/shadow 777
+expect_reject "special permission bits" file-chmod /srv/nebula/sites/x 4755
 # The detached package worker is only reachable from systemd-run, never sudo.
 expect_reject "package worker without systemd-run" __package-worker /run/nebula-panel-ops/op.AAAAAAAA 1 pma-install /tmp/x
 echo "helper argument validation contracts passed"

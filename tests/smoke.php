@@ -169,8 +169,8 @@ $helperSource = (string) file_get_contents(APP_ROOT . '/bin/nebula-helper');
 $check(strpos($helperSource, "!= *\$'\\0'*") === false
     && strpos($helperSource, 'decode_payload_file "$ENCODED" "$PAYLOAD"') !== false,
     'binary payload validation can still reject every broker/SQL request');
-$check(strpos($helperSource, 'mysql -N -B < "$PAYLOAD"') !== false,
-    'database SQL is not passed to mysql through a private payload file');
+$check(strpos($helperSource, '  db-query)') === false && strpos($helperSource, 'mysql --binary-mode') !== false,
+    'raw SQL still reaches a root mysql client, or client commands are not disabled');
 $check(strpos($helperSource, 'u:www-data:rX') !== false,
     'new website document roots do not grant Nginx read access');
 $check(strpos($helperSource, 'server_name $DOMAIN;') !== false, 'site vhost still adds an implicit hostname');
@@ -179,7 +179,7 @@ $check(strpos($helperSource, "tr -dc 'a-zA-Z0-9' </dev/urandom | head") === fals
 $check(strpos($helperSource, 'FM_ROOT_FILE=/etc/nebula-panel/fm-root') !== false, 'privileged File Manager confinement is missing');
 $check(strpos($helperSource, 'PANEL_ROOT_FILE=/etc/nebula-panel/panel-root') !== false && strpos($helperSource, 'panel-update)') !== false, 'confined privileged panel updater is missing');
 $check(strpos($helperSource, 'install -m 0755 -o root -g root "$SOURCE/bin/nebula-helper" /usr/local/bin/nebula-helper') !== false, 'panel-update does not refresh the privileged helper from the staged release');
-$check(strpos($helperSource, 'file-compress)') !== false && strpos($helperSource, 'zip -rq') !== false, 'privileged zip compression is missing');
+$check(strpos($helperSource, 'file-compress)') !== false && strpos($helperSource, 'zip -ryq') !== false, 'privileged zip compression is missing or follows symlinks');
 $check(strpos($helperSource, 'systemd-run --quiet') !== false, 'PHP-FPM reload is not deferred');
 $check(strpos($helperSource, 'systemctl reload "php${VER}-fpm"') === false, 'a website action can still reload its serving PHP-FPM process inline');
 $check(strpos($helperSource, 'site-list)') !== false && strpos($helperSource, 'site-php)') !== false, 'website recovery or PHP reassignment helper is missing');

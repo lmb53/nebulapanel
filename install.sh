@@ -153,7 +153,7 @@ dpkg --configure -a >/dev/null 2>&1 || warn "dpkg --configure -a reported errors
 apt-get update -qq
 apt-get install -f -y -qq >/dev/null 2>&1 || true
 apt-get install -y -qq nginx \
-  rsync ufw sudo curl ca-certificates tar zip unzip openssl git acl \
+  rsync ufw sudo curl ca-certificates tar zip unzip openssl git acl python3 python3-yaml \
   certbot python3-certbot-nginx >/dev/null
 
 # Keep the ondrej/php PPA from hijacking the system-default, unversioned php

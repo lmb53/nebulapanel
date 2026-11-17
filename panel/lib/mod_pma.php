@@ -126,12 +126,7 @@ function pma_database_account(string $database): array
         'user' => 'nebula_pma_' . substr($key, 0, 12),
         'password' => pma_b64url_encode(random_bytes(30)),
     ];
-    $user = (string) $account['user'];
-    $password = db_sql_str((string) $account['password']);
-    $sql = "CREATE USER IF NOT EXISTS '$user'@'localhost' IDENTIFIED BY $password; "
-        . "ALTER USER '$user'@'localhost' IDENTIFIED BY $password; "
-        . "GRANT ALL PRIVILEGES ON `$database`.* TO '$user'@'localhost'; FLUSH PRIVILEGES;";
-    [$c, $o] = db_run($sql);
+    [$c, $o] = db_action('user-upsert', [(string) $account['user'], 'localhost', base64_encode((string) $account['password']), $database]);
     if ($c !== 0) { return ['ok' => false, 'error' => sudo_error($o, $c)]; }
     return ['ok' => true, 'account' => $account];
 }
@@ -274,7 +269,7 @@ function pma_remove(): array
     foreach ((array) ($s['accounts'] ?? []) as $account) {
         $user = (string) ($account['user'] ?? '');
         if (preg_match('/^nebula_pma_[a-f0-9]{12}$/', $user)) {
-            db_run("DROP USER IF EXISTS '$user'@'localhost';");
+            db_action('user-drop', [$user, 'localhost']);
         }
     }
     if (helper_available() && !empty($s['dir'])) {

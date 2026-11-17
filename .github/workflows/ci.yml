@@ -9,12 +9,14 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+      - name: Tools
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq python3-yaml acl shellcheck
       - name: PHP syntax
         run: find panel tests -name '*.php' -print0 | xargs -0 -n1 php -l
       - name: Shell syntax
         run: bash -n install.sh panel/bin/nebula-helper
       - name: Smoke and security regressions
-        run: php tests/smoke.php && php tests/security.php && php tests/robustness.php && bash tests/helper-contracts.sh
+        run: php tests/smoke.php && php tests/security.php && php tests/robustness.php && bash tests/helper-contracts.sh && bash tests/helper-sandbox.sh
       - name: End-to-end session lifecycle
         run: php tests/session-lifecycle.php
       - name: End-to-end HTTP flows

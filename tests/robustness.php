@@ -103,8 +103,8 @@ $check(fm_executable_upload_name('.user.ini') && fm_executable_upload_name('.HTA
 $helperSource = (string) file_get_contents(APP_ROOT . '/bin/nebula-helper');
 $check(strpos($helperSource, "local re='^[A-Za-z0-9._ ()+,@=~-]{1,255}$'") !== false,
     'the helper accepts exactly the File Manager name charset');
-$check(preg_match('/file-delete\)\s*\n\s*TARGET="\$\(fm_confined_entry /', $helperSource) === 1
-    && strpos($helperSource, 'chown -hR root:root "$FILE_TRASH/$TRASH_NAME"') !== false,
+$check(preg_match('/file-delete\)\s*\n.*\n\s*fmsafe trash /', $helperSource) === 1
+    && strpos($helperSource, "subprocess.run(['chown', '-hR', 'root:root'") !== false,
     'the helper trashes a symlink itself, never its target');
 
 mkdir($fm . '/big', 0700);

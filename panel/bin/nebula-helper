@@ -52,6 +52,531 @@ DKIM_DIR="$MAIL_DIR/dkim"
 die() { echo "$*" >&2; exit 2; }
 
 # ---------------------------------------------------------------------------
+# Confined filesystem operations below the File Manager root.
+#
+# Site folders are writable by their site users, so a path that was checked
+# with realpath can be swapped for a symlink before a root command acts on it.
+# These operations therefore walk from the root one component at a time with
+# O_NOFOLLOW directory descriptors and act relative to the final directory
+# descriptor, so no symlink is ever followed and there is no check/use race.
+# ---------------------------------------------------------------------------
+read -r -d '' FMSAFE_PY <<'PYEOF' || true
+import os, sys, stat, pwd, subprocess, secrets, errno
+
+FM_ROOT_FILE = os.environ.get('NEBULA_FM_ROOT_FILE', '/etc/nebula-panel/fm-root')
+PANEL_ROOT_FILE = os.environ.get('NEBULA_PANEL_ROOT_FILE', '/etc/nebula-panel/panel-root')
+FILE_TRASH = os.environ.get('NEBULA_FILE_TRASH', '/var/lib/nebula-panel/file-trash')
+MAX_COPY_ENTRIES = 200000
+
+def fail(msg):
+    sys.stderr.write(msg + '\n')
+    sys.exit(2)
+
+def first_line(path):
+    try:
+        with open(path) as handle:
+            return handle.readline().strip()
+    except OSError:
+        return ''
+
+root_cfg = first_line(FM_ROOT_FILE)
+if not root_cfg:
+    fail('file manager root is not configured; re-run install.sh')
+ROOT = os.path.realpath(root_cfg)
+PANEL = os.path.realpath(first_line(PANEL_ROOT_FILE)) if first_line(PANEL_ROOT_FILE) else ''
+PANEL_IDS = set()
+for candidate in ([PANEL, os.path.join(PANEL, 'data')] if PANEL else []):
+    try:
+        st = os.stat(candidate)
+        PANEL_IDS.add((st.st_dev, st.st_ino))
+    except OSError:
+        pass
+
+def panel_user():
+    try:
+        return pwd.getpwuid(os.stat(os.path.join(PANEL, 'data')).st_uid).pw_name
+    except (OSError, KeyError):
+        return ''
+
+def split(path):
+    """Absolute path below ROOT -> list of components (no '.', '..' or empties)."""
+    if not path.startswith('/'):
+        fail('path must be absolute')
+    if path != ROOT and not path.startswith(ROOT + '/'):
+        fail('path is outside file manager root')
+    rest = path[len(ROOT):].strip('/')
+    parts = rest.split('/') if rest else []
+    for part in parts:
+        if part in ('', '.', '..') or '\0' in part or len(part.encode()) > 255:
+            fail('invalid path component')
+    return parts
+
+def guard(fd):
+    st = os.fstat(fd)
+    if (st.st_dev, st.st_ino) in PANEL_IDS:
+        os.close(fd)
+        fail('panel-private path is not allowed')
+    return fd
+
+def open_dir(parts):
+    """Walk from ROOT without following any symlink; return a directory fd."""
+    fd = guard(os.open(ROOT, os.O_RDONLY | os.O_DIRECTORY))
+    for part in parts:
+        try:
+            nfd = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+        except OSError as error:
+            os.close(fd)
+            if error.errno in (errno.ELOOP, errno.ENOTDIR):
+                fail('symlinked folders cannot be used here')
+            fail('folder not found')
+        os.close(fd)
+        fd = guard(nfd)
+    return fd
+
+def parent_and_name(path):
+    parts = split(path)
+    if not parts:
+        fail('the file manager root itself cannot be changed')
+    return open_dir(parts[:-1]), parts[-1]
+
+def lstat_at(fd, name):
+    try:
+        return os.stat(name, dir_fd=fd, follow_symlinks=False)
+    except OSError:
+        return None
+
+def contains_panel(path):
+    return bool(PANEL) and (PANEL == path or PANEL.startswith(path.rstrip('/') + '/'))
+
+def set_acl(fd, acl):
+    user = panel_user()
+    if not user:
+        return
+    spec = acl.replace('PANEL', user)
+    try:
+        subprocess.run(['setfacl', '-m', spec, '/proc/self/fd/%d' % fd], pass_fds=[fd],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+    except OSError:
+        pass
+
+def open_entry(fd, name):
+    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | getattr(os, 'O_NOCTTY', 0)
+    return os.open(name, flags, dir_fd=fd)
+
+def op_chmod(path, mode):
+    if len(mode) != 3 or any(c not in '01234567' for c in mode):
+        fail('invalid mode')
+    pfd, name = parent_and_name(path)
+    st = lstat_at(pfd, name)
+    if st is None:
+        fail('path not found')
+    if stat.S_ISLNK(st.st_mode):
+        fail('symlink permissions cannot be changed')
+    if not (stat.S_ISREG(st.st_mode) or stat.S_ISDIR(st.st_mode)):
+        fail('only files and folders can be changed')
+    if stat.S_ISDIR(st.st_mode) and contains_panel(path):
+        fail('path contains the panel installation')
+    efd = guard(open_entry(pfd, name))
+    os.fchmod(efd, int(mode, 8))
+    print('permissions updated')
+
+def create_owner(pfd):
+    st = os.fstat(pfd)
+    if st.st_uid == 0:
+        fail('this folder is owned by root; open a website folder first')
+    return st.st_uid, st.st_gid
+
+def op_mkdir(path):
+    pfd, name = parent_and_name(path)
+    uid, gid = create_owner(pfd)
+    try:
+        os.mkdir(name, 0o750, dir_fd=pfd)
+    except FileExistsError:
+        fail('destination already exists')
+    dfd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=pfd)
+    os.fchown(dfd, uid, gid)
+    set_acl(dfd, 'u:PANEL:rX,d:u:PANEL:rX')
+    print('created')
+
+def op_mkfile(path):
+    pfd, name = parent_and_name(path)
+    uid, gid = create_owner(pfd)
+    try:
+        ffd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o640, dir_fd=pfd)
+    except FileExistsError:
+        fail('destination already exists')
+    os.fchown(ffd, uid, gid)
+    set_acl(ffd, 'u:PANEL:r')
+    print('created')
+
+def rename_noreplace(sfd, sname, dfd, dname):
+    if lstat_at(dfd, dname) is not None:
+        fail('destination already exists')
+    os.rename(sname, dname, src_dir_fd=sfd, dst_dir_fd=dfd)
+
+def op_rename(src, dst):
+    sfd, sname = parent_and_name(src)
+    if os.path.dirname(src.rstrip('/')) != os.path.dirname(dst.rstrip('/')):
+        fail('rename must stay in the same directory')
+    dname = split(dst)[-1]
+    st = lstat_at(sfd, sname)
+    if st is None:
+        fail('path not found')
+    if stat.S_ISDIR(st.st_mode) and contains_panel(src):
+        fail('path contains the panel installation')
+    rename_noreplace(sfd, sname, sfd, dname)
+    print('renamed')
+
+def copy_tree(sfd, sname, dfd, dname, uid, gid, budget):
+    budget[0] -= 1
+    if budget[0] < 0:
+        fail('too many entries to copy')
+    st = lstat_at(sfd, sname)
+    if st is None:
+        return
+    mode = stat.S_IMODE(st.st_mode) & 0o777
+    if stat.S_ISLNK(st.st_mode):
+        target = os.readlink(sname, dir_fd=sfd)
+        os.symlink(target, dname, dir_fd=dfd)
+        os.chown(dname, uid, gid, dir_fd=dfd, follow_symlinks=False)
+    elif stat.S_ISDIR(st.st_mode):
+        src = guard(os.open(sname, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=sfd))
+        os.mkdir(dname, 0o700, dir_fd=dfd)
+        dst = os.open(dname, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=dfd)
+        os.fchown(dst, uid, gid)
+        for entry in os.listdir(src):
+            copy_tree(src, entry, dst, entry, uid, gid, budget)
+        os.fchmod(dst, mode)
+        os.close(src)
+        os.close(dst)
+    elif stat.S_ISREG(st.st_mode):
+        src = os.open(sname, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=sfd)
+        dst = os.open(dname, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=dfd)
+        os.fchown(dst, uid, gid)
+        while True:
+            chunk = os.read(src, 1 << 20)
+            if not chunk:
+                break
+            os.write(dst, chunk)
+        os.fchmod(dst, mode)
+        os.close(src)
+        os.close(dst)
+    # sockets, fifos and devices are skipped deliberately
+
+def remove_tree(pfd, name):
+    st = lstat_at(pfd, name)
+    if st is None:
+        return
+    if stat.S_ISDIR(st.st_mode):
+        dfd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=pfd)
+        for entry in os.listdir(dfd):
+            remove_tree(dfd, entry)
+        os.close(dfd)
+        os.rmdir(name, dir_fd=pfd)
+    else:
+        os.unlink(name, dir_fd=pfd)
+
+def op_copy_or_move(op, src, dst):
+    if op not in ('copy', 'move'):
+        fail('invalid file operation')
+    sfd, sname = parent_and_name(src)
+    dfd, dname = parent_and_name(dst)
+    st = lstat_at(sfd, sname)
+    if st is None:
+        fail('source not found')
+    if stat.S_ISDIR(st.st_mode) and (dst.rstrip('/') + '/').startswith(src.rstrip('/') + '/'):
+        fail('cannot place a directory inside itself')
+    if stat.S_ISDIR(st.st_mode) and contains_panel(src):
+        fail('path contains the panel installation')
+    if lstat_at(dfd, dname) is not None:
+        fail('destination already exists')
+    if op == 'move':
+        try:
+            os.rename(sname, dname, src_dir_fd=sfd, dst_dir_fd=dfd)
+            print('moved')
+            return
+        except OSError as error:
+            if error.errno != errno.EXDEV:
+                raise
+    uid, gid = create_owner(dfd)
+    tmp = '.nebula-copy-' + secrets.token_hex(6)
+    try:
+        copy_tree(sfd, sname, dfd, tmp, uid, gid, [MAX_COPY_ENTRIES])
+        rename_noreplace(dfd, tmp, dfd, dname)
+    except BaseException:
+        remove_tree(dfd, tmp)
+        raise
+    if op == 'move':
+        remove_tree(sfd, sname)
+    print('copied' if op == 'copy' else 'moved')
+
+def op_install(staged, dst, overwrite):
+    stage_root = os.path.join(PANEL, 'data', 'file-staging') if PANEL else ''
+    if not stage_root or os.path.dirname(staged) != stage_root:
+        fail('invalid staged file')
+    sname = os.path.basename(staged)
+    if len(sname) != 32 or any(c not in '0123456789abcdef' for c in sname):
+        fail('invalid staged file')
+    sdir = os.open(stage_root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    src = os.open(sname, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=sdir)
+    sst = os.fstat(src)
+    if not stat.S_ISREG(sst.st_mode):
+        fail('invalid staged file')
+    if sst.st_size > 52428800:
+        fail('staged file exceeds 50 MB')
+    pfd, name = parent_and_name(dst)
+    existing = lstat_at(pfd, name)
+    if existing is not None:
+        if overwrite != 'yes' or not stat.S_ISREG(existing.st_mode):
+            fail('target exists')
+        uid, gid, mode = existing.st_uid, existing.st_gid, stat.S_IMODE(existing.st_mode) & 0o777
+        if uid == 0:
+            fail('root-owned files cannot be replaced from the panel')
+    else:
+        uid, gid = create_owner(pfd)
+        mode = 0o640
+    tmp = '.nebula-install-' + secrets.token_hex(6)
+    out = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=pfd)
+    try:
+        os.fchown(out, uid, gid)
+        while True:
+            chunk = os.read(src, 1 << 20)
+            if not chunk:
+                break
+            os.write(out, chunk)
+        os.fchmod(out, mode)
+        set_acl(out, 'u:PANEL:r')
+        os.close(out)
+        os.rename(tmp, name, src_dir_fd=pfd, dst_dir_fd=pfd)
+    except BaseException:
+        try:
+            os.unlink(tmp, dir_fd=pfd)
+        except OSError:
+            pass
+        raise
+    os.unlink(sname, dir_fd=sdir)
+    print('installed')
+
+def trash_dir_for(dev, lexical):
+    os.makedirs(FILE_TRASH, 0o700, exist_ok=True)
+    tfd = os.open(FILE_TRASH, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    if os.fstat(tfd).st_dev == dev:
+        return tfd, FILE_TRASH
+    os.close(tfd)
+    mount = lexical
+    while not os.path.ismount(mount):
+        mount = os.path.dirname(mount)
+    path = os.path.join(mount, '.nebula-recovery-trash')
+    try:
+        os.mkdir(path, 0o700)
+    except FileExistsError:
+        pass
+    tfd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    st = os.fstat(tfd)
+    if st.st_uid != 0 or stat.S_IMODE(st.st_mode) & 0o077 or st.st_dev != dev:
+        fail('the recovery trash folder is unsafe: ' + path)
+    return tfd, path
+
+def op_trash(path):
+    pfd, name = parent_and_name(path)
+    st = lstat_at(pfd, name)
+    if st is None:
+        fail('path not found')
+    if stat.S_ISDIR(st.st_mode) and contains_panel(path):
+        fail('path contains the panel installation')
+    tfd, tpath = trash_dir_for(os.fstat(pfd).st_dev, os.path.dirname(path))
+    trashed = '%s-%s-%s' % (__import__('time').strftime('%Y%m%d-%H%M%S'), name[:180], secrets.token_hex(4))
+    os.rename(name, trashed, src_dir_fd=pfd, dst_dir_fd=tfd)
+    subprocess.run(['chown', '-hR', 'root:root', os.path.join(tpath, trashed)], check=False)
+    print('archived=' + os.path.join(tpath, trashed))
+
+def main(argv):
+    if not argv:
+        fail('missing operation')
+    op, args = argv[0], argv[1:]
+    try:
+        if op == 'chmod' and len(args) == 2:
+            op_chmod(args[0], args[1])
+        elif op == 'mkdir' and len(args) == 1:
+            op_mkdir(args[0])
+        elif op == 'mkfile' and len(args) == 1:
+            op_mkfile(args[0])
+        elif op == 'rename' and len(args) == 2:
+            op_rename(args[0], args[1])
+        elif op in ('copy', 'move') and len(args) == 2:
+            op_copy_or_move(op, args[0], args[1])
+        elif op == 'install' and len(args) == 3:
+            op_install(args[0], args[1], args[2])
+        elif op == 'trash' and len(args) == 1:
+            op_trash(args[0])
+        else:
+            fail('invalid file operation')
+    except OSError as error:
+        fail('file operation failed: ' + (error.strerror or str(error)))
+
+main(sys.argv[1:])
+PYEOF
+fmsafe() {
+  NEBULA_FM_ROOT_FILE="$FM_ROOT_FILE" NEBULA_PANEL_ROOT_FILE="$PANEL_ROOT_FILE" NEBULA_FILE_TRASH="$FILE_TRASH" \
+    python3 -I -c "$FMSAFE_PY" "$@"
+}
+
+# Compose files are checked twice: the raw YAML (so env_file, build, include
+# and friends are refused before Compose reads anything) and the normalized
+# `docker compose config` output that is actually deployed, so quoting, flow
+# style, anchors or long syntax cannot hide a host-integrated option.
+read -r -d '' COMPOSE_POLICY_PY <<'PYEOF' || true
+import sys, json, re
+
+def fail(msg):
+    sys.stderr.write('Compose policy: ' + msg + '\n')
+    sys.exit(2)
+
+try:
+    import yaml
+except ImportError:
+    fail('python3-yaml is required to validate Compose files; re-run install.sh')
+
+class Loader(yaml.SafeLoader):
+    pass
+
+def no_dupes(loader, node, deep=False):
+    keys = set()
+    for key_node, _ in node.value:
+        if key_node.tag == 'tag:yaml.org,2002:merge':
+            continue
+        key = loader.construct_object(key_node, deep=deep)
+        if key in keys:
+            fail('duplicate key %r' % (key,))
+        keys.add(key)
+    return loader.construct_mapping(node, deep)
+Loader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, no_dupes)
+
+PIN = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._/@:-]+$')
+LOOPBACK = ('127.0.0.1', '::1', '[::1]')
+FORBIDDEN_SERVICE_KEYS = {
+    'build', 'extends', 'env_file', 'volumes_from', 'devices', 'device_cgroup_rules', 'cap_add',
+    'cgroup', 'cgroup_parent', 'sysctls', 'security_opt', 'runtime', 'isolation', 'privileged',
+    'userns_mode', 'credential_spec', 'gpus', 'oom_kill_disable', 'use_api_socket', 'provider',
+    'storage_opt', 'develop', 'label_file', 'models',
+}
+HOST_NAMESPACE_KEYS = ('network_mode', 'pid', 'ipc', 'uts')
+FORBIDDEN_TOP = {'include', 'secrets', 'configs', 'models'}
+
+def pinned(image):
+    if not isinstance(image, str) or len(image) > 255 or not PIN.match(image):
+        fail('services must use a valid image')
+    if re.search(r'@sha256:[a-f0-9]{64}$', image):
+        return
+    tail = image.rsplit('/', 1)[-1]
+    if ':' not in tail or tail.rsplit(':', 1)[1] == 'latest':
+        fail('image %s must use a non-latest tag or digest' % image)
+
+def check_port(port):
+    if isinstance(port, dict):
+        if port.get('published') in (None, ''):
+            return
+        host = str(port.get('host_ip') or '')
+        if host not in LOOPBACK:
+            fail('published ports must bind to loopback (127.0.0.1)')
+        return
+    text = str(port)
+    parts = text.split('/')[0]
+    if parts.startswith('['):
+        host = parts.split(']')[0] + ']'
+        if host not in LOOPBACK:
+            fail('published ports must bind to loopback (127.0.0.1)')
+        return
+    pieces = parts.split(':')
+    if len(pieces) == 1:
+        return  # container-only port, not published
+    if len(pieces) == 2 or pieces[0] not in LOOPBACK:
+        fail('published ports must bind to loopback (127.0.0.1)')
+
+def check_volume(volume, named):
+    if isinstance(volume, dict):
+        kind = volume.get('type', 'volume')
+        if kind == 'tmpfs':
+            return
+        if kind != 'volume':
+            fail('only named volumes are allowed (found %s mount)' % kind)
+        source = str(volume.get('source') or '')
+        if source and source not in named:
+            fail('volume %s is not a declared named volume' % source)
+        return
+    text = str(volume)
+    source = text.split(':', 1)[0] if ':' in text else ''
+    if source.startswith(('/', '.', '~')) or '$' in source:
+        fail('host bind mounts are not allowed')
+    if source and source not in named:
+        fail('volume %s is not a declared named volume' % source)
+
+def check(doc, normalized):
+    if not isinstance(doc, dict):
+        fail('the file must be a mapping')
+    for key in FORBIDDEN_TOP:
+        if doc.get(key):
+            fail('top-level %s is not allowed' % key)
+    services = doc.get('services')
+    if not isinstance(services, dict) or not services:
+        fail('services are required')
+    volumes = doc.get('volumes') or {}
+    if not isinstance(volumes, dict):
+        fail('top-level volumes must be a mapping')
+    for name, spec in volumes.items():
+        spec = spec or {}
+        if not isinstance(spec, dict):
+            fail('invalid volume %s' % name)
+        if spec.get('driver_opts') or spec.get('driver') not in (None, 'local'):
+            fail('volume %s may not set a driver or driver options' % name)
+    named = set(volumes.keys())
+    for network, spec in (doc.get('networks') or {}).items():
+        spec = spec or {}
+        if isinstance(spec, dict) and (spec.get('driver') in ('host', 'macvlan', 'ipvlan') or spec.get('driver_opts')):
+            fail('network %s uses a host-integrated driver' % network)
+    for name, svc in services.items():
+        if not isinstance(svc, dict):
+            fail('service %s must be a mapping' % name)
+        for key in svc:
+            if key in FORBIDDEN_SERVICE_KEYS and svc[key] not in (None, False, [], {}, ''):
+                fail('service %s: %s is not allowed' % (name, key))
+        for key in HOST_NAMESPACE_KEYS:
+            value = str(svc.get(key) or '')
+            if value == 'host' or value.startswith('container:'):
+                fail('service %s: %s: %s is not allowed' % (name, key, value))
+        pinned(svc.get('image'))
+        for port in svc.get('ports') or []:
+            check_port(port)
+        for volume in svc.get('volumes') or []:
+            check_volume(volume, named)
+        for tmpfs in ([svc['tmpfs']] if isinstance(svc.get('tmpfs'), str) else (svc.get('tmpfs') or [])):
+            if not str(tmpfs).startswith('/'):
+                fail('invalid tmpfs mount')
+        if svc.get('secrets') or svc.get('configs'):
+            fail('service %s: secrets and configs are not allowed' % name)
+
+def load(path, is_json):
+    with open(path, 'rb') as handle:
+        raw = handle.read(262145)
+    if len(raw) > 262144:
+        fail('the file is too large')
+    try:
+        return json.loads(raw) if is_json else yaml.load(raw, Loader=Loader)
+    except Exception as error:
+        fail('the file could not be parsed: %s' % str(error).splitlines()[0])
+
+if len(sys.argv) not in (2, 3):
+    fail('usage: policy <raw.yml> [normalized.json|normalized.yml]')
+raw = load(sys.argv[1], False)
+if isinstance(raw, dict) and any('${' in line for line in open(sys.argv[1], encoding='utf-8', errors='replace')):
+    fail('variable interpolation is not allowed')
+check(raw, False)
+if len(sys.argv) == 3:
+    check(load(sys.argv[2], sys.argv[2].endswith('.json')), True)
+print('policy ok')
+PYEOF
+
+# ---------------------------------------------------------------------------
 # Package operations (apt/dpkg)
 #
 # An apt run that is killed half way leaves dpkg "interrupted", and every
@@ -390,30 +915,26 @@ valid_pinned_image() {
   [[ "$tail" == *:* && "${tail##*:}" != "latest" ]] || die "Docker image must use a non-latest tag or digest"
 }
 compose_policy_check() {
-  local file="$1" line value
+  local file="$1" normalized="${2:-}"
+  command -v python3 >/dev/null 2>&1 || die "python3 is required to validate Compose files; re-run install.sh"
   [[ "$(stat -c %s "$file")" -le 262144 ]] || die "Compose file is too large"
-  grep -Eq '^[[:space:]]*services[[:space:]]*:' "$file" || die "Compose services are required"
-  if grep -Eiq \
-    '^[[:space:]]*(privileged[[:space:]]*:[[:space:]]*true|(network_mode|pid|ipc|uts|userns_mode)[[:space:]]*:[[:space:]]*host|devices[[:space:]]*:|cap_add[[:space:]]*:|type[[:space:]]*:[[:space:]]*bind|build[[:space:]]*:|env_file[[:space:]]*:|extends[[:space:]]*:|include[[:space:]]*:|configs[[:space:]]*:|secrets[[:space:]]*:|volumes_from[[:space:]]*:|published[[:space:]]*:|driver_opts[[:space:]]*:|cgroup[^:]*:|sysctls[[:space:]]*:)' "$file"; then
-    die "Compose policy rejected a host-integrated option"
+  if [[ -n "$normalized" ]]; then
+    python3 -I -c "$COMPOSE_POLICY_PY" "$file" "$normalized" >/dev/null || exit 2
+  else
+    python3 -I -c "$COMPOSE_POLICY_PY" "$file" >/dev/null || exit 2
   fi
-  grep -Eiq '/var/run/docker\.sock|^[[:space:]]*-[[:space:]]*["'\'']?(/|\./|\.\./|~/)[^:]*:' "$file" \
-    && die "Compose policy rejected a host bind mount"
-  grep -Eq '\$\{' "$file" && die "Compose variable interpolation is not allowed"
-  grep -Eiq '^[[:space:]]*image[[:space:]]*:' "$file" || die "Compose services must use pinned images"
-  while IFS= read -r line; do
-    value="${line#*:}"; value="${value%%#*}"; value="${value//[[:space:]\"\']/}"
-    [[ -n "$value" ]] || die "invalid Compose image"
-    valid_pinned_image "$value"
-  done < <(grep -Ei '^[[:space:]]*image[[:space:]]*:' "$file")
-  while IFS= read -r line; do
-    value="${line#*-}"; value="${value//[[:space:]\"\']/}"
-    if [[ "$value" =~ ^([0-9.]+|\[[0-9a-fA-F:]+\]|::):[0-9]+:[0-9]+(/(tcp|udp))?$ ]]; then
-      [[ "$value" == 127.0.0.1:* || "$value" == \[::1\]:* ]] || die "published ports must bind to loopback"
-    elif [[ "$value" =~ ^[0-9]+:[0-9]+(/(tcp|udp))?$ ]]; then
-      die "published ports must bind to loopback"
-    fi
-  done < <(grep -E '^[[:space:]]*-[[:space:]]*["'\'']?[^[:space:]]+:[^[:space:]]+' "$file" || true)
+}
+
+# Write the fully resolved project Compose would deploy (JSON when the CLI
+# supports it, otherwise its normalized YAML) to $3 and print that path.
+compose_normalize() {
+  local name="$1" file="$2" out="$3"
+  if timeout 60s "${COMPOSE[@]}" -p "$name" -f "$file" config --format json > "$out.json" 2>/dev/null; then
+    rm -f "$out.yml"; printf '%s\n' "$out.json"; return 0
+  fi
+  rm -f "$out.json"
+  timeout 60s "${COMPOSE[@]}" -p "$name" -f "$file" config > "$out.yml" || die "Compose rejected the file"
+  printf '%s\n' "$out.yml"
 }
 compose_file_check() {
   local name="$1" requested="$2" allow_staging="${3:-no}" panel_root stack_root target base
@@ -473,6 +994,19 @@ schedule_php_service() {
     nohup /bin/sh -c "sleep 2; systemctl ${action} php${ver}-fpm 2>/dev/null || systemctl restart php${ver}-fpm 2>/dev/null || true" \
       >/dev/null 2>&1 &
   fi
+}
+
+# Web apps the panel installs (phpMyAdmin, webmail) live next to the panel in
+# the web root under a managed name. Refuse anything else, so the helper's
+# recursive chown/rm can never be pointed at an arbitrary directory.
+webapp_dir() {
+  local target="$1" pattern="$2" panel_root
+  valid_path "$target"
+  [[ -r "$PANEL_ROOT_FILE" ]] || die "panel root is not configured; re-run install.sh"
+  panel_root="$(realpath "$(head -n 1 "$PANEL_ROOT_FILE")")"
+  [[ "$(dirname "$target")" == "$(dirname "$panel_root")" ]] || die "web app directory must sit next to the panel"
+  [[ "$(basename "$target")" =~ $pattern ]] || die "invalid web app directory name"
+  [[ ! -L "$target" ]] || die "web app directory must not be a symlink"
 }
 
 # Resolve a path and prove it is inside the installer-owned File Manager root.
@@ -661,10 +1195,118 @@ case "$CMD" in
     echo "server ${ACTION} scheduled in 5 seconds"
     ;;
 
-  db-query)
-    ENCODED="${1:-}"; PAYLOAD="$(mktemp)"; trap 'rm -f "$PAYLOAD"' EXIT
-    decode_payload_file "$ENCODED" "$PAYLOAD" 262144 || die "invalid SQL payload"
-    timeout 120s mysql -N -B < "$PAYLOAD"
+  # db-action <op> [args...] — typed MariaDB/MySQL administration. The panel
+  # never sends raw SQL: the mysql client runs as root, and it would also run
+  # client commands such as `system`. Every statement is built here from
+  # validated identifiers, and the client runs with --binary-mode, which turns
+  # client commands off for piped input.
+  db-action)
+    OP="${1:-}"; shift || true
+    command -v mysql >/dev/null 2>&1 || die "the mysql client is not installed"
+    export LC_ALL=C
+    MYSQL=(mysql --binary-mode --batch --skip-column-names --default-character-set=utf8mb4)
+    db_ident() { [[ "$1" =~ ^[A-Za-z0-9_]{1,64}$ ]] || die "invalid database name"; }
+    db_user_ok() {
+      [[ "$1" =~ ^[A-Za-z0-9_]{1,80}$ ]] || die "invalid database user"
+      case "${1,,}" in root|mysql|mariadb|debian-sys-maint|admin) die "system database accounts cannot be changed here" ;; esac
+    }
+    db_host_ok() { [[ "$1" =~ ^[A-Za-z0-9_.%:-]{1,255}$ ]] || die "invalid database host"; }
+    db_not_system() { case "$1" in mysql|information_schema|performance_schema|sys) die "system databases cannot be changed here" ;; esac; }
+    db_password() {
+      local file; file="$(mktemp)"
+      decode_payload_file "$1" "$file" 256 || { rm -f "$file"; die "invalid password encoding"; }
+      DB_PASSWORD="$(<"$file")"; rm -f "$file"
+      [[ ${#DB_PASSWORD} -ge 8 && "$DB_PASSWORD" =~ ^[[:print:]]+$ && "$DB_PASSWORD" != *\\* ]] \
+        || die "database passwords must be 8-256 printable characters without a backslash"
+      DB_PASSWORD="${DB_PASSWORD//\'/\'\'}"
+    }
+    db_sql() { printf '%s\n' "$1" | timeout 120s "${MYSQL[@]}"; }
+    case "$OP" in
+      list)
+        db_sql "SELECT s.schema_name, COALESCE(SUM(t.data_length+t.index_length),0), COUNT(t.table_name), s.default_collation_name FROM information_schema.schemata s LEFT JOIN information_schema.tables t ON t.table_schema=s.schema_name GROUP BY s.schema_name,s.default_collation_name;" ;;
+      version) db_sql "SELECT VERSION();" ;;
+      schema-users) db_sql "SELECT TABLE_SCHEMA,GRANTEE,GROUP_CONCAT(DISTINCT PRIVILEGE_TYPE) FROM information_schema.SCHEMA_PRIVILEGES GROUP BY TABLE_SCHEMA,GRANTEE ORDER BY TABLE_SCHEMA,GRANTEE;" ;;
+      users) db_sql "SELECT User,Host FROM mysql.user ORDER BY User;" ;;
+      create)
+        db_ident "${1:-}"; db_not_system "$1"
+        db_sql "CREATE DATABASE \`$1\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;" ;;
+      drop)
+        db_ident "${1:-}"; db_not_system "$1"
+        db_sql "DROP DATABASE \`$1\`;" ;;
+      user-create)
+        db_user_ok "${1:-}"; db_host_ok "${2:-}"; db_password "${3:-}"
+        SQL="CREATE USER '$1'@'$2' IDENTIFIED BY '$DB_PASSWORD';"
+        if [[ -n "${4:-}" ]]; then db_ident "$4"; db_not_system "$4"; SQL+=" GRANT ALL PRIVILEGES ON \`$4\`.* TO '$1'@'$2';"; fi
+        db_sql "$SQL FLUSH PRIVILEGES;" ;;
+      user-upsert)
+        db_user_ok "${1:-}"; db_host_ok "${2:-}"; db_password "${3:-}"; db_ident "${4:-}"; db_not_system "$4"
+        db_sql "CREATE USER IF NOT EXISTS '$1'@'$2' IDENTIFIED BY '$DB_PASSWORD'; ALTER USER '$1'@'$2' IDENTIFIED BY '$DB_PASSWORD'; GRANT ALL PRIVILEGES ON \`$4\`.* TO '$1'@'$2'; FLUSH PRIVILEGES;" ;;
+      user-password)
+        db_user_ok "${1:-}"; db_host_ok "${2:-}"; db_password "${3:-}"
+        db_sql "ALTER USER '$1'@'$2' IDENTIFIED BY '$DB_PASSWORD'; FLUSH PRIVILEGES;" ;;
+      user-drop)
+        db_user_ok "${1:-}"; db_host_ok "${2:-}"
+        db_sql "DROP USER IF EXISTS '$1'@'$2'; FLUSH PRIVILEGES;" ;;
+      grant)
+        db_user_ok "${1:-}"; db_host_ok "${2:-}"; db_ident "${3:-}"; db_not_system "$3"
+        case "${4:-}" in
+          all) db_sql "REVOKE ALL PRIVILEGES ON \`$3\`.* FROM '$1'@'$2'; GRANT ALL PRIVILEGES ON \`$3\`.* TO '$1'@'$2'; FLUSH PRIVILEGES;" 2>/dev/null \
+                 || db_sql "GRANT ALL PRIVILEGES ON \`$3\`.* TO '$1'@'$2'; FLUSH PRIVILEGES;" ;;
+          read) db_sql "REVOKE ALL PRIVILEGES ON \`$3\`.* FROM '$1'@'$2';" 2>/dev/null || true
+                db_sql "GRANT SELECT, SHOW VIEW ON \`$3\`.* TO '$1'@'$2'; FLUSH PRIVILEGES;" ;;
+          none) db_sql "REVOKE ALL PRIVILEGES ON \`$3\`.* FROM '$1'@'$2'; FLUSH PRIVILEGES;" ;;
+          *) die "invalid grant level" ;;
+        esac ;;
+      # export <db> <archive-name>: gzip'd mysqldump into the panel's private
+      # data/db-exports folder (served to the browser by the panel).
+      export)
+        db_ident "${1:-}"; db_not_system "$1"
+        [[ "${2:-}" =~ ^[A-Za-z0-9_]{1,64}-[0-9]{8}-[0-9]{6}\.sql\.gz$ ]] || die "invalid export name"
+        [[ -r "$PANEL_ROOT_FILE" ]] || die "panel root is not configured"
+        PANEL_ROOT="$(realpath "$(head -n 1 "$PANEL_ROOT_FILE")")"
+        PANEL_USER="$(stat -c %U "$PANEL_ROOT/data")"
+        OUT_DIR="$PANEL_ROOT/data/db-exports"
+        [[ ! -L "$OUT_DIR" ]] || die "export directory must not be a symlink"
+        install -d -m 0700 -o "$PANEL_USER" -g "$PANEL_USER" "$OUT_DIR"
+        command -v mysqldump >/dev/null 2>&1 || die "mysqldump is not installed"
+        TMP="$(mktemp)"; trap 'rm -f "$TMP"' EXIT
+        timeout 3600s mysqldump --single-transaction --quick --routines --triggers --events \
+          --no-tablespaces --default-character-set=utf8mb4 "$1" | gzip -6 > "$TMP" || die "could not export database $1"
+        # Hand the file over as the panel user so root never writes into the
+        # panel-owned (and so panel-controllable) directory.
+        runuser -u "$PANEL_USER" -- sh -c 'umask 077; cat > "$1"' _ "$OUT_DIR/$2" < "$TMP"
+        echo "bytes=$(stat -c %s "$TMP")"
+        ;;
+      # import <db> <staged-file>: replace nothing, run a dump into an existing
+      # database as a temporary account that can only touch that database.
+      import)
+        db_ident "${1:-}"; db_not_system "$1"
+        [[ -r "$PANEL_ROOT_FILE" ]] || die "panel root is not configured"
+        PANEL_ROOT="$(realpath "$(head -n 1 "$PANEL_ROOT_FILE")")"
+        PANEL_USER="$(stat -c %U "$PANEL_ROOT/data")"
+        [[ "${2:-}" =~ ^${PANEL_ROOT//./\\.}/data/file-staging/[a-f0-9]{32}$ ]] || die "invalid staged file"
+        STAGED="$2"
+        IMPORT_USER="nebula_imp_$(od -An -N6 -tx1 /dev/urandom | tr -d '[:space:]')"
+        IMPORT_PASS="$(od -An -N24 -tx1 /dev/urandom | tr -d '[:space:]')"
+        CNF="$(mktemp)"
+        import_cleanup() { rm -f "$CNF"; db_sql "DROP USER IF EXISTS '$IMPORT_USER'@'localhost';" >/dev/null 2>&1 || true; }
+        trap import_cleanup EXIT
+        chmod 0600 "$CNF"
+        printf '[client]\nuser=%s\npassword=%s\n' "$IMPORT_USER" "$IMPORT_PASS" > "$CNF"
+        db_sql "CREATE USER '$IMPORT_USER'@'localhost' IDENTIFIED BY '$IMPORT_PASS'; GRANT ALL PRIVILEGES ON \`$1\`.* TO '$IMPORT_USER'@'localhost';"
+        # The staged file is read as the panel user, so a planted symlink can
+        # only reach what the panel could read anyway.
+        MAGIC="$(runuser -u "$PANEL_USER" -- head -c 2 -- "$STAGED" | od -An -tx1 | tr -d '[:space:]')"
+        if [[ "$MAGIC" == 1f8b ]]; then READER=(gzip -dc); else READER=(cat); fi
+        runuser -u "$PANEL_USER" -- cat -- "$STAGED" | "${READER[@]}" \
+          | sed -E 's/DEFINER=`[^`]+`@`[^`]+`//g' \
+          | timeout 3600s mysql --defaults-extra-file="$CNF" --binary-mode --default-character-set=utf8mb4 "$1" \
+          || die "the import failed; the database may be partially imported"
+        rm -f -- "$STAGED" 2>/dev/null || runuser -u "$PANEL_USER" -- rm -f -- "$STAGED"
+        echo "imported into $1"
+        ;;
+      *) die "invalid database action" ;;
+    esac
     ;;
 
   service-action)
@@ -797,21 +1439,22 @@ case "$CMD" in
       standalone) COMPOSE=(docker-compose) ;;
       *) die "invalid Compose implementation" ;;
     esac
+    WORK="$(mktemp -d /run/nebula-compose.XXXXXX)"
+    trap 'rm -rf "$WORK"' EXIT
     if [[ "$OP" == validate ]]; then
       SOURCE="$(compose_file_check "$NAME" "$FILE" yes)"
-      FILE="$(mktemp /run/nebula-compose.XXXXXX.yml)"
-      trap 'rm -f "$FILE"' EXIT
-      install -m 0600 -o root -g root "$SOURCE" "$FILE"
-      compose_policy_check "$FILE"
-      timeout 60s "${COMPOSE[@]}" -p "$NAME" -f "$FILE" config --quiet
-      exit
+    else
+      SOURCE="$(compose_file_check "$NAME" "$FILE")"
     fi
-    SOURCE="$(compose_file_check "$NAME" "$FILE")"
-    FILE="$(mktemp /run/nebula-compose.XXXXXX.yml)"
-    trap 'rm -f "$FILE"' EXIT
+    FILE="$WORK/raw.yml"
     install -m 0600 -o root -g root "$SOURCE" "$FILE"
     compose_policy_check "$FILE"
+    NORMALIZED="$(compose_normalize "$NAME" "$FILE" "$WORK/normalized")"
+    compose_policy_check "$FILE" "$NORMALIZED"
+    # Deploy exactly what was validated.
+    FILE="$NORMALIZED"
     case "$OP" in
+      validate) echo "Compose file is valid" ;;
       up) timeout 600s "${COMPOSE[@]}" -p "$NAME" -f "$FILE" up -d --remove-orphans ;;
       down) timeout 180s "${COMPOSE[@]}" -p "$NAME" -f "$FILE" down ;;
       stop|start|restart|pull) timeout 600s "${COMPOSE[@]}" -p "$NAME" -f "$FILE" "$OP" ;;
@@ -838,11 +1481,11 @@ case "$CMD" in
   log-read-file)
     LOG_PATH="${1:-}"; LINES="${2:-200}"
     [[ "$LINES" =~ ^[0-9]+$ && "$LINES" -ge 10 && "$LINES" -le 2000 ]] || die "invalid line limit"
-    case "$LOG_PATH" in
-      /var/log/syslog|/var/log/auth.log|/var/log/kern.log|/var/log/dpkg.log|/var/log/nginx/*.log|/var/log/apache2/*.log) ;;
-      *) die "log file is not allowed" ;;
-    esac
-    [[ -f "$LOG_PATH" && ! -L "$LOG_PATH" ]] || die "log file not found"
+    # Exact names only: a shell glob such as /var/log/nginx/*.log would also
+    # match /var/log/nginx/../../etc/shadow.log.
+    [[ "$LOG_PATH" =~ ^/var/log/(syslog|auth\.log|kern\.log|dpkg\.log|mail\.log|fail2ban\.log|(nginx|apache2)/[A-Za-z0-9][A-Za-z0-9._-]{0,200}\.log)$ \
+       && "$LOG_PATH" != *..* ]] || die "log file is not allowed"
+    [[ -f "$LOG_PATH" && ! -L "$LOG_PATH" && "$(realpath -- "$LOG_PATH")" == "$LOG_PATH" ]] || die "log file not found"
     timeout 10s tail -n "$LINES" -- "$LOG_PATH" | head -c 1048576
     ;;
 
@@ -991,87 +1634,63 @@ case "$CMD" in
     echo "removed authoritative zone $DOMAIN"
     ;;
 
-  # File metadata operations are confined by /etc/nebula-panel/fm-root.
+  # File operations below the File Manager root go through fmsafe, which
+  # never follows a symlink and acts on directory descriptors (no races).
   file-chmod)
-    TARGET="$(fm_confined_path "${1:-}")"; MODE="${2:-}"
-    [[ "$MODE" =~ ^[0-7]{3}$ ]] || die "invalid mode"
-    chmod "$MODE" "$TARGET"
-    echo "permissions updated"
+    [[ "${2:-}" =~ ^[0-7]{3}$ ]] || die "invalid mode"
+    fmsafe chmod "${1:-}" "$2"
     ;;
 
   file-mkdir)
-    TARGET="$(fm_confined_new_path "${1:-}")"
-    PARENT="$(dirname "$TARGET")"; OWNER="$(stat -c %U "$PARENT")"; GROUP="$(stat -c %G "$PARENT")"
-    install -d -m 0750 -o "$OWNER" -g "$GROUP" "$TARGET"
-    PANEL_USER="$(stat -c %U "$(realpath "$(head -n 1 "$PANEL_ROOT_FILE")")/data")"
-    setfacl -m "u:${PANEL_USER}:rX,d:u:${PANEL_USER}:rX" "$TARGET"
+    fmsafe mkdir "${1:-}"
     ;;
 
   file-mkfile)
-    TARGET="$(fm_confined_new_path "${1:-}")"
-    PARENT="$(dirname "$TARGET")"; OWNER="$(stat -c %U "$PARENT")"; GROUP="$(stat -c %G "$PARENT")"
-    install -m 0640 -o "$OWNER" -g "$GROUP" /dev/null "$TARGET"
-    PANEL_USER="$(stat -c %U "$(realpath "$(head -n 1 "$PANEL_ROOT_FILE")")/data")"
-    setfacl -m "u:${PANEL_USER}:r" "$TARGET"
+    fmsafe mkfile "${1:-}"
     ;;
 
   file-rename)
-    RAW_SOURCE="${1:-}"; RAW_TARGET="${2:-}"
-    [[ ! -L "$RAW_SOURCE" ]] || die "symlink operations are not allowed"
-    SOURCE="$(fm_confined_path "$RAW_SOURCE")"
-    TARGET="$(fm_confined_new_path "$RAW_TARGET")"
-    [[ "$(dirname "$SOURCE")" == "$(dirname "$TARGET")" ]] || die "rename must stay in the same directory"
-    mv -- "$SOURCE" "$TARGET"
+    valid_component "$(basename "${2:-}")"
+    fmsafe rename "${1:-}" "${2:-}"
     ;;
 
   file-op)
-    OP="${1:-}"; RAW_SOURCE="${2:-}"; RAW_TARGET="${3:-}"
+    OP="${1:-}"
     [[ "$OP" == "copy" || "$OP" == "move" ]] || die "invalid file operation"
-    [[ ! -L "$RAW_SOURCE" ]] || die "symlink operations are not allowed"
-    SOURCE="$(fm_confined_path "$RAW_SOURCE")"
-    TARGET="$(fm_confined_new_path "$RAW_TARGET")"
-    if [[ -d "$SOURCE" && "$TARGET" == "$SOURCE"/* ]]; then die "cannot place a directory inside itself"; fi
-    if [[ "$OP" == "copy" ]]; then cp -a --no-dereference -- "$SOURCE" "$TARGET"; else mv -- "$SOURCE" "$TARGET"; fi
+    valid_component "$(basename "${3:-}")"
+    fmsafe "$OP" "${2:-}" "${3:-}"
     ;;
 
   # Install a panel-staged file at an existing or new confined path while
   # preserving/deriving the site owner's identity. The panel process itself
   # never receives write access to site source.
   file-install)
-    STAGED="${1:-}"; RAW_TARGET="${2:-}"; OVERWRITE="${3:-no}"
     [[ -r "$PANEL_ROOT_FILE" ]] || die "panel root is not configured"
-    PANEL_ROOT="$(realpath "$(head -n 1 "$PANEL_ROOT_FILE")")"
-    STAGE_ROOT="$PANEL_ROOT/data/file-staging"
-    STAGED="$(realpath "$STAGED" 2>/dev/null || true)"
-    [[ -n "$STAGED" && "$STAGED" == "$STAGE_ROOT/"* && -f "$STAGED" && ! -L "$STAGED" ]] || die "invalid staged file"
-    [[ "$(stat -c %s "$STAGED")" -le 52428800 ]] || die "staged file exceeds 50 MB"
-    if [[ -e "$RAW_TARGET" ]]; then
-      [[ "$OVERWRITE" == yes && -f "$RAW_TARGET" && ! -L "$RAW_TARGET" ]] || die "target exists"
-      TARGET="$(fm_confined_path "$RAW_TARGET")"
-      OWNER="$(stat -c %U "$TARGET")"; GROUP="$(stat -c %G "$TARGET")"; MODE="$(stat -c %a "$TARGET")"
-    else
-      TARGET="$(fm_confined_new_path "$RAW_TARGET")"
-      OWNER="$(stat -c %U "$(dirname "$TARGET")")"; GROUP="$(stat -c %G "$(dirname "$TARGET")")"; MODE=0640
-    fi
-    TEMP="$(dirname "$TARGET")/.nebula-install-$(od -An -N6 -tx1 /dev/urandom | tr -d '[:space:]')"
-    install -m "$MODE" -o "$OWNER" -g "$GROUP" "$STAGED" "$TEMP"
-    mv -f -- "$TEMP" "$TARGET"
-    rm -f "$STAGED"
-    PANEL_USER="$(stat -c %U "$PANEL_ROOT/data")"
-    setfacl -m "u:${PANEL_USER}:r" "$TARGET"
+    [[ "${3:-no}" == yes || "${3:-no}" == no ]] || die "invalid overwrite flag"
+    valid_component "$(basename "${2:-}")"
+    fmsafe install "${1:-}" "${2:-}" "${3:-no}"
     ;;
 
   # file-delete <path> — move an entry to root-owned recovery trash.
   file-delete)
-    TARGET="$(fm_confined_entry "${1:-}")"
-    ROOT="$(realpath "$(head -n 1 "$FM_ROOT_FILE")")"
-    [[ -n "$ROOT" && "$TARGET" != "$ROOT" ]] || die "refusing to delete the file manager root"
     install -d -m 0700 -o root -g root "$FILE_TRASH"
-    TRASH_NAME="$(date +%Y%m%d-%H%M%S)-$(basename "$TARGET")-$(od -An -N4 -tx1 /dev/urandom | tr -d '[:space:]')"
-    mv -- "$TARGET" "$FILE_TRASH/$TRASH_NAME"
-    # -h: re-own a trashed symlink itself, never whatever it points to.
-    chown -hR root:root "$FILE_TRASH/$TRASH_NAME"
-    echo "archived=$FILE_TRASH/$TRASH_NAME"
+    fmsafe trash "${1:-}"
+    ;;
+
+  # file-trash-purge <days> — permanently remove recovery-trash entries
+  # older than <days> (the scheduler runs this daily).
+  file-trash-purge)
+    DAYS="${1:-}"; [[ "$DAYS" =~ ^[0-9]{1,4}$ && "$DAYS" -ge 1 ]] || die "invalid retention"
+    for TRASH in "$FILE_TRASH" "$SITES_TRASH"; do
+      [[ -d "$TRASH" && ! -L "$TRASH" ]] || continue
+      find "$TRASH" -mindepth 1 -maxdepth 1 -mtime +"$DAYS" -exec rm -rf --one-file-system -- {} +
+    done
+    while IFS= read -r MOUNT; do
+      TRASH="$MOUNT/.nebula-recovery-trash"
+      [[ -d "$TRASH" && ! -L "$TRASH" && "$(stat -c %u "$TRASH")" == 0 ]] || continue
+      find "$TRASH" -mindepth 1 -maxdepth 1 -mtime +"$DAYS" -exec rm -rf --one-file-system -- {} +
+    done < <(findmnt -rn -o TARGET 2>/dev/null || true)
+    echo "purged entries older than $DAYS days"
     ;;
 
   # file-compress <zip|tar.gz> <absolute-target> <absolute-source> [...]
@@ -1084,22 +1703,27 @@ case "$CMD" in
     [[ "$FORMAT" != "tar.gz" || "$TARGET" == *.tar.gz ]] || die "tar target must end in .tar.gz"
     [[ "$#" -ge 1 && "$#" -le 100 ]] || die "select between 1 and 100 items"
     ROOT="$(realpath "$(head -n 1 "$FM_ROOT_FILE")")"
+    OWNER="$(stat -c %U "$(dirname "$TARGET")")"
+    [[ "$OWNER" != root && "$OWNER" != UNKNOWN ]] || die "archives cannot be created in a root-owned folder; open a website folder first"
     RELS=()
-    FIRST=""
     for REQUESTED in "$@"; do
       SOURCE="$(fm_confined_path "$REQUESTED")"
       [[ "$SOURCE" != "$ROOT" ]] || die "cannot archive the file manager root"
-      [[ -n "$FIRST" ]] || FIRST="$SOURCE"
       RELS+=("${SOURCE#"$ROOT"/}")
     done
+    # Archive with the folder owner's own permissions, never following
+    # symlinks (zip -y), so a planted link cannot pull in files the owner
+    # could not read anyway.
     if [[ "$FORMAT" == "zip" ]]; then
       command -v zip >/dev/null || die "zip is not installed; re-run install.sh"
-      (cd "$ROOT" && zip -rq "$TARGET" -- "${RELS[@]}") || { rm -f "$TARGET"; die "zip creation failed"; }
+      runuser -u "$OWNER" -- sh -c 'umask 027; cd "$1" && shift && t="$1" && shift && exec zip -ryq "$t" -- "$@"' _ "$ROOT" "$TARGET" "${RELS[@]}" \
+        || { runuser -u "$OWNER" -- rm -f -- "$TARGET"; die "zip creation failed (the folder owner must be able to read every selected item)"; }
     else
-      tar -czf "$TARGET" -C "$ROOT" -- "${RELS[@]}" || { rm -f "$TARGET"; die "tar archive creation failed"; }
+      runuser -u "$OWNER" -- sh -c 'umask 027; t="$1"; shift; cd "$1" && shift && exec tar -czf "$t" -- "$@"' _ "$TARGET" "$ROOT" "${RELS[@]}" \
+        || { runuser -u "$OWNER" -- rm -f -- "$TARGET"; die "tar archive creation failed (the folder owner must be able to read every selected item)"; }
     fi
-    chown --reference="$FIRST" "$TARGET" 2>/dev/null || true
-    chmod 0640 "$TARGET" 2>/dev/null || true
+    PANEL_USER="$(stat -c %U "$(realpath "$(head -n 1 "$PANEL_ROOT_FILE")")/data")"
+    runuser -u "$OWNER" -- setfacl -m "u:${PANEL_USER}:r" -- "$TARGET" 2>/dev/null || true
     echo "created $TARGET"
     ;;
 
@@ -1127,17 +1751,20 @@ case "$CMD" in
     if [[ "$NEW_NAME" != "." ]]; then TARGET="$(fm_confined_new_path "$DEST_DIR/$NEW_NAME")"; fi
     OWNER="$(stat -c %U "$DEST_DIR")"; GROUP="$(stat -c %G "$DEST_DIR")"
     [[ "$OWNER" != root && "$OWNER" != UNKNOWN ]] || die "extracting into a root-owned folder is not allowed; open a website folder first"
+    # Everything that reads the archive runs as the destination owner, so a
+    # path swapped for a symlink can only reach files that owner can read.
+    AS_OWNER=(runuser -u "$OWNER" --)
     echo "==> Checking the archive"
     LIST="$(mktemp)"; STAGE=""
-    trap 'rm -f "$LIST"; [[ -n "$STAGE" ]] && rm -rf --one-file-system "$STAGE"' EXIT
+    trap 'rm -f "$LIST"; [[ -n "$STAGE" ]] && runuser -u "$OWNER" -- rm -rf --one-file-system -- "$STAGE"' EXIT
     if [[ "$KIND" == zip ]]; then
       command -v unzip >/dev/null 2>&1 || die "unzip is not installed; re-run install.sh"
-      unzip -Z1 "$ARCHIVE" > "$LIST" 2>/dev/null || die "not a valid zip archive"
-      TOTAL="$(unzip -Zt "$ARCHIVE" 2>/dev/null | awk '{print $3; exit}')"
+      "${AS_OWNER[@]}" unzip -Z1 "$ARCHIVE" > "$LIST" 2>/dev/null || die "not a valid zip archive (or not readable by $OWNER)"
+      TOTAL="$("${AS_OWNER[@]}" unzip -Zt "$ARCHIVE" 2>/dev/null | awk '{print $3; exit}')"
     else
-      tar -t${TFLAG}f "$ARCHIVE" > "$LIST" 2>/dev/null || die "not a valid tar archive"
-      TOTAL="$(tar -tv${TFLAG}f "$ARCHIVE" 2>/dev/null | awk '{s+=$3} END {printf "%.0f", s}')"
-      if tar -tv${TFLAG}f "$ARCHIVE" 2>/dev/null | grep -E ' link to (/|.*(^|/)\.\.(/|$))' >/dev/null; then
+      "${AS_OWNER[@]}" tar -t${TFLAG}f "$ARCHIVE" > "$LIST" 2>/dev/null || die "not a valid tar archive (or not readable by $OWNER)"
+      TOTAL="$("${AS_OWNER[@]}" tar -tv${TFLAG}f "$ARCHIVE" 2>/dev/null | awk '{s+=$3} END {printf "%.0f", s}')"
+      if "${AS_OWNER[@]}" tar -tv${TFLAG}f "$ARCHIVE" 2>/dev/null | grep -E ' link to (/|.*(^|/)\.\.(/|$))' >/dev/null; then
         die "archive contains a hard link outside itself"
       fi
     fi
@@ -1151,15 +1778,12 @@ case "$CMD" in
     [[ "${FREE:-0}" -gt $(( TOTAL + 67108864 )) ]] || die "not enough free disk space to extract"
     echo "==> Extracting $ENTRIES entries ($TOTAL bytes)"
     STAGE="$DEST_DIR/.nebula-extract-$(od -An -N6 -tx1 /dev/urandom | tr -d '[:space:]')"
-    install -d -m 0700 -o "$OWNER" -g "$GROUP" "$STAGE"
+    runuser -u "$OWNER" -- mkdir -m 0700 -- "$STAGE"
     runuser -u "$OWNER" -- mkdir "$STAGE/out"
     if [[ "$KIND" == zip ]]; then
-      # unzip needs a seekable file: the owner writes a private copy fed by root.
-      runuser -u "$OWNER" -- sh -c 'umask 077; cat > "$1"' _ "$STAGE/archive.zip" < "$ARCHIVE"
-      runuser -u "$OWNER" -- unzip -qq -o "$STAGE/archive.zip" -d "$STAGE/out" || die "extraction failed"
-      rm -f "$STAGE/archive.zip"
+      runuser -u "$OWNER" -- unzip -qq -o "$ARCHIVE" -d "$STAGE/out" || die "extraction failed"
     else
-      runuser -u "$OWNER" -- tar -x${TFLAG}f - -C "$STAGE/out" --no-same-owner < "$ARCHIVE" || die "extraction failed"
+      runuser -u "$OWNER" -- tar -x${TFLAG}f "$ARCHIVE" -C "$STAGE/out" --no-same-owner || die "extraction failed"
     fi
     runuser -u "$OWNER" -- find "$STAGE/out" -perm /6000 -exec chmod ug-s {} + 2>/dev/null || true
     echo "==> Moving files into place"
@@ -1183,48 +1807,55 @@ case "$CMD" in
     getfacl -p "$DEST_DIR" 2>/dev/null | grep -q '^user:www-data:' && ACL="$ACL,u:www-data:rX"
     for R in "${RESULTS[@]}"; do
       [[ -e "$R" && ! -L "$R" ]] || continue
-      setfacl -R -P -m "$ACL" "$R" 2>/dev/null || true
-      [[ -d "$R" ]] && find "$R" -type d -exec setfacl -m "d:${ACL//,/,d:}" {} + 2>/dev/null || true
+      runuser -u "$OWNER" -- setfacl -R -P -m "$ACL" -- "$R" 2>/dev/null || true
+      [[ -d "$R" ]] && runuser -u "$OWNER" -- find "$R" -type d -exec setfacl -m "d:${ACL//,/,d:}" {} + 2>/dev/null || true
     done
     echo "extracted $ENTRIES entries"
     ;;
 
   # ssh-keys-list <user> / ssh-key-add <user> <base64-key> / ssh-key-delete <user> <line>
+  # Every read and write of ~/.ssh runs as that user: a home directory is
+  # the user's own, so root must never follow a symlink planted there.
   ssh-keys-list)
     USER_NAME="${1:-}"; INFO="$(human_user_info "$USER_NAME")"; HOME_DIR="${INFO#*:*:}"
     KEY_FILE="$HOME_DIR/.ssh/authorized_keys"
-    [[ -f "$KEY_FILE" ]] || exit 0
+    KEYS="$(runuser -u "$USER_NAME" -- sh -c '[ -f "$1" ] && head -c 1048576 -- "$1" || true' _ "$KEY_FILE" 2>/dev/null || true)"
     N=0
     while IFS= read -r KEY_LINE || [[ -n "$KEY_LINE" ]]; do
       [[ -z "$KEY_LINE" || "$KEY_LINE" == \#* ]] && continue
       N=$((N + 1))
       META="$(printf '%s\n' "$KEY_LINE" | ssh-keygen -lf - 2>/dev/null || true)"
       [[ -n "$META" ]] && printf '%s\t%s\n' "$N" "$META"
-    done < "$KEY_FILE"
+    done <<<"$KEYS"
     ;;
 
   ssh-key-add)
-    USER_NAME="${1:-}"; KEY_B64="${2:-}"; INFO="$(human_user_info "$USER_NAME")"
-    UID_NUM="${INFO%%:*}"; REST="${INFO#*:}"; GID_NUM="${REST%%:*}"; HOME_DIR="${INFO#*:*:}"
+    USER_NAME="${1:-}"; KEY_B64="${2:-}"; INFO="$(human_user_info "$USER_NAME")"; HOME_DIR="${INFO#*:*:}"
     [[ "$KEY_B64" =~ ^[A-Za-z0-9+/=]+$ ]] || die "invalid key encoding"
     KEY_LINE="$(printf '%s' "$KEY_B64" | base64 -d 2>/dev/null || true)"
-    [[ "$KEY_LINE" != *$'\n'* && "$KEY_LINE" =~ ^(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp(256|384|521))[[:space:]]+[A-Za-z0-9+/=]+([[:space:]].*)?$ ]] || die "invalid public key"
+    [[ "$KEY_LINE" != *$'\n'* && "$KEY_LINE" =~ ^(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp(256|384|521)|sk-ssh-ed25519@openssh\.com|sk-ecdsa-sha2-nistp256@openssh\.com)[[:space:]]+[A-Za-z0-9+/=]+([[:space:]].*)?$ ]] || die "invalid public key"
     printf '%s\n' "$KEY_LINE" | ssh-keygen -lf - >/dev/null 2>&1 || die "invalid public key"
-    install -d -m 0700 -o "$UID_NUM" -g "$GID_NUM" "$HOME_DIR/.ssh"
-    KEY_FILE="$HOME_DIR/.ssh/authorized_keys"
-    touch "$KEY_FILE"; chown "$UID_NUM:$GID_NUM" "$KEY_FILE"; chmod 0600 "$KEY_FILE"
-    grep -Fqx -- "$KEY_LINE" "$KEY_FILE" || printf '%s\n' "$KEY_LINE" >> "$KEY_FILE"
+    runuser -u "$USER_NAME" -- env KEY_LINE="$KEY_LINE" HOME_DIR="$HOME_DIR" bash -c '
+      set -e; umask 077
+      [[ ! -L "$HOME_DIR/.ssh" ]] || { echo "~/.ssh is a symlink; refusing" >&2; exit 2; }
+      mkdir -p -- "$HOME_DIR/.ssh"; chmod 700 -- "$HOME_DIR/.ssh"
+      f="$HOME_DIR/.ssh/authorized_keys"
+      [[ ! -L "$f" ]] || { echo "authorized_keys is a symlink; refusing" >&2; exit 2; }
+      touch -- "$f"; chmod 600 -- "$f"
+      grep -Fqx -- "$KEY_LINE" "$f" || printf "%s\n" "$KEY_LINE" >> "$f"' || die "could not update authorized_keys"
     echo "key added for $USER_NAME"
     ;;
 
   ssh-key-delete)
-    USER_NAME="${1:-}"; KEY_NUM="${2:-}"; INFO="$(human_user_info "$USER_NAME")"
-    UID_NUM="${INFO%%:*}"; REST="${INFO#*:}"; GID_NUM="${REST%%:*}"; HOME_DIR="${INFO#*:*:}"
+    USER_NAME="${1:-}"; KEY_NUM="${2:-}"; INFO="$(human_user_info "$USER_NAME")"; HOME_DIR="${INFO#*:*:}"
     [[ "$KEY_NUM" =~ ^[1-9][0-9]*$ ]] || die "invalid key number"
-    KEY_FILE="$HOME_DIR/.ssh/authorized_keys"; [[ -f "$KEY_FILE" ]] || die "key file not found"
-    TMP="$(mktemp)"; trap 'rm -f "$TMP"' EXIT
-    awk -v wanted="$KEY_NUM" 'BEGIN{n=0} /^[[:space:]]*($|#)/{print;next} {n++; if(n!=wanted) print}' "$KEY_FILE" > "$TMP"
-    install -m 0600 -o "$UID_NUM" -g "$GID_NUM" "$TMP" "$KEY_FILE"
+    runuser -u "$USER_NAME" -- env KEY_NUM="$KEY_NUM" HOME_DIR="$HOME_DIR" bash -c '
+      set -e; umask 077
+      f="$HOME_DIR/.ssh/authorized_keys"
+      [[ -f "$f" && ! -L "$f" ]] || { echo "key file not found" >&2; exit 2; }
+      tmp="$(mktemp "$HOME_DIR/.ssh/.authorized_keys.XXXXXX")"
+      awk -v wanted="$KEY_NUM" '"'"'BEGIN{n=0} /^[[:space:]]*($|#)/{print;next} {n++; if(n!=wanted) print}'"'"' "$f" > "$tmp"
+      chmod 600 -- "$tmp"; mv -f -- "$tmp" "$f"' || die "could not update authorized_keys"
     echo "key removed for $USER_NAME"
     ;;
 
@@ -1483,7 +2114,7 @@ EOF
         CREATE="$CREATE CHARACTER SET ${BASH_REMATCH[1]} COLLATE ${BASH_REMATCH[2]}"
       fi
       mysql -e "DROP DATABASE IF EXISTS \`${DB}\`; ${CREATE};" || die "could not recreate database $DB"
-      tar -xzOf "$ARCHIVE" "databases/$DB.sql" | timeout 3600s mysql "$DB" || die "could not import database $DB"
+      tar -xzOf "$ARCHIVE" "databases/$DB.sql" | timeout 3600s mysql --binary-mode "$DB" || die "could not import database $DB"
       echo "restored database $DB"
     done
     ;;
@@ -2093,7 +2724,8 @@ EOF
   # pma-install <targetdir>
   pma-install)
     TARGET="${1:-}"
-    valid_path "$TARGET"
+    webapp_dir "$TARGET" '^dbadmin-[0-9a-f]{8}$'
+    [[ ! -e "$TARGET" ]] || die "phpMyAdmin target already exists"
     export DEBIAN_FRONTEND=noninteractive
     # The panel serves its own copy and manages access itself: tell the
     # package not to create a database or reconfigure a web server, and skip
@@ -2124,8 +2756,7 @@ EOF
   # pma-remove <targetdir>
   pma-remove)
     TARGET="${1:-}"
-    valid_path "$TARGET"
-    [[ "$TARGET" == "/" || "$TARGET" == "/var/www" ]] && die "refusing"
+    webapp_dir "$TARGET" '^dbadmin-[0-9a-f]{8}$'
     [[ -f "$TARGET/config.inc.php" ]] || die "not a phpMyAdmin dir"
     rm -rf "$TARGET"
     echo "removed $TARGET"
@@ -2136,7 +2767,7 @@ EOF
   # dedicated server-side PHP session; no database password appears in a URL.
   pma-signon)
     TARGET="${1:-}"; SIGNON_URL="${2:-}"
-    valid_path "$TARGET"
+    webapp_dir "$TARGET" '^dbadmin-[0-9a-f]{8}$'
     [[ "$SIGNON_URL" =~ ^https?://[A-Za-z0-9._:/?=%-]+$ ]] || die "invalid signon URL"
     LOGOUT_URL="${SIGNON_URL/pma-signon/databases}"
     COOKIE_SECURE=false; [[ "$SIGNON_URL" == https://* ]] && COOKIE_SECURE=true
@@ -2825,7 +3456,7 @@ EOF
 
   # roundcube-install <targetdir>
   roundcube-install)
-    TARGET="${1:-}"; valid_path "$TARGET"
+    TARGET="${1:-}"; webapp_dir "$TARGET" '^webmail-[0-9a-f]{8}$'
     # The panel passes the hostname it configured the mail stack with. Fall back
     # to Postfix's own value only when the caller supplies nothing (older panel
     # builds), because postconf reports the *system* hostname when Postfix was
@@ -2957,8 +3588,7 @@ EOF
 
   # roundcube-remove <targetdir>
   roundcube-remove)
-    TARGET="${1:-}"; valid_path "$TARGET"
-    [[ "$TARGET" == "/" || "$TARGET" == "/var/www" ]] && die "refusing"
+    TARGET="${1:-}"; webapp_dir "$TARGET" '^webmail-[0-9a-f]{8}$'
     [[ -f "$TARGET/config/config.inc.php" ]] || die "not a roundcube dir"
     rm -rf "$TARGET"
     echo "removed $TARGET"
@@ -2967,9 +3597,7 @@ EOF
   # webmail-remove <targetdir>  — generic removal for any panel-managed webmail
   # directory (Roundcube or SnappyMail). Confined by the managed naming scheme.
   webmail-remove)
-    TARGET="${1:-}"; valid_path "$TARGET"
-    base="$(basename "$TARGET")"
-    [[ "$base" =~ ^(webmail|snappymail)-[0-9a-fA-F]+$ ]] || die "not a managed webmail dir"
+    TARGET="${1:-}"; webapp_dir "$TARGET" '^(webmail|snappymail)-[0-9a-fA-F]{8}$'
     [[ -f "$TARGET/index.php" ]] || die "not a webmail dir"
     rm -rf "$TARGET"
     echo "removed $TARGET"
