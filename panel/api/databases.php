@@ -41,7 +41,9 @@ $schemaUsers = db_schema_users();
 $links = db_links();
 $databases = array_values(array_filter($dbs['databases'] ?? [], static function (array $database) use ($links): bool {
     $name = (string) ($database['name'] ?? '');
-    return !in_array($name, SYSTEM_DBS, true) && !empty($links[$name]);
+    // Databases created outside the panel (or before linking existed) are
+    // listed too, as "Not linked", instead of being invisible.
+    return !in_array($name, SYSTEM_DBS, true) && !preg_match('/^nebula_(rs|old)_[0-9a-f]{10}$/', $name);
 }));
 foreach ($databases as &$database) {
     $name = (string) ($database['name'] ?? '');

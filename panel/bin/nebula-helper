@@ -823,7 +823,7 @@ broker_request_allowed() {
     printf '%s\n' apt
     return 0
   fi
-  if [[ "$request" =~ ^ufw[[:space:]]+(status[[:space:]]+numbered|--force[[:space:]]+delete[[:space:]]+[1-9][0-9]*|--force[[:space:]]+enable|disable|(allow|deny|reject)[[:space:]]+\'?[A-Za-z0-9/-]{1,48}\'?)$ ]]; then
+  if [[ "$request" =~ ^ufw[[:space:]]+(status[[:space:]]+numbered|--force[[:space:]]+delete[[:space:]]+[1-9][0-9]*|--force[[:space:]]+enable|disable|(allow|deny|reject)[[:space:]]+\'?[A-Za-z0-9/:-]{1,48}\'?|(allow|deny|reject)[[:space:]]+(proto[[:space:]]+(tcp|udp)[[:space:]]+)?from[[:space:]]+\'?[0-9A-Fa-f:.]{2,45}(/[0-9]{1,3})?\'?[[:space:]]+to[[:space:]]+any[[:space:]]+port[[:space:]]+\'?[0-9]{1,5}(:[0-9]{1,5})?\'?)$ ]]; then
     printf '%s\n' ufw
     return 0
   fi
@@ -1124,6 +1124,21 @@ apache_tame_if_pulled_in() {
   apache_as_backend
   systemctl disable --now apache2 >/dev/null 2>&1 || true
   systemctl reset-failed apache2 >/dev/null 2>&1 || true
+}
+
+# Certificates renewed by certbot's timer must reach every service that
+# loaded them at start-up: Nginx is reloaded by certbot's own installer, but
+# Postfix and Dovecot would keep serving the expired one until restarted.
+install_cert_deploy_hook() {
+  install -d -m 0755 /etc/letsencrypt/renewal-hooks/deploy
+  cat > /etc/letsencrypt/renewal-hooks/deploy/nebula-reload.sh <<'HOOK'
+#!/bin/sh
+# Managed by Nebula Panel: reload services that hold renewed certificates.
+for unit in nginx postfix dovecot; do
+  systemctl is-active --quiet "$unit" && systemctl reload "$unit" >/dev/null 2>&1 || true
+done
+HOOK
+  chmod 0755 /etc/letsencrypt/renewal-hooks/deploy/nebula-reload.sh
 }
 
 # Postfix policy shared by mail-setup and mail-apply (idempotent):
@@ -1976,6 +1991,8 @@ server {
     server_name $DOMAIN;
     root $SITE_PUBLIC;
     index index.php index.html index.htm;
+    # Nginx's 1 MB default rejects ordinary CMS media uploads with HTTP 413.
+    client_max_body_size 64m;
     access_log /var/log/nginx/${DOMAIN}.access.log;
     error_log  /var/log/nginx/${DOMAIN}.error.log;
     location / { try_files \$uri \$uri/ /index.php\$is_args\$args; }
@@ -2292,6 +2309,7 @@ EOF
     DOMAIN="${1:-}"; EMAIL="${2:-}"
     valid_domain "$DOMAIN"; valid_email "$EMAIL"
     command -v certbot >/dev/null || die "certbot not installed"
+    install_cert_deploy_hook
     if [[ -n "$EMAIL" ]]; then
       certbot --nginx -d "$DOMAIN" --non-interactive --agree-tos -m "$EMAIL" --redirect
     else
@@ -2447,6 +2465,13 @@ PINEOF
     fi
     schedule_php_service reload "$VER"
     echo "$ACTION complete for PHP $VER $EXTENSION"
+    ;;
+
+  # Graceful reload of one PHP-FPM version: workers finish their request and
+  # are replaced, which also empties OPcache, without a restart's downtime.
+  php-reload)
+    VER="${1:-}"; valid_php "$VER"; schedule_php_service reload "$VER"
+    echo "PHP-FPM reload scheduled"
     ;;
 
   # Restart one or every running PHP-FPM version without dropping this request.
@@ -3081,8 +3106,12 @@ EOF
     install -d -m 0755 -o root -g root "$MAIL_DIR"
     chmod 0755 "$MAIL_DIR"
     install -d -m 0750 -o opendkim -g opendkim "$DKIM_DIR" 2>/dev/null || install -d -m 0750 "$DKIM_DIR"
-    : > "$MAIL_DIR/vdomains"; : > "$MAIL_DIR/vmailbox"; : > "$MAIL_DIR/valias"
-    : > "$MAIL_DIR/dovecot-users"
+    # Re-running setup (to fix TLS or packages) must not empty the live maps:
+    # only create the files that do not exist yet. The panel re-applies its
+    # state with mail-apply right after setup.
+    for MAP in vdomains vmailbox valias senders dovecot-users; do
+      [[ -f "$MAIL_DIR/$MAP" ]] || : > "$MAIL_DIR/$MAP"
+    done
     # Must be readable by the 'dovecot' user (the auth-worker runs as it), or
     # every login fails with "Temporary authentication failure".
     if getent group dovecot >/dev/null 2>&1; then
@@ -3090,7 +3119,8 @@ EOF
     else
       die "dovecot group is missing; refusing to expose the password database"
     fi
-    postmap "$MAIL_DIR/vdomains" "$MAIL_DIR/vmailbox" "$MAIL_DIR/valias"
+    postmap "$MAIL_DIR/vdomains" "$MAIL_DIR/vmailbox" "$MAIL_DIR/valias" "$MAIL_DIR/senders"
+    install_cert_deploy_hook
 
     echo "Configuring Postfix…"
     postconf -e "myhostname = ${HOSTFQDN}"

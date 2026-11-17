@@ -214,6 +214,11 @@ function can_access_api(string $name, string $method): bool
     if ($name === 'account') {
         return !(function_exists('is_api_token_authenticated') && is_api_token_authenticated());
     }
+    // Read/dismissed notification state is per person, so read-only roles
+    // may change their own (it changes nothing on the server).
+    if ($name === 'notifications') {
+        return true;
+    }
     if (!role_route_allowed(api_route_owner($name))) return false;
     if ($method !== 'GET' && current_role() === 'auditor') return false;
     return true;

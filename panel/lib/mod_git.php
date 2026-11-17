@@ -65,6 +65,11 @@ function git_site_docroot(string $domain): ?string
 /** Persist git metadata onto the matching site record. */
 function git_set_meta(string $domain, ?array $meta): bool
 {
+    return (bool) with_sites_lock(static fn() => git_set_meta_locked($domain, $meta));
+}
+
+function git_set_meta_locked(string $domain, ?array $meta): bool
+{
     $sites = sites_list();
     foreach ($sites as &$site) {
         if (($site['domain'] ?? '') === $domain) {

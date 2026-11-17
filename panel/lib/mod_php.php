@@ -236,6 +236,21 @@ function php_restart_fpm(string $version): array
     return $code === 0 ? ['ok' => true] : ['ok' => false, 'error' => trim($output) ?: 'Restart failed.'];
 }
 
+/** Graceful reload: workers finish their request and restart, which also empties OPcache. */
+function php_reload_fpm(string $version): array
+{
+    if (!in_array($version, php_installed_versions(), true)) {
+        return ['ok' => false, 'error' => 'PHP version is not installed.'];
+    }
+    [$code, $output] = helper_cmd('php-reload ' . escapeshellarg($version));
+    if ($code !== 0 && stripos($output, 'unknown command') !== false) {
+        // Helper older than the panel: fall back to a restart.
+        return php_restart_fpm($version);
+    }
+    audit('php.reload', $version);
+    return $code === 0 ? ['ok' => true] : ['ok' => false, 'error' => trim($output) ?: 'Reload failed.'];
+}
+
 function php_support_status(string $version): array
 {
     $dates = [

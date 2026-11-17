@@ -33,7 +33,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     } elseif ($action === 'restart') {
         $res = php_restart_fpm((string) ($body['version'] ?? ''));
     } elseif ($action === 'opcache_reset') {
-        $res = php_restart_fpm((string) ($body['version'] ?? ''));
+        // OPcache is per FPM master: a graceful reload empties it without
+        // dropping in-flight requests (a restart was used before).
+        $res = php_reload_fpm((string) ($body['version'] ?? ''));
         if (!empty($res['ok'])) { audit('php.opcache.reset', (string) ($body['version'] ?? '')); }
     } elseif ($action === 'composer_install') {
         $res = php_composer_install($emit);

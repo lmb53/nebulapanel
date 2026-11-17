@@ -293,15 +293,28 @@ function cpu_usage(): ?float
     if (!$current) { return null; }
     $path = DATA_DIR . '/cache/cpu-sample.json';
     if (!is_dir(dirname($path))) { @mkdir(dirname($path), 0700, true); }
-    $previous = @json_decode((string) @file_get_contents($path), true);
-    write_json_file($path, ['idle' => $current[0], 'total' => $current[1], 'time' => microtime(true)]);
-    if (!is_array($previous) || !isset($previous['idle'], $previous['total'])) { return null; }
-    $dTotal = $current[1] - (int) $previous['total'];
-    $dIdle = $current[0] - (int) $previous['idle'];
-    if ($dTotal <= 0) {
-        return null;
+    $lock = @fopen($path . '.lock', 'c');
+    if ($lock !== false) { @flock($lock, LOCK_EX); }
+    try {
+        $previous = @json_decode((string) @file_get_contents($path), true);
+        $now = microtime(true);
+        // Several pollers (top bar, dashboard, scheduler) call this at once.
+        // A delta over a few milliseconds is mostly noise, so within two
+        // seconds of the last sample reuse its reading instead of replacing it.
+        if (is_array($previous) && isset($previous['time']) && $now - (float) $previous['time'] < 2.0) {
+            return isset($previous['value']) ? (float) $previous['value'] : null;
+        }
+        $value = null;
+        if (is_array($previous) && isset($previous['idle'], $previous['total'])) {
+            $dTotal = $current[1] - (int) $previous['total'];
+            $dIdle = $current[0] - (int) $previous['idle'];
+            if ($dTotal > 0) { $value = round(max(0, min(100, (1 - $dIdle / $dTotal) * 100)), 1); }
+        }
+        write_json_file($path, ['idle' => $current[0], 'total' => $current[1], 'time' => $now, 'value' => $value]);
+        return $value;
+    } finally {
+        if ($lock !== false) { @flock($lock, LOCK_UN); fclose($lock); }
     }
-    return round((1 - $dIdle / $dTotal) * 100, 1);
 }
 
 /** Memory info in bytes: [total, used, available]. */

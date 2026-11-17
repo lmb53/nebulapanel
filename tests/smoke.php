@@ -261,9 +261,10 @@ $check(strpos($installerSource, 'bind9 bind9-utils') === false
 $check(strpos($installerSource, 'chown -R root:root "$DEST"') !== false && strpos($installerSource, 'chown -R "$PANEL_USER:$PANEL_USER" "$DEST/data"') !== false, 'panel code/data ownership separation is missing');
 $check(strpos($installerSource, 'sudo_line tar') === false, 'broad root tar permission is still installed');
 $check(strpos($installerSource, 'nebula-panel-selfsigned.crt') !== false
-    && strpos($installerSource, 'listen 443 ssl default_server') !== false
-    && strpos($installerSource, 'subjectAltName=IP:${SERVER_IP}') !== false,
-    'domainless self-signed HTTPS provisioning is missing');
+    && strpos($installerSource, "listen 443 ssl'\"\$H2_LISTEN\"") !== false
+    && strpos($installerSource, 'CERT_NAMES+=("IP:${SERVER_IP}")') !== false
+    && strpos($installerSource, 'subjectAltName=${CERT_SAN}') !== false,
+    'self-signed HTTPS provisioning (IP and DOMAIN) is missing');
 $check(strpos($installerSource, 'request_terminate_timeout = 930s') !== false
     && strpos($installerSource, 'fastcgi_read_timeout 930s;') !== false
     && strpos($installerSource, 'env[PATH] = /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin') !== false,

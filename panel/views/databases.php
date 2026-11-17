@@ -107,12 +107,12 @@ $selectedWebsite = (string) ($_GET['website'] ?? '');
       userDbs.forEach((db) => { const o = make('option', '', db.name); o.value = db.name; grant.appendChild(o); });
 
       const body = document.getElementById('dbBody'); body.innerHTML = '';
-      if (!dbs.length) { const tr=make('tr'); const td=make('td','text-tertiary','No website databases. Create one and assign it to a website.'); td.colSpan=8; td.style.cssText='text-align:center;padding:28px'; tr.appendChild(td); body.appendChild(tr); }
+      if (!dbs.length) { const tr=make('tr'); const td=make('td','text-tertiary','No databases yet. Create one and assign it to a website.'); td.colSpan=8; td.style.cssText='text-align:center;padding:28px'; tr.appendChild(td); body.appendChild(tr); }
       dbs.forEach((db) => {
         const tr = make('tr');
         const name = make('td'); const strong = make('div','mono',db.name); strong.style.fontWeight='700'; name.appendChild(strong); if (db.system) name.appendChild(make('span','badge badge-slate','system')); tr.appendChild(name);
         tr.appendChild(make('td','text-tertiary', data.version ? (String(data.version).toLowerCase().includes('mariadb') ? 'MariaDB' : 'MySQL') : 'MySQL'));
-        const siteTd=make('td'); const select=make('select','select'); select.style.cssText='min-width:150px;padding:6px 28px 6px 9px'; websites.forEach((site)=>{ const o=make('option','',site); o.value=site; o.selected=site===db.website; select.appendChild(o); }); select.addEventListener('change',async()=>{ const res=await apiPost('databases',{action:'link_website',database:db.name,website:select.value}); toast(res.ok?'Website link updated':(res.error||'Could not update link'),res.ok?'success':'error'); }); siteTd.appendChild(select); tr.appendChild(siteTd);
+        const siteTd=make('td'); const select=make('select','select'); select.style.cssText='min-width:150px;padding:6px 28px 6px 9px'; const none=make('option','','Not linked'); none.value=''; none.selected=!db.website; select.appendChild(none); websites.forEach((site)=>{ const o=make('option','',site); o.value=site; o.selected=site===db.website; select.appendChild(o); }); select.addEventListener('change',async()=>{ const res=await apiPost('databases',{action:'link_website',database:db.name,website:select.value}); toast(res.ok?'Website link updated':(res.error||'Could not update link'),res.ok?'success':'error'); }); siteTd.appendChild(select); tr.appendChild(siteTd);
         tr.appendChild(make('td','mono text-tertiary',fmtBytes(db.size)));
         tr.appendChild(make('td','mono text-tertiary',String(db.tables || 0)));
         tr.appendChild(make('td','mono text-tertiary',db.collation || '–'));

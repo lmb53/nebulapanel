@@ -48,9 +48,21 @@ require APP_ROOT . '/lib/sys.php';
 require APP_ROOT . '/lib/modules.php';
 require APP_ROOT . '/lib/mod_scheduler.php';
 
+// --backups: the long-running scheduled backup pass, started by the main run
+// in its own process so alerts and history are not held up by it.
+if (in_array('--backups', $argv, true)) {
+    require_once APP_ROOT . '/lib/mod_backups.php';
+    $backupLock = @fopen(DATA_DIR . '/scheduler-backups.lock', 'c');
+    if ($backupLock === false || !@flock($backupLock, LOCK_EX | LOCK_NB)) {
+        exit(0); // a backup pass is already running
+    }
+    $result = backup_schedule_run_if_due();
+    exit(empty($result['ok']) ? 1 : 0);
+}
+
 $lock = @fopen(DATA_DIR . '/scheduler.lock', 'c');
 if ($lock === false || !@flock($lock, LOCK_EX | LOCK_NB)) {
-    // A previous run (a long backup) is still going; let it finish.
+    // A previous run is still going; let it finish.
     exit(0);
 }
 

@@ -37,7 +37,7 @@ function scheduler_run(?int $now = null): array
     require_once APP_ROOT . '/lib/mod_alerts.php';
     $jobs = [
         'history' => static fn() => ['recorded' => history_record(true)],
-        'backups' => static fn() => backup_schedule_run_if_due($now),
+        'backups' => static fn() => scheduler_start_backups($now),
         'alerts' => static fn() => alerts_evaluate($now),
         'housekeeping' => static fn() => scheduler_housekeeping($now),
     ];
@@ -57,6 +57,28 @@ function scheduler_run(?int $now = null): array
     if (!empty($report['housekeeping']['ran'])) { $state['housekeeping_at'] = $now; }
     write_json_file(scheduler_state_file(), array_merge($state, ['last_run' => $now, 'report' => $report]));
     return $report;
+}
+
+/**
+ * Scheduled backups can take hours; run them in their own process so alerts
+ * and resource history keep their five-minute rhythm meanwhile. A lock in
+ * the backup process stops a second run from starting while one is going.
+ */
+function scheduler_start_backups(int $now): array
+{
+    if (!backup_schedule_due(backup_schedule(), $now)) {
+        return ['ok' => true, 'ran' => false, 'next_run' => backup_schedule_next(backup_schedule(), $now)];
+    }
+    if (PHP_SAPI !== 'cli' || !function_exists('proc_open')) {
+        return backup_schedule_run_if_due($now);
+    }
+    require_once APP_ROOT . '/lib/mod_jobs.php';
+    $script = 'exec </dev/null; ' . (is_executable('/usr/bin/setsid') ? 'setsid ' : '') . '"$0" "$1" --backups --quiet >/dev/null 2>&1 &';
+    $proc = @proc_open(['/bin/sh', '-c', $script, php_cli_binary(), APP_ROOT . '/bin/scheduler.php'],
+        [0 => ['file', '/dev/null', 'r'], 1 => ['file', '/dev/null', 'a'], 2 => ['file', '/dev/null', 'a']], $pipes, APP_ROOT);
+    if (!is_resource($proc)) { return backup_schedule_run_if_due($now); }
+    proc_close($proc);
+    return ['ok' => true, 'ran' => 'started'];
 }
 
 /** Days deleted files, archived sites and old mailboxes stay recoverable. */

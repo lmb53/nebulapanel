@@ -205,10 +205,13 @@ $apacheStatus = service_status('apache2');
     document.querySelectorAll('[data-ws-del]').forEach((btn) => {
       btn.addEventListener('click', async () => {
         const domain = btn.getAttribute('data-ws-del');
-        if (!await window.Nebula.confirm({ title: 'Delete ' + domain + '?', message: 'This removes the Nginx config, the DNS zone, SSL certificates and the website folder with all its files. This cannot be undone.', danger: true, confirmLabel: 'Delete website' })) return;
-        const res = await apiPost('sites', { action: 'delete', domain, purge: true });
-        if (res.ok) { toast('Deleted', 'success'); btn.closest('[data-ws-card]').remove(); }
-        else toast(res.error || 'Failed', 'error');
+        const choice = await window.Nebula.dialog({ title: 'Delete ' + domain + '?', danger: true, confirmLabel: 'Delete website',
+          message: 'A final backup of the files and linked databases is taken first (Backups page). Then the site goes offline: its Nginx config, DNS zone and certificate are removed and its folder is archived.',
+          option: { label: 'Also drop the linked databases', help: 'They are in the final backup. Leave this off to keep them on the Databases page as "Not linked".' } });
+        if (!choice.ok) return;
+        const res = await window.Nebula.runTask({ title: 'Deleting ' + domain, endpoint: 'sites', body: { action: 'delete', domain, drop_databases: !!choice.option }, initialStep: 'Taking a final backup', successMessage: 'Website deleted' });
+        if (res.ok) { toast('Deleted ' + domain + ' — final backup ' + (res.backup || 'saved'), 'success'); btn.closest('[data-ws-card]')?.remove(); }
+        else if (!res.background) toast(res.error || 'Failed', 'error');
       });
     });
   });

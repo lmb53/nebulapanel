@@ -12,10 +12,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $res = fw_add(
             (string) ($body['ufwAction'] ?? ''),
             (string) ($body['port'] ?? ''),
-            (string) ($body['proto'] ?? '')
+            (string) ($body['proto'] ?? ''),
+            (string) ($body['from'] ?? '')
         );
     } elseif ($action === 'delete') {
-        $res = fw_delete((int) ($body['num'] ?? -1), (string) ($body['expect'] ?? ''));
+        $res = fw_delete((int) ($body['num'] ?? -1), (string) ($body['expect'] ?? ''), !empty($body['force']));
     } elseif ($action === 'enable') {
         $res = fw_set(true);
     } elseif ($action === 'disable') {

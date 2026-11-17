@@ -86,6 +86,9 @@ function dns_zone_text(string $domain, array $records, ?int $serial = null): str
     foreach ($records as $record) {
         $name = dns_fqdn((string) $record['name'], $domain); $ttl=(int)$record['ttl']; $type=(string)$record['type']; $value=(string)$record['value'];
         if (in_array($type, ['CNAME','MX','NS'], true)) $value = rtrim($value, '.') . '.';
+        // SRV targets are host names too: without the trailing dot BIND
+        // appends the zone ("mail.example.com.example.com").
+        if ($type === 'SRV' && preg_match('/^(\d+\s+\d+\s+\d+)\s+(\S+)$/', $value, $srv)) $value = $srv[1] . ' ' . rtrim($srv[2], '.') . '.';
         if ($type === 'TXT') $value = dns_txt_quote($value);
         if ($type === 'MX') $value = (int) ($record['priority'] ?? 10) . ' ' . $value;
         $lines[] = $name . ' ' . $ttl . ' IN ' . $type . ' ' . $value;

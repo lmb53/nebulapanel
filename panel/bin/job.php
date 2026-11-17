@@ -66,12 +66,25 @@ if (!$claimed) {
     exit(0);
 }
 
+/** The result as the browser would have received it, minus bulky output. */
+function job_result_for_storage(array $result): array
+{
+    unset($result['output'], $result['log']);
+    $encoded = json_encode($result, JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
+    if ($encoded !== false && strlen($encoded) <= 65536) { return $result; }
+    return array_filter([
+        'ok' => !empty($result['ok']),
+        'error' => isset($result['error']) ? substr((string) $result['error'], 0, 4000) : null,
+        'message' => isset($result['message']) ? substr((string) $result['message'], 0, 4000) : null,
+    ], static fn($value) => $value !== null);
+}
+
 $finish = static function (array $result) use ($jobId): void {
     static $done = false;
     if ($done) { return; }
     $done = true;
     job_update($jobId, ['status' => !empty($result['ok']) ? 'done' : 'failed', 'finished_at' => time(),
-        'result' => array_intersect_key($result, array_flip(['ok', 'error', 'message', 'warning', 'file', 'name', 'url', 'path', 'safety_backup', 'domain', 'new_sha']))]);
+        'result' => job_result_for_storage($result)]);
 };
 register_shutdown_function(static function () use ($finish): void {
     $result = $GLOBALS['NEBULA_JOB_RESULT'] ?? null;

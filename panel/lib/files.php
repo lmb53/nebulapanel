@@ -774,9 +774,10 @@ function fm_save(string $rel, string $content, string $expectedHash = ''): array
 function fm_copy_recursive(string $src, string $dst): bool
 {
     // Never follow symlinks while recursively copying: a link below FM_ROOT
-    // may point outside the confined tree.
+    // may point outside the confined tree. Copy the link itself instead.
     if (is_link($src)) {
-        return false;
+        $target = @readlink($src);
+        return $target !== false && @symlink($target, $dst);
     }
     if (is_dir($src)) {
         if (!@mkdir($dst, 0755) && !is_dir($dst)) {

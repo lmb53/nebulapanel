@@ -24,7 +24,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         );
     } elseif ($action === 'delete') {
         require_capability('websites.manage');
-        $res = site_delete((string) ($body['domain'] ?? ''), (bool) ($body['purge'] ?? false));
+        $res = site_delete((string) ($body['domain'] ?? ''), !empty($body['drop_databases']), $emit ?? stream_output_callback());
     } elseif ($action === 'ssl') {
         require_capability('websites.manage');
         $res = site_ssl(

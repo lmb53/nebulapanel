@@ -645,44 +645,86 @@ if [[ -n "$ADMIN_IP" ]]; then
   ACCESS_RULES=$'        allow '"$ADMIN_IP"$';\n        deny all;'
 fi
 
-PANEL_TLS=""
-PANEL_HTTP_REDIRECT=""
-if [[ -n "$DOMAIN" ]]; then
-  PANEL_LISTEN=$'    listen 80 default_server;\n    listen [::]:80 default_server;'
-else
-  SELF_SIGNED_CERT=/etc/ssl/certs/nebula-panel-selfsigned.crt
-  SELF_SIGNED_KEY=/etc/ssl/private/nebula-panel-selfsigned.key
-  CERT_OK=no
-  if [[ -s "$SELF_SIGNED_CERT" && -s "$SELF_SIGNED_KEY" ]] \
-      && openssl x509 -in "$SELF_SIGNED_CERT" -noout -checkend 604800 >/dev/null 2>&1 \
-      && openssl x509 -in "$SELF_SIGNED_CERT" -noout -text 2>/dev/null | grep -F "IP Address:${SERVER_IP}" >/dev/null \
-      && [[ "$(openssl x509 -in "$SELF_SIGNED_CERT" -noout -modulus 2>/dev/null)" == "$(openssl rsa -in "$SELF_SIGNED_KEY" -noout -modulus 2>/dev/null)" ]]; then
-    CERT_OK=yes
-  fi
-  if [[ "$CERT_OK" != yes ]]; then
-    log "Generating a self-signed HTTPS certificate for ${SERVER_IP}…"
-    CERT_TMP="$(mktemp)"
-    KEY_TMP="$(mktemp)"
-    openssl req -x509 -nodes -newkey rsa:3072 -sha256 -days 825 \
-      -subj "/CN=${SERVER_IP}" -addext "subjectAltName=IP:${SERVER_IP}" \
-      -keyout "$KEY_TMP" -out "$CERT_TMP" >/dev/null 2>&1 \
-      || die "Could not generate the self-signed panel certificate."
-    install -m 0600 -o root -g root "$KEY_TMP" "$SELF_SIGNED_KEY"
-    install -m 0644 -o root -g root "$CERT_TMP" "$SELF_SIGNED_CERT"
-    rm -f "$KEY_TMP" "$CERT_TMP"
-    CERT_TMP=""
-    KEY_TMP=""
-  fi
-  if [[ "$LOCAL_ONLY" == 1 ]]; then
-    PANEL_LISTEN=$'    listen 127.0.0.1:80 default_server;\n    listen [::1]:80 default_server;\n    listen 127.0.0.1:443 ssl default_server;\n    listen [::1]:443 ssl default_server;'
-  else
-    PANEL_LISTEN=$'    listen 80 default_server;\n    listen [::]:80 default_server;\n    listen 443 ssl default_server;\n    listen [::]:443 ssl default_server;'
-  fi
-  PANEL_TLS="    ssl_certificate ${SELF_SIGNED_CERT};
-    ssl_certificate_key ${SELF_SIGNED_KEY};
-    ssl_protocols TLSv1.2 TLSv1.3;"
-  PANEL_HTTP_REDIRECT='    if ($scheme = http) { return 308 https://$host$request_uri; }'
+# The panel always serves HTTPS. A self-signed certificate (covering the IP
+# and, when given, DOMAIN) keeps it reachable even if Let's Encrypt cannot
+# issue one yet; certbot replaces it in place once DNS points here.
+SELF_SIGNED_CERT=/etc/ssl/certs/nebula-panel-selfsigned.crt
+SELF_SIGNED_KEY=/etc/ssl/private/nebula-panel-selfsigned.key
+CERT_NAMES=()
+[[ -n "$SERVER_IP" ]] && CERT_NAMES+=("IP:${SERVER_IP}")
+[[ -n "$DOMAIN" ]] && CERT_NAMES+=("DNS:${DOMAIN}")
+CERT_SAN="$(IFS=,; echo "${CERT_NAMES[*]}")"
+CERT_CN="${DOMAIN:-$SERVER_IP}"
+CERT_OK=no
+if [[ -s "$SELF_SIGNED_CERT" && -s "$SELF_SIGNED_KEY" ]] \
+    && openssl x509 -in "$SELF_SIGNED_CERT" -noout -checkend 604800 >/dev/null 2>&1 \
+    && [[ "$(openssl x509 -in "$SELF_SIGNED_CERT" -noout -modulus 2>/dev/null)" == "$(openssl rsa -in "$SELF_SIGNED_KEY" -noout -modulus 2>/dev/null)" ]]; then
+  CERT_OK=yes
+  CERT_TEXT="$(openssl x509 -in "$SELF_SIGNED_CERT" -noout -text 2>/dev/null)"
+  [[ -z "$SERVER_IP" ]] || grep -Fq "IP Address:${SERVER_IP}" <<<"$CERT_TEXT" || CERT_OK=no
+  [[ -z "$DOMAIN" ]] || grep -Fq "DNS:${DOMAIN}" <<<"$CERT_TEXT" || CERT_OK=no
 fi
+if [[ "$CERT_OK" != yes ]]; then
+  log "Generating a self-signed HTTPS certificate for ${CERT_SAN}…"
+  CERT_TMP="$(mktemp)"
+  KEY_TMP="$(mktemp)"
+  openssl req -x509 -nodes -newkey rsa:3072 -sha256 -days 825 \
+    -subj "/CN=${CERT_CN}" -addext "subjectAltName=${CERT_SAN}" \
+    -keyout "$KEY_TMP" -out "$CERT_TMP" >/dev/null 2>&1 \
+    || die "Could not generate the self-signed panel certificate."
+  install -m 0600 -o root -g root "$KEY_TMP" "$SELF_SIGNED_KEY"
+  install -m 0644 -o root -g root "$CERT_TMP" "$SELF_SIGNED_CERT"
+  rm -f "$KEY_TMP" "$CERT_TMP"
+  CERT_TMP=""
+  KEY_TMP=""
+fi
+# HTTP/2: "http2 on;" from Nginx 1.25.1, the listen parameter before that.
+NGINX_VERSION="$(nginx -v 2>&1 | sed -nE 's#.*nginx/([0-9]+\.[0-9]+\.[0-9]+).*#\1#p')"
+if [[ -n "$NGINX_VERSION" ]] && printf '%s\n1.25.1\n' "$NGINX_VERSION" | sort -V -C; then
+  H2_LISTEN=" http2"; H2_DIRECTIVE=""   # older Nginx: parameter on listen
+else
+  H2_LISTEN=""; H2_DIRECTIVE=$'\n    http2 on;'
+fi
+if [[ "$LOCAL_ONLY" == 1 ]]; then
+  PANEL_LISTEN=$'    listen 127.0.0.1:80 default_server;\n    listen [::1]:80 default_server;\n    listen 127.0.0.1:443 ssl'"$H2_LISTEN"$' default_server;\n    listen [::1]:443 ssl'"$H2_LISTEN"' default_server;'
+else
+  PANEL_LISTEN=$'    listen 80 default_server;\n    listen [::]:80 default_server;\n    listen 443 ssl'"$H2_LISTEN"$' default_server;\n    listen [::]:443 ssl'"$H2_LISTEN"' default_server;'
+fi
+PANEL_TLS="    ssl_certificate ${SELF_SIGNED_CERT};
+    ssl_certificate_key ${SELF_SIGNED_KEY};
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_session_cache shared:nebula_panel:5m;
+    ssl_session_timeout 1h;${H2_DIRECTIVE}"
+PANEL_HTTP_REDIRECT='    if ($scheme = http) { return 308 https://$host$request_uri; }'
+
+# Server-wide defaults for every vhost (the panel and hosted sites): upload
+# size, compression for text assets, and no version number in error pages.
+# Directives already set in nginx.conf are left alone (duplicates are fatal).
+NGINX_DEFAULTS=/etc/nginx/conf.d/nebula-defaults.conf
+{
+  echo "# Managed by Nebula Panel install.sh"
+  nginx_set() { grep -Eq "^[[:space:]]*$1[[:space:]]" /etc/nginx/nginx.conf 2>/dev/null || echo "$1 $2;"; }
+  nginx_set client_max_body_size 64m
+  nginx_set server_tokens off
+  nginx_set gzip on
+  nginx_set gzip_vary on
+  nginx_set gzip_proxied any
+  nginx_set gzip_comp_level 5
+  nginx_set gzip_min_length 1024
+  nginx_set gzip_types "text/plain text/css text/javascript application/javascript application/json application/xml image/svg+xml font/ttf"
+} > "$NGINX_DEFAULTS"
+chmod 0644 "$NGINX_DEFAULTS"
+
+# Certificates renewed by certbot's timer must reach Postfix and Dovecot too.
+install -d -m 0755 /etc/letsencrypt/renewal-hooks/deploy
+cat > /etc/letsencrypt/renewal-hooks/deploy/nebula-reload.sh <<'HOOK'
+#!/bin/sh
+# Managed by Nebula Panel: reload services that hold renewed certificates.
+for unit in nginx postfix dovecot; do
+  systemctl is-active --quiet "$unit" && systemctl reload "$unit" >/dev/null 2>&1 || true
+done
+HOOK
+chmod 0755 /etc/letsencrypt/renewal-hooks/deploy/nebula-reload.sh
 NGINX_BACKUP="$(mktemp)"
 NGINX_HAD_CONFIG=no
 if [[ -f /etc/nginx/sites-available/nebula ]]; then
@@ -705,6 +747,14 @@ ${PANEL_HTTP_REDIRECT}
     # Never serve the panel's private directories.
     location ~ ^/${PANEL_PREFIX}/(api|data|lib|views|bin)/ { deny all; return 404; }
     location = /${PANEL_PREFIX}/config.php { deny all; return 404; }
+
+    # Asset URLs carry a ?v=<mtime> version, so browsers may keep them.
+    location ^~ /${PANEL_PREFIX}/assets/ {
+${ACCESS_RULES}
+        expires 30d;
+        add_header Cache-Control "public, max-age=2592000, immutable" always;
+        add_header X-Content-Type-Options nosniff always;
+    }
 
     location /${PANEL_PREFIX}/ {
 ${ACCESS_RULES}
@@ -848,6 +898,14 @@ fi
 # --------------------------------------------------------------------------
 log "Configuring UFW firewall…"
 ufw allow OpenSSH >/dev/null 2>&1 || true
+# Also allow the port(s) sshd really listens on, so a moved SSH port cannot
+# lock the operator out when UFW is switched on.
+SSH_PORTS="$( { sshd -T 2>/dev/null | awk '$1 == "port" {print $2}'; \
+  grep -hE '^[[:space:]]*Port[[:space:]]+[0-9]+' /etc/ssh/sshd_config /etc/ssh/sshd_config.d/*.conf 2>/dev/null | awk '{print $2}'; } | sort -un)"
+for _ssh_port in $SSH_PORTS; do
+  [[ "$_ssh_port" =~ ^[0-9]+$ && "$_ssh_port" -ge 1 && "$_ssh_port" -le 65535 ]] || continue
+  ufw allow "${_ssh_port}/tcp" >/dev/null 2>&1 || true
+done
 ufw allow 'Nginx Full' >/dev/null 2>&1 || true
 yes | ufw enable >/dev/null 2>&1 || true
 ok "Firewall allows SSH + HTTP/HTTPS"

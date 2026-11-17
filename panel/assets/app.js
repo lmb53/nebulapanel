@@ -604,7 +604,7 @@
     applyChartTheme();
     const seed = ctx.dataset;
     if (!series.cpu.length && seed.cpu !== undefined) {
-      series.labels.push(''); series.cpu.push(Number(seed.cpu) || 0); series.mem.push(Number(seed.mem) || 0);
+      series.labels.push(''); series.cpu.push(Number.isFinite(Number(seed.cpu)) && seed.cpu !== null ? Number(seed.cpu) : null); series.mem.push(Number(seed.mem) || 0);
     }
     const point = (c) => (c.dataset.data.length < 2 ? 3 : 0);
     liveChart = new Chart(ctx, {
@@ -618,6 +618,7 @@
       },
       options: {
         animation: false,
+        spanGaps: false,
         maintainAspectRatio: false,
         plugins: { legend: { position: 'top', labels: { boxWidth: 8, boxHeight: 8, usePointStyle: true, color: cssVar('--chart-text') } } },
         scales: { x: { display: false }, y: { min: 0, max: 100, grid: { color: cssVar('--chart-grid') }, ticks: { color: cssVar('--chart-text') } } },
@@ -654,8 +655,9 @@
 
     if (liveChart) {
       series.labels.push('');
-      series.cpu.push(cpuPct ?? 0);
-      series.mem.push(memPct ?? 0);
+      // Unknown readings are gaps, not a dip to 0%.
+      series.cpu.push(cpuPct ?? null);
+      series.mem.push(memPct ?? null);
       if (series.labels.length > 60) { series.labels.shift(); series.cpu.shift(); series.mem.shift(); }
       series.at = Date.now();
       try { sessionStorage.setItem(SERIES_KEY, JSON.stringify(series)); } catch (e) { /* ignore */ }
