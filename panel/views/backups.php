@@ -168,7 +168,7 @@ $kindLabels = ['manual' => ['Manual', 'badge-slate'], 'scheduled' => ['Scheduled
     <div style="align-self:center"><label class="check-line"><input type="checkbox" id="osPathStyle"<?= $offsite['path_style'] ? ' checked' : '' ?>><span>Path-style addresses <span class="text-tertiary">(MinIO, most non-AWS)</span></span></label></div>
     <div style="grid-column:1/-1" class="field-help">Encryption: <span class="mono">openssl aes-256-cbc, pbkdf2</span>. <?= $offsite['has_passphrase'] ? 'A passphrase is set.' : 'A passphrase is generated when you first save.' ?> Without it the copies cannot be decrypted, so keep it somewhere safe off this server. Decrypt by hand with <span class="mono">openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -in FILE.enc -out FILE</span>.
       <?php if ($offsite['enabled'] && is_array($offsite['last_result'])): ?><br>Last upload <?= e(fmt_datetime((int) $offsite['last_result']['at'])) ?>: <?= (int) $offsite['last_result']['uploaded'] ?> copied<?= !empty($offsite['last_result']['failed']) ? ', <span style="color:var(--crit)">' . count($offsite['last_result']['failed']) . ' failed</span>' : '' ?>.<?php endif; ?></div>
-    <div style="grid-column:1/-1" class="flex gap-2">
+    <div style="grid-column:1/-1;flex-wrap:wrap" class="flex gap-2">
       <button class="btn btn-primary" type="submit" id="osSave"><i data-lucide="save"></i>Save</button>
       <button class="btn btn-secondary" type="button" id="osTest"<?= $offsite['configured'] ? '' : ' disabled' ?>><i data-lucide="plug-zap"></i>Test connection</button>
       <button class="btn btn-secondary" type="button" id="osBrowse"<?= $offsite['configured'] ? '' : ' disabled' ?>><i data-lucide="cloud-download"></i>Browse off-site copies</button>

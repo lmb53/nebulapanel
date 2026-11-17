@@ -16,7 +16,7 @@ const ALERT_MAX_WEBHOOKS = 5;
 function alert_categories(): array
 {
     return [
-        'resources' => ['label' => 'Disk, memory and load', 'keys' => ['disk', 'inodes', 'memory', 'swap', 'load'], 'default' => true],
+        'resources' => ['label' => 'Disk space, inodes, memory, swap and load', 'keys' => ['disk', 'inodes', 'memory', 'swap', 'load'], 'default' => true],
         'services' => ['label' => 'Failed services', 'keys' => ['services'], 'default' => true],
         'backups' => ['label' => 'Backups old or failing', 'keys' => ['backups', 'backup_failed', 'offsite_failed'], 'default' => true],
         'ssl' => ['label' => 'SSL certificates expiring', 'keys' => ['ssl'], 'default' => true],
