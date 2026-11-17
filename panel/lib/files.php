@@ -596,16 +596,18 @@ function fm_extract(string $rel, string $destDir, string $newFolder = '', ?calla
 }
 
 /** Shown whenever fm_valid_name() rejects a name. */
-const FM_NAME_RULES = 'Names may use letters, numbers, spaces and . _ - ( ) + , @ = ~ (no leading or trailing spaces, at most 255 characters).';
+const FM_NAME_RULES = 'Names may use letters in any language, numbers, spaces and . _ - ( ) [ ] { } + , @ = ~ \' & ! # % (not ; $ ` | < > " \\ * ? : /, no leading dash or space, at most 255 bytes).';
 
 /** Validate a single path segment (no separators, not . or ..). */
 function fm_valid_name(string $n): bool
 {
-    // Keep in sync with valid_component() in bin/nebula-helper.
+    // Keep in sync with valid_component() in bin/nebula-helper and NAME_RE in views/files.php.
     return $n !== '' && $n !== '.' && $n !== '..'
-        && preg_match('/^[A-Za-z0-9._ ()+,@=~-]+$/', $n) === 1
+        && strlen($n) <= 255
+        && preg_match('//u', $n) === 1
+        && preg_match("/^[\\p{L}\\p{M}\\p{N}\\p{Pd}._ ()\\[\\]{}+,@=~'&!#%-]+$/u", $n) === 1
         && trim($n) === $n
-        && strlen($n) <= 255;
+        && $n[0] !== '-';
 }
 
 /** Names that make a web server or PHP execute or reconfigure a directory. */
@@ -1105,3 +1107,203 @@ function fm_trash_empty(): array
     return $failed ? ['ok' => false, 'error' => "$failed item(s) could not be removed."] : ['ok' => true];
 }
 
+
+// ---------------------------------------------------------------------------
+// Chunked uploads: large files (and whole folders) arrive in pieces of a few
+// megabytes, so the web server's request limit no longer caps the file size
+// and an interrupted upload can resume from the last piece received.
+// ---------------------------------------------------------------------------
+
+/** Bytes per upload chunk the browser sends (well under post_max_size). */
+const FM_CHUNK_BYTES = 8 * 1024 * 1024;
+
+function fm_upload_limit(): int
+{
+    global $config;
+    return max(1024 * 1024, (int) ($config['max_upload_bytes'] ?? 1024 * 1024 * 1024));
+}
+
+/**
+ * Create the folders of a relative sub-path (from a folder upload) below
+ * $absDir, one validated component at a time. Returns the deepest folder.
+ */
+function fm_ensure_subdirs(string $absDir, string $subdir): array
+{
+    $subdir = trim(str_replace('\\', '/', $subdir), '/');
+    if ($subdir === '') { return ['ok' => true, 'dir' => $absDir]; }
+    $parts = explode('/', $subdir);
+    if (count($parts) > 32) { return ['ok' => false, 'error' => 'The folder structure is too deep.']; }
+    $current = $absDir;
+    foreach ($parts as $part) {
+        if (!fm_valid_name($part)) { return ['ok' => false, 'error' => 'Invalid folder name “' . $part . '”. ' . FM_NAME_RULES]; }
+        $next = $current . '/' . $part;
+        if (is_link($next)) { return ['ok' => false, 'error' => '“' . $part . '” is a link, not a folder.']; }
+        if (!is_dir($next)) {
+            if (file_exists($next)) { return ['ok' => false, 'error' => '“' . $part . '” exists and is not a folder.']; }
+            $made = fm_mkdir(fm_rel($current), $part);
+            if (empty($made['ok'])) { return $made; }
+        }
+        $resolved = fm_resolve(fm_rel($next));
+        if ($resolved === null || !is_dir($resolved)) { return ['ok' => false, 'error' => 'Could not create “' . $part . '”.']; }
+        $current = $resolved;
+    }
+    return ['ok' => true, 'dir' => $current];
+}
+
+/** Paths of an in-progress chunked upload. */
+function fm_chunk_paths(string $uploadId): ?array
+{
+    if (!preg_match('/^[a-f0-9]{32}$/', $uploadId)) { return null; }
+    $dir = DATA_DIR . '/file-staging';
+    if (!is_dir($dir) && !@mkdir($dir, 0700, true)) { return null; }
+    return ['data' => $dir . '/' . $uploadId, 'meta' => $dir . '/' . $uploadId . '.json'];
+}
+
+/**
+ * Receive one chunk. $offset must equal the bytes already received (the
+ * reply always says how many that is, so a client can resume after a
+ * failure). The last chunk installs the file like a normal upload.
+ */
+function fm_upload_chunk(array $p, string $chunk): array
+{
+    global $config;
+    $paths = fm_chunk_paths((string) ($p['upload_id'] ?? ''));
+    if ($paths === null) { return ['ok' => false, 'error' => 'Invalid upload id.']; }
+    $total = (int) ($p['total'] ?? -1);
+    $offset = (int) ($p['offset'] ?? -1);
+    $name = (string) ($p['name'] ?? '');
+    $relDir = (string) ($p['dir'] ?? '');
+    $subdir = (string) ($p['subdir'] ?? '');
+    $overwrite = !empty($p['overwrite']);
+    if ($total < 0 || $offset < 0 || $offset + strlen($chunk) > $total) { return ['ok' => false, 'error' => 'Invalid upload range.']; }
+    if ($total > fm_upload_limit()) { return ['ok' => false, 'error' => 'Upload exceeds the configured ' . human_bytes(fm_upload_limit()) . ' limit.']; }
+    if (!fm_valid_name($name)) { return ['ok' => false, 'error' => 'Invalid file name “' . $name . '”. ' . FM_NAME_RULES]; }
+    if (empty($config['allow_php_uploads']) && fm_executable_upload_name($name)) {
+        return ['ok' => false, 'error' => '“' . $name . '” was not uploaded: PHP files, .htaccess and .user.ini uploads are disabled by policy.'];
+    }
+    $base = fm_resolve($relDir);
+    if ($base === null || !is_dir($base)) { return ['ok' => false, 'error' => 'Directory not found or not allowed.']; }
+    $meta = @json_decode((string) @file_get_contents($paths['meta']), true);
+    $identity = ['uid' => (int) ($_SESSION['uid'] ?? 0), 'name' => $name, 'dir' => $relDir, 'subdir' => $subdir, 'total' => $total];
+    if ($offset === 0 && !is_array($meta)) {
+        $free = @disk_free_space($base);
+        if ($free !== false && $free < $total + 32 * 1024 * 1024) { return ['ok' => false, 'error' => 'Not enough free disk space for this upload.']; }
+        $target = $base . '/' . trim(str_replace('\\', '/', $subdir), '/') . '/' . $name;
+        if (!$overwrite && (file_exists($target) || is_link($target))) {
+            return ['ok' => false, 'conflict' => true, 'name' => $name, 'error' => 'A file with that name already exists.'];
+        }
+        $meta = $identity + ['created' => time()];
+        if (!write_json_file($paths['meta'], $meta) || @file_put_contents($paths['data'], '') === false) {
+            return ['ok' => false, 'error' => 'Could not start the upload (is data/ writable?).'];
+        }
+        @chmod($paths['data'], 0600);
+    }
+    if (!is_array($meta) || array_intersect_key($meta, $identity) != $identity) {
+        return ['ok' => false, 'error' => 'This upload does not match the one in progress. Start it again.', 'restart' => true];
+    }
+    clearstatcache(true, $paths['data']);
+    $have = (int) @filesize($paths['data']);
+    if ($offset !== $have) {
+        return ['ok' => false, 'resume' => true, 'received' => $have, 'error' => 'Resume from byte ' . $have . '.'];
+    }
+    if ($chunk !== '' && @file_put_contents($paths['data'], $chunk, FILE_APPEND | LOCK_EX) === false) {
+        return ['ok' => false, 'error' => 'Could not store the uploaded data (disk full?).'];
+    }
+    $have += strlen($chunk);
+    if ($have < $total) {
+        return ['ok' => true, 'done' => false, 'received' => $have];
+    }
+    // Complete: create any folders from a folder upload, then install.
+    $dir = fm_ensure_subdirs($base, $subdir);
+    if (empty($dir['ok'])) { fm_upload_abort($paths); return $dir; }
+    $target = $dir['dir'] . '/' . $name;
+    if (file_exists($target) || is_link($target)) {
+        if (!$overwrite) { fm_upload_abort($paths); return ['ok' => false, 'conflict' => true, 'name' => $name, 'error' => 'A file with that name already exists.']; }
+        if (!is_file($target) || is_link($target)) { fm_upload_abort($paths); return ['ok' => false, 'error' => 'Only an existing regular file can be overwritten.']; }
+    }
+    if (helper_available()) {
+        $staged = fm_stage_path();
+        if ($staged === null || !@rename($paths['data'], $staged)) { fm_upload_abort($paths); return ['ok' => false, 'error' => 'Could not stage the uploaded file.']; }
+        @unlink($paths['meta']);
+        [$code, $out] = helper_cmd('file-install ' . escapeshellarg($staged) . ' ' . escapeshellarg($target) . ' ' . ($overwrite ? 'yes' : 'no'), 600);
+        if ($code !== 0) { @unlink($staged); return ['ok' => false, 'error' => trim($out) ?: 'Could not install the uploaded file.']; }
+    } else {
+        $mode = is_file($target) ? (@fileperms($target) & 0777) : (0666 & ~umask());
+        if (!@rename($paths['data'], $target)) { fm_upload_abort($paths); return ['ok' => false, 'error' => 'Could not save the uploaded file (permissions?).']; }
+        @chmod($target, $mode ?: 0644); // staging files are private (0600); the web server must be able to read uploads
+        @unlink($paths['meta']);
+    }
+    audit($overwrite ? 'file.upload.overwrite' : 'file.upload', fm_rel($target) . ' (' . human_bytes($total) . ')');
+    return ['ok' => true, 'done' => true, 'received' => $have, 'overwritten' => $overwrite, 'path' => fm_rel($target)];
+}
+
+function fm_upload_abort(array $paths): void
+{
+    @unlink($paths['data']);
+    @unlink($paths['meta']);
+}
+
+/** Drop chunked uploads abandoned for more than a day. */
+function fm_upload_prune(): int
+{
+    $removed = 0;
+    foreach (glob(DATA_DIR . '/file-staging/*.json') ?: [] as $meta) {
+        if (time() - (int) @filemtime($meta) > 86400) {
+            @unlink(substr($meta, 0, -5));
+            @unlink($meta);
+            $removed++;
+        }
+    }
+    return $removed;
+}
+
+/**
+ * Find entries whose name contains $query below $relDir (case-insensitive),
+ * without following symlinks. Bounded in entries scanned and time spent.
+ */
+function fm_search(string $relDir, string $query, int $limit = 300): array
+{
+    $base = fm_resolve($relDir);
+    if ($base === null || !is_dir($base)) { return ['ok' => false, 'error' => 'Folder not found or not allowed.']; }
+    $query = mb_strtolower(trim($query), 'UTF-8');
+    if (mb_strlen($query, 'UTF-8') < 2) { return ['ok' => false, 'error' => 'Type at least two characters.']; }
+    $results = [];
+    $scanned = 0;
+    $started = microtime(true);
+    $complete = true;
+    $stack = [$base];
+    while ($stack) {
+        $dir = array_pop($stack);
+        $handle = @opendir($dir);
+        if (!$handle) { continue; }
+        while (($entry = readdir($handle)) !== false) {
+            if ($entry === '.' || $entry === '..' || $entry === '.nebula-recovery-trash' || fm_entry_hidden($dir, $entry)) { continue; }
+            $full = $dir . '/' . $entry;
+            if (++$scanned > 50000 || microtime(true) - $started > 4) { $complete = false; break 2; }
+            $isDir = is_dir($full) && !is_link($full);
+            if ($isDir && !fm_path_forbidden($full)) { $stack[] = $full; }
+            if (str_contains(mb_strtolower($entry, 'UTF-8'), $query)) {
+                $results[] = ['name' => $entry, 'rel' => fm_rel($full), 'display' => fm_display_path(fm_rel($full)), 'is_dir' => $isDir,
+                    'size' => $isDir ? null : (int) (@filesize($full) ?: 0), 'mtime' => (int) (@filemtime($full) ?: 0)];
+                if (count($results) >= $limit) { $complete = false; break 2; }
+            }
+        }
+        closedir($handle);
+    }
+    usort($results, static fn($a, $b) => strnatcasecmp($a['rel'], $b['rel']));
+    return ['ok' => true, 'results' => $results, 'complete' => $complete, 'scanned' => $scanned];
+}
+
+/** MIME type for inline image preview, or null when the file is not a safe raster image. */
+function fm_preview_mime(string $abs): ?string
+{
+    $types = ['png' => 'image/png', 'jpg' => 'image/jpeg', 'jpeg' => 'image/jpeg', 'gif' => 'image/gif',
+        'webp' => 'image/webp', 'avif' => 'image/avif', 'bmp' => 'image/bmp', 'ico' => 'image/x-icon'];
+    $mime = $types[strtolower(pathinfo($abs, PATHINFO_EXTENSION))] ?? null;
+    if ($mime === null || (int) @filesize($abs) > 20 * 1024 * 1024) { return null; }
+    if (function_exists('finfo_open')) {
+        $detected = (string) @finfo_file(finfo_open(FILEINFO_MIME_TYPE), $abs);
+        if ($detected !== '' && !str_starts_with($detected, 'image/') || $detected === 'image/svg+xml') { return null; }
+    }
+    return $mime;
+}

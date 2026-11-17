@@ -155,7 +155,7 @@ $check((string) @file_get_contents($fmRoot . '/site/.env') === 'new', 'the exist
 
 // 4. Invalid names explain the rule instead of a bare "Invalid name".
 $res = $a->api('file-mkdir', ['dir' => 'site', 'name' => 'bad*name']);
-$check(($res['ok'] ?? true) === false && str_contains((string) ($res['error'] ?? ''), 'letters, numbers'), 'an invalid name explains the allowed characters');
+$check(($res['ok'] ?? true) === false && str_contains((string) ($res['error'] ?? ''), 'letters in any language'), 'an invalid name explains the allowed characters');
 
 // 5. Active sessions: list them, end one remotely, end all others.
 $c = $browser();
@@ -285,6 +285,28 @@ $check($status === 200 && str_contains($html, 'Schedule') && str_contains($html,
 [$status, $html] = $a->request('GET', 'dashboard');
 $check($status === 200 && str_contains($html, 'data-range="7d"'), 'the dashboard offers 7-day history');
 $check(str_contains($html, 'helper-banner') && str_contains($html, '/usr/local/bin/nebula-helper'), 'a missing helper is explained once, with the fix command');
+
+// 13. Chunked uploads (with resume and folders), subfolder search, palette search.
+$chunk = static function (object $client, array $params, string $bytes): array {
+    [$status, $out] = $client->request('POST', 'api/file-upload-chunk&' . http_build_query($params), $bytes,
+        ['Accept: application/json', 'Content-Type: application/octet-stream', 'X-CSRF-Token: ' . $client->csrf]);
+    return ['status' => $status] + (json_decode($out, true) ?: []);
+};
+$uploadId = bin2hex(random_bytes(16));
+$base = ['upload_id' => $uploadId, 'name' => 'Größe – data.bin', 'dir' => 'site', 'subdir' => 'Neu/sub', 'total' => 10];
+$first = $chunk($a, $base + ['offset' => 0], '01234');
+$check(($first['ok'] ?? false) === true && ($first['received'] ?? 0) === 5 && empty($first['done']), 'the first chunk is stored');
+$wrong = $chunk($a, $base + ['offset' => 2], '23456');
+$check(($wrong['resume'] ?? false) === true && ($wrong['received'] ?? -1) === 5, 'a chunk at the wrong offset is told where to resume');
+$last = $chunk($a, $base + ['offset' => 5], '56789');
+$check(($last['done'] ?? false) === true && file_get_contents($fmRoot . '/site/Neu/sub/Größe – data.bin') === '0123456789', 'the last chunk installs the file in the uploaded folder structure');
+$escape = $chunk($a, ['upload_id' => bin2hex(random_bytes(16)), 'name' => 'x.txt', 'dir' => 'site', 'subdir' => '../..', 'total' => 1, 'offset' => 0], 'x');
+$check(($escape['ok'] ?? true) === false && !file_exists($root . '/x.txt'), 'folder uploads cannot climb out of the File Manager root');
+$php = $chunk($a, ['upload_id' => bin2hex(random_bytes(16)), 'name' => 'shell.php', 'dir' => 'site', 'total' => 1, 'offset' => 0], 'x');
+$check(($php['ok'] ?? true) === false, 'chunked uploads keep the PHP upload policy');
+$found = $a->api('file-search&path=site&q=' . rawurlencode('größe'));
+$check(($found['ok'] ?? false) === true && count((array) ($found['results'] ?? [])) === 1, 'subfolder search finds files by name, case-insensitively');
+$check(($a->api('search')['ok'] ?? false) === true, 'the command palette search endpoint answers');
 
 // 12. Long actions run as background jobs that survive the request.
 $res = $a->api('jobs', ['action' => 'start', 'endpoint' => 'backups', 'body' => ['action' => 'schedule', 'enabled' => false, 'frequency' => 'weekly', 'hour' => 4, 'weekday' => 2, 'keep' => 5]]);

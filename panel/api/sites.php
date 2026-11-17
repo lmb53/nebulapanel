@@ -32,6 +32,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             (string) ($body['email'] ?? ''),
             $emit
         );
+    } elseif ($action === 'trash-purge') {
+        require_capability('websites.manage');
+        $res = sites_trash_purge((string) ($body['name'] ?? ''));
     } elseif ($action === 'php') {
         require_capability('websites.manage');
         $res = site_set_php((string) ($body['domain'] ?? ''), (string) ($body['version'] ?? ''));
@@ -43,6 +46,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         exit;
     }
     json_out($res, $res['ok'] ? 200 : 400);
+}
+
+if (($_GET['trash'] ?? '') === '1') {
+    json_out(['ok' => true, 'archived' => sites_trash_list()]);
 }
 
 json_out([

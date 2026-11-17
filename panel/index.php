@@ -227,6 +227,16 @@ if ($route === 'file-download') {
         http_response_code(404);
         exit('Not found');
     }
+    if (($_GET['inline'] ?? '') === '1') {
+        // Image preview in the details pane: safe raster types only.
+        $mime = fm_preview_mime($abs);
+        if ($mime === null) {
+            http_response_code(415);
+            exit('No preview for this file type');
+        }
+        send_download($abs, $mime, true);
+        return;
+    }
     fm_record_recent(fm_rel($abs));
     audit('file.download', fm_rel($abs));
     send_download($abs, 'application/octet-stream');

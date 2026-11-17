@@ -337,8 +337,8 @@ def op_install(staged, dst, overwrite):
     sst = os.fstat(src)
     if not stat.S_ISREG(sst.st_mode):
         fail('invalid staged file')
-    if sst.st_size > 52428800:
-        fail('staged file exceeds 50 MB')
+    if sst.st_size > 17179869184:
+        fail('staged file exceeds 16 GB')
     pfd, name = parent_and_name(dst)
     existing = lstat_at(pfd, name)
     if existing is not None:
@@ -918,9 +918,13 @@ mail_cert_dir() {
   return 1
 }
 # Keep in sync with fm_valid_name() in lib/files.php.
+# Letters in any language are fine; shell/path metacharacters, control
+# characters, a leading dash or surrounding spaces are not.
 valid_component(){
-  local re='^[A-Za-z0-9._ ()+,@=~-]{1,255}$'
-  [[ "$1" != "." && "$1" != ".." && "$1" =~ $re ]] || die "invalid path component"
+  local n="$1" LC_ALL=C
+  [[ -n "$n" && "$n" != "." && "$n" != ".." && ${#n} -le 255 ]] || die "invalid path component"
+  [[ "$n" != *[/\\\;\$\`\|\<\>\"\*\?:]* && "$n" != -* ]] || die "invalid path component"
+  [[ ! "$n" =~ [[:cntrl:]] && "$n" == "${n# }" && "$n" == "${n% }" ]] || die "invalid path component"
 }
 valid_docker_id(){ [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,127}$ ]] || die "invalid Docker identifier"; }
 valid_docker_name(){ [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$ ]] || die "invalid Docker name"; }
@@ -2301,7 +2305,8 @@ EOF
     if [[ "$PURGE" == "archive" ]]; then
       ARCHIVE="$SITES_TRASH/${SITE_ID}-$(date +%Y%m%d-%H%M%S)"
       mv -- "$SITE_BASE" "$ARCHIVE"
-      chown -R root:root "$ARCHIVE"
+      chown -hR root:root "$ARCHIVE"
+      printf 'domain=%s\nid=%s\ndeleted=%s\n' "$DOMAIN" "$SITE_ID" "$(date +%s)" > "$ARCHIVE/.nebula-site"
       # Remove other server-side traces of the site so nothing is left behind.
       rm -rf "/etc/nebula-panel/certs/$DOMAIN"
       rm -f "/var/log/nginx/${DOMAIN}.access.log" "/var/log/nginx/${DOMAIN}.error.log" \
@@ -2310,6 +2315,32 @@ EOF
       userdel "$SITE_USER" >/dev/null 2>&1 || true
     fi
     echo "deleted $DOMAIN"
+    ;;
+
+  # site-trash-list -> name<TAB>domain<TAB>deleted-epoch<TAB>bytes, one per archived site.
+  site-trash-list)
+    [[ -d "$SITES_TRASH" ]] || exit 0
+    shopt -s nullglob
+    for ARCHIVE in "$SITES_TRASH"/*; do
+      NAME="$(basename "$ARCHIVE")"
+      [[ "$NAME" =~ ^[a-f0-9]{32}-[0-9]{8}-[0-9]{6}$ && -d "$ARCHIVE" && ! -L "$ARCHIVE" ]] || continue
+      DOMAIN="$(sed -n 's/^domain=//p' "$ARCHIVE/.nebula-site" 2>/dev/null | head -n 1)"
+      [[ "$DOMAIN" =~ ^[a-z0-9.-]{1,253}$ ]] || DOMAIN=""
+      DELETED="$(sed -n 's/^deleted=//p' "$ARCHIVE/.nebula-site" 2>/dev/null | head -n 1)"
+      [[ "$DELETED" =~ ^[0-9]+$ ]] || DELETED="$(stat -c %Y "$ARCHIVE")"
+      BYTES="$(timeout 20s du -sb --one-file-system -- "$ARCHIVE" 2>/dev/null | awk '{print $1}')"
+      printf '%s\t%s\t%s\t%s\n' "$NAME" "$DOMAIN" "$DELETED" "${BYTES:-0}"
+    done
+    ;;
+
+  # site-trash-purge <archive-name> — permanently remove one archived site.
+  site-trash-purge)
+    NAME="${1:-}"
+    [[ "$NAME" =~ ^[a-f0-9]{32}-[0-9]{8}-[0-9]{6}$ ]] || die "invalid archive name"
+    ARCHIVE="$SITES_TRASH/$NAME"
+    [[ -d "$ARCHIVE" && ! -L "$ARCHIVE" ]] || die "archived website not found"
+    rm -rf --one-file-system -- "$ARCHIVE"
+    echo "removed $NAME"
     ;;
 
   # site-ssl <domain> [email]

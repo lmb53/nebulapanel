@@ -19,7 +19,9 @@ return [
     // Every managed site's root is derived from an immutable random ID below
     // this directory. User-supplied document roots are never accepted.
     'sites_root' => getenv('NEBULA_SITES_ROOT') ?: '/srv/nebula/sites',
-    'max_upload_bytes' => 50 * 1024 * 1024,
+    // Largest single upload. Files arrive in 8 MB chunks, so this is not tied
+    // to Nginx/PHP request limits.
+    'max_upload_bytes' => 1024 * 1024 * 1024,
     'allow_php_uploads' => false,
 
     // Optional additional absolute paths to hide and reject. The panel's own

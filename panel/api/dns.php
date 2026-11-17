@@ -4,6 +4,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     require_post(); csrf_check(); $body=read_json_body(); $action=(string)($body['action']??''); $domain=(string)($body['domain']??'');
     if ($action==='add') $res=dns_record_add($domain,$body);
     elseif($action==='delete') $res=dns_record_delete($domain,(string)($body['id']??''));
+    elseif($action==='update') $res=dns_record_update($domain,(string)($body['id']??''),$body);
+    elseif($action==='template') $res=dns_apply_template($domain,(string)($body['template']??''));
+    elseif($action==='import') $res=dns_import($domain,(string)($body['zone']??''));
     else $res=['ok'=>false,'error'=>'Unknown action.'];
     json_out($res,!empty($res['ok'])?200:400);
 }

@@ -262,7 +262,7 @@ function helper_action_is_read_only(string $args): bool
     $action = $parts[0] ?? '';
     static $reads = ['php-versions', 'site-list', 'site-stats', 'site-git-status', 'docker-query', 'docker-logs',
         'compose-list', 'compose-version', 'f2b-status', 'f2b-jail', 'f2b-log', 'modsec-status', 'modsec-log',
-        'mail-status', 'mail-stats', 'mail-diag', 'mail-dkim', 'cert-list', 'ssh-keys-list', 'log-read-unit', 'log-read-file'];
+        'mail-status', 'mail-stats', 'mail-diag', 'mail-dkim', 'cert-list', 'site-trash-list', 'ssh-keys-list', 'log-read-unit', 'log-read-file'];
     if (in_array($action, $reads, true)) { return true; }
     if ($action === 'db-action') {
         return in_array(trim((string) ($parts[1] ?? ''), "'"), ['list', 'version', 'schema-users', 'users'], true);

@@ -164,6 +164,7 @@ if ($rel !== '') {
         </div>
         <div class="page-actions" style="gap:8px">
           <a class="btn btn-secondary btn-sm" href="<?= e(url('files', ['path' => $rel])) ?>"><i data-lucide="refresh-cw"></i>Refresh</a>
+          <button class="btn btn-secondary btn-sm" type="button" id="fmUploadDirBtn"><i data-lucide="folder-up"></i>Upload folder</button>
           <button class="btn btn-primary btn-sm" type="button" id="fmUploadBtn"><i data-lucide="upload"></i>Upload</button>
         </div>
       </div>
@@ -185,8 +186,15 @@ if ($rel !== '') {
           <button type="button" data-view="list" class="active" title="List view" aria-label="List view" aria-pressed="true"><i data-lucide="list"></i></button>
           <button type="button" data-view="grid" title="Grid view" aria-label="Grid view" aria-pressed="false"><i data-lucide="layout-grid"></i></button>
         </div>
+        <button class="btn btn-ghost btn-sm" type="button" id="fmDeepSearch" title="Search this folder and all its subfolders"><i data-lucide="search-code"></i>Subfolders</button>
         <input type="file" id="fmUpload" style="display:none" multiple aria-label="Files to upload" tabindex="-1">
+        <input type="file" id="fmUploadDir" style="display:none" webkitdirectory multiple aria-label="Folder to upload" tabindex="-1">
       </div>
+    </div>
+
+    <div class="fm-upload-progress hidden" id="fmUploadProgress" role="status" aria-live="polite">
+      <div class="fm-upload-text"><span id="fmUploadLabel">Uploading…</span><span class="mono" id="fmUploadPct"></span></div>
+      <div class="progress"><div id="fmUploadBar" style="width:0%"></div></div>
     </div>
 
     <!-- 3-pane split -->
@@ -452,11 +460,12 @@ document.addEventListener('DOMContentLoaded', () => {
   const csrf = () => document.querySelector('meta[name="csrf-token"]').content;
   const bindClick = (id, fn) => document.getElementById(id)?.addEventListener('click', fn);
   // Mirrors fm_valid_name() in lib/files.php (and the helper's valid_component).
-  const NAME_RE = /^[A-Za-z0-9._ ()+,@=~-]+$/;
+  const NAME_RE = /^[\p{L}\p{M}\p{N}\p{Pd}._ ()[\]{}+,@=~'&!#%-]+$/u;
   const validName = (v) => {
     if (v === '.' || v === '..') return 'A name cannot be "." or "..".';
-    if (v.length > 255) return 'Names can be at most 255 characters.';
-    if (!NAME_RE.test(v) || v.trim() !== v) return 'Use letters, numbers, spaces and . _ - ( ) + , @ = ~ only.';
+    if (new TextEncoder().encode(v).length > 255) return 'Names can be at most 255 bytes.';
+    if (v.startsWith('-')) return 'A name cannot start with a dash.';
+    if (!NAME_RE.test(v) || v.trim() !== v) return 'Letters, numbers, spaces and . _ - ( ) [ ] { } + , @ = ~ \' & ! # % only.';
     return '';
   };
 
@@ -599,62 +608,193 @@ document.addEventListener('DOMContentLoaded', () => {
   const fileInput = document.getElementById('fmUpload');
   bindClick('fmUploadBtn', () => fileInput?.click());
 
-  async function uploadFile(file, overwrite = false) {
-    const fd = new FormData();
-    fd.append('dir', CURDIR);
-    fd.append('file', file);
-    fd.append('overwrite', overwrite ? '1' : '0');
-    try {
-      const r = await fetch(window.Nebula.api('file-upload'), {
-        method: 'POST',
-        headers: { 'X-CSRF-Token': csrf() },
-        body: fd,
-      });
-      // nginx answers an oversized body with an HTML 413 page, not JSON.
-      const text = await r.text();
+  // Files go up in 8 MB chunks: no size cap from the web server's request
+  // limit, a progress bar, and a failed chunk is retried from where the
+  // server says it got to.
+  const CHUNK = 8 * 1024 * 1024;
+  const progress = document.getElementById('fmUploadProgress');
+  const setProgress = (label, done, total) => {
+    progress?.classList.remove('hidden');
+    document.getElementById('fmUploadLabel').textContent = label;
+    const pct = total ? Math.min(100, Math.floor(done / total * 100)) : 100;
+    document.getElementById('fmUploadPct').textContent = pct + '%';
+    document.getElementById('fmUploadBar').style.width = pct + '%';
+  };
+  const randomId = () => Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, '0')).join('');
+  async function sendChunk(params, blob) {
+    const query = new URLSearchParams(params).toString();
+    const r = await fetch(window.Nebula.api('file-upload-chunk&' + query), {
+      method: 'POST', headers: { 'X-CSRF-Token': csrf(), 'Content-Type': 'application/octet-stream', Accept: 'application/json' }, body: blob,
+    });
+    const text = await r.text();
+    try { return JSON.parse(text); } catch (e) { return { ok: false, retry: r.status >= 500 || r.status === 0, error: `Upload failed (HTTP ${r.status})` }; }
+  }
+  async function uploadFile(file, subdir = '', overwrite = false, batch = { done: 0, total: file.size }) {
+    const params = { upload_id: randomId(), name: file.name, dir: CURDIR, subdir, total: file.size, overwrite: overwrite ? '1' : '' };
+    let offset = 0, failures = 0;
+    const label = (subdir ? subdir + '/' : '') + file.name;
+    for (;;) {
+      const end = Math.min(file.size, offset + CHUNK);
       let res;
-      try { res = JSON.parse(text); }
-      catch (e) {
-        res = { ok: false, error: r.status === 413
-          ? `${file.name} is larger than the web server accepts. Re-run install.sh to apply the panel's upload limits.`
-          : `Upload failed: ${file.name} (HTTP ${r.status})` };
+      try { res = await sendChunk({ ...params, offset }, file.slice(offset, end)); }
+      catch (e) { res = { ok: false, retry: true, error: 'Network error' }; }
+      if (res.ok) {
+        failures = 0;
+        offset = res.received;
+        setProgress('Uploading ' + label, batch.done + offset, batch.total);
+        if (res.done) { batch.done += file.size; return { ok: true, overwritten: res.overwritten }; }
+        continue;
       }
-      if (res.ok) { toast(`${res.overwritten ? 'Replaced' : 'Uploaded'} ${file.name}`, 'success'); return true; }
+      if (res.resume && Number.isFinite(res.received)) { offset = res.received; continue; }
       if (res.conflict) {
-        if (await ask({ title: 'Replace existing file?', message: `"${file.name}" already exists. Replace it with the uploaded file?`, warning: true, icon: 'file-up', confirmLabel: 'Replace' })) {
-          return uploadFile(file, true);
+        if (await ask({ title: 'Replace existing file?', message: `"${label}" already exists. Replace it with the uploaded file?`, warning: true, icon: 'file-up', confirmLabel: 'Replace' })) {
+          return uploadFile(file, subdir, true, batch);
         }
-        toast(`Skipped ${file.name}`, 'info');
-        return false;
+        batch.done += file.size;
+        return { ok: false, skipped: true };
       }
-      toast(res.error || `Upload failed: ${file.name}`, 'error');
-    } catch (e) { toast(`Upload failed: ${file.name}`, 'error'); }
-    return false;
+      if (res.retry && ++failures <= 5) { await new Promise((resolve) => setTimeout(resolve, 1000 * failures)); continue; }
+      batch.done += file.size;
+      toast(res.error || `Upload failed: ${label}`, 'error');
+      return { ok: false };
+    }
   }
-  async function uploadFiles(files) {
-    let any = false;
-    for (const f of files) { if (await uploadFile(f)) any = true; }
-    if (any) reload();
+  /** entries: [{file, subdir}] */
+  async function uploadEntries(entries) {
+    if (!entries.length) return;
+    const batch = { done: 0, total: entries.reduce((sum, e) => sum + e.file.size, 0) || 1 };
+    let ok = 0, skipped = 0;
+    for (const { file, subdir } of entries) {
+      const res = await uploadFile(file, subdir, false, batch);
+      if (res.ok) ok += 1; else if (res.skipped) skipped += 1;
+    }
+    progress?.classList.add('hidden');
+    if (ok) toast(`Uploaded ${ok} file${ok === 1 ? '' : 's'}${skipped ? `, skipped ${skipped}` : ''}`, 'success');
+    if (ok) reload();
   }
+  const uploadFiles = (files) => uploadEntries(files.map((file) => ({ file, subdir: '' })));
   fileInput?.addEventListener('change', async () => {
     if (fileInput.files.length) await uploadFiles(Array.from(fileInput.files));
     fileInput.value = '';
   });
+  // Folder upload keeps the folder structure (webkitRelativePath = "dir/sub/file").
+  const dirInput = document.getElementById('fmUploadDir');
+  bindClick('fmUploadDirBtn', () => dirInput?.click());
+  dirInput?.addEventListener('change', async () => {
+    const entries = Array.from(dirInput.files).map((file) => {
+      const rel = file.webkitRelativePath || file.name;
+      return { file, subdir: rel.includes('/') ? rel.slice(0, rel.lastIndexOf('/')) : '' };
+    });
+    await uploadEntries(entries);
+    dirInput.value = '';
+  });
+  // Walk a dropped folder (FileSystemEntry API) into [{file, subdir}].
+  async function collectEntry(entry, prefix, out) {
+    if (entry.isFile) {
+      await new Promise((resolve) => entry.file((file) => { out.push({ file, subdir: prefix }); resolve(); }, resolve));
+    } else if (entry.isDirectory) {
+      const reader = entry.createReader();
+      const path = prefix ? prefix + '/' + entry.name : entry.name;
+      for (;;) {
+        const batch = await new Promise((resolve) => reader.readEntries(resolve, () => resolve([])));
+        if (!batch.length) break;
+        for (const child of batch) await collectEntry(child, path, out);
+      }
+    }
+  }
 
-  // ---- Drag-and-drop upload onto the center pane ---------------------------
+  // ---- Drag-and-drop: upload files/folders, or move items onto a folder ----
   const center = document.getElementById('fmCenter');
+  const MOVE_TYPE = 'application/x-nebula-path';
   if (center) {
     ['dragenter', 'dragover'].forEach((ev) => center.addEventListener(ev, (e) => {
       if (e.dataTransfer && Array.from(e.dataTransfer.types || []).includes('Files')) { e.preventDefault(); center.classList.add('fm-dragover'); }
     }));
     ['dragleave', 'dragend'].forEach((ev) => center.addEventListener(ev, (e) => { if (e.target === center) center.classList.remove('fm-dragover'); }));
     center.addEventListener('drop', async (e) => {
-      if (!e.dataTransfer || !e.dataTransfer.files.length) return;
+      if (!e.dataTransfer || !Array.from(e.dataTransfer.types || []).includes('Files')) return;
       e.preventDefault();
       center.classList.remove('fm-dragover');
-      await uploadFiles(Array.from(e.dataTransfer.files));
+      const items = Array.from(e.dataTransfer.items || []);
+      const roots = items.map((item) => item.webkitGetAsEntry && item.webkitGetAsEntry()).filter(Boolean);
+      if (roots.length) {
+        const entries = [];
+        for (const root of roots) await collectEntry(root, '', entries);
+        await uploadEntries(entries);
+      } else {
+        await uploadFiles(Array.from(e.dataTransfer.files));
+      }
     });
   }
+  // Rows can be dragged onto a folder row (or a breadcrumb) to move them.
+  document.querySelectorAll('tr.fm-row, .fm-card').forEach((row) => {
+    if (!row.dataset.path || row.dataset.locked === '1') return;
+    row.draggable = true;
+    row.addEventListener('dragstart', (e) => {
+      const selected = Array.from(document.querySelectorAll('.fm-row.fm-row-selected')).map((r) => r.dataset.path);
+      const paths = selected.includes(row.dataset.path) ? selected : [row.dataset.path];
+      e.dataTransfer.setData(MOVE_TYPE, JSON.stringify(paths));
+      e.dataTransfer.effectAllowed = 'move';
+    });
+  });
+  const dropTargets = [...document.querySelectorAll('tr.fm-row[data-isdir="1"], .fm-card[data-isdir="1"]')]
+    .map((el) => [el, el.dataset.path])
+    .concat([...document.querySelectorAll('.breadcrumb a, nav[aria-label] a')].map((a) => [a, new URL(a.href, location.href).searchParams.get('path') ?? '']).filter(([a]) => a.href.includes('r=files')));
+  dropTargets.forEach(([el, dest]) => {
+    el.addEventListener('dragover', (e) => {
+      if (!Array.from(e.dataTransfer.types || []).includes(MOVE_TYPE)) return;
+      e.preventDefault(); e.dataTransfer.dropEffect = 'move'; el.classList.add('fm-drop-target');
+    });
+    el.addEventListener('dragleave', () => el.classList.remove('fm-drop-target'));
+    el.addEventListener('drop', async (e) => {
+      const raw = e.dataTransfer.getData(MOVE_TYPE);
+      if (!raw) return;
+      e.preventDefault(); e.stopPropagation(); el.classList.remove('fm-drop-target');
+      const paths = JSON.parse(raw).filter((p) => p !== dest);
+      if (!paths.length) return;
+      let moved = 0;
+      for (const path of paths) {
+        const res = await apiPost('file-op', { path, dest, op: 'move' });
+        if (res.ok) moved += 1; else toast(res.error || 'Could not move ' + path, 'error');
+      }
+      if (moved) { toast(`Moved ${moved} item${moved === 1 ? '' : 's'}`, 'success'); reload(); }
+    });
+  });
+
+  // ---- Search this folder and its subfolders ------------------------------
+  bindClick('fmDeepSearch', async () => {
+    const q = (document.getElementById('fmSearch')?.value || '').trim() || await askText({ title: 'Search subfolders', label: 'Name contains', placeholder: 'invoice' });
+    if (!q) return;
+    let res;
+    try { res = await window.Nebula.apiGet('file-search&path=' + encodeURIComponent(CURDIR) + '&q=' + encodeURIComponent(q)); }
+    catch (e) { toast(e.message || 'Search failed', 'error'); return; }
+    const overlay = document.createElement('div'); overlay.className = 'drawer-overlay';
+    const drawer = document.createElement('div'); drawer.className = 'drawer';
+    const head = document.createElement('div'); head.className = 'drawer-header';
+    const title = document.createElement('div');
+    const strong = document.createElement('strong'); strong.textContent = `“${q}” in ${CURDIR || 'all files'}`;
+    const meta = document.createElement('div'); meta.className = 'muted';
+    meta.textContent = `${res.results.length} match${res.results.length === 1 ? '' : 'es'}${res.complete ? '' : ' (search stopped early — narrow it down)'}`;
+    title.append(strong, meta);
+    const close = document.createElement('button'); close.className = 'icon-btn'; close.type = 'button'; close.setAttribute('aria-label', 'Close'); close.innerHTML = '<i data-lucide="x"></i>';
+    close.addEventListener('click', () => overlay.remove());
+    head.append(title, close);
+    const body = document.createElement('div'); body.className = 'drawer-body fm-search-results';
+    if (!res.results.length) body.textContent = 'Nothing found.';
+    res.results.forEach((item) => {
+      const a = document.createElement('a');
+      a.className = 'fm-search-hit';
+      const folder = item.rel.includes('/') ? item.rel.slice(0, item.rel.lastIndexOf('/')) : '';
+      a.href = (document.querySelector('meta[name="base-url"]').content || '') + '/?' + new URLSearchParams({ r: 'files', path: item.is_dir ? item.rel : folder }).toString();
+      const icon = document.createElement('i'); icon.dataset.lucide = item.is_dir ? 'folder' : 'file';
+      const text = document.createElement('span'); text.className = 'fm-search-name'; text.textContent = item.name;
+      const where = document.createElement('span'); where.className = 'fm-search-path mono'; where.textContent = '/' + (item.display || item.rel);
+      a.append(icon, text, where);
+      body.appendChild(a);
+    });
+    drawer.append(head, body); overlay.appendChild(drawer); document.body.appendChild(overlay);
+    if (window.lucide) lucide.createIcons();
+  });
 
   // ---- List / grid view toggle (persisted) --------------------------------
   const listView = document.getElementById('fmListView');
@@ -784,6 +924,14 @@ document.addEventListener('DOMContentLoaded', () => {
       ico.setAttribute('data-lucide', d.icon || 'file');
       ico.style.color = d.color || 'var(--text-tertiary)';
       thumb.replaceChildren(ico);
+      thumb.classList.remove('has-preview');
+      // Raster images get a real preview (served inline, sandboxed).
+      if (!isDir && /\.(png|jpe?g|gif|webp|avif|bmp|ico)$/i.test(d.name || '') && d.download) {
+        const img = document.createElement('img');
+        img.alt = 'Preview of ' + (d.name || 'image');
+        img.src = d.download + '&inline=1';
+        img.onload = () => { thumb.replaceChildren(img); thumb.classList.add('has-preview'); };
+      }
     }
     const open = document.getElementById('fmPropOpen');
     const dl = document.getElementById('fmPropDownload');

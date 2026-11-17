@@ -400,3 +400,30 @@ function site_set_php_locked(string $domain, string $version): array
     audit('site.php', $domain . ' -> ' . $version);
     return ['ok' => true];
 }
+
+/** Archived (deleted) websites still on disk, newest first. */
+function sites_trash_list(): array
+{
+    if (!helper_available()) { return []; }
+    [$code, $out] = helper_cmd('site-trash-list', 120);
+    if ($code !== 0) { return []; }
+    $rows = [];
+    foreach (preg_split('/\r?\n/', trim($out)) as $line) {
+        [$name, $domain, $deleted, $bytes] = array_pad(explode("\t", $line, 4), 4, '');
+        if (!preg_match('/^[a-f0-9]{32}-[0-9]{8}-[0-9]{6}$/', $name)) { continue; }
+        $rows[] = ['name' => $name, 'domain' => $domain, 'deleted_at' => (int) $deleted, 'size' => (int) $bytes];
+    }
+    usort($rows, static fn($a, $b) => $b['deleted_at'] <=> $a['deleted_at']);
+    return $rows;
+}
+
+function sites_trash_purge(string $name): array
+{
+    if (!preg_match('/^[a-f0-9]{32}-[0-9]{8}-[0-9]{6}$/', $name)) {
+        return ['ok' => false, 'error' => 'Invalid archive.'];
+    }
+    [$code, $out] = helper_cmd('site-trash-purge ' . escapeshellarg($name), 600);
+    if ($code !== 0) { return ['ok' => false, 'error' => trim($out) ?: 'Could not remove the archived website.']; }
+    audit('site.trash.purge', $name);
+    return ['ok' => true];
+}

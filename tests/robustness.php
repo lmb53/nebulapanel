@@ -96,13 +96,17 @@ $check(fm_valid_name('report (1).pdf') && fm_valid_name('a+b,c@d=e~f.txt'),
     'common download names with parentheses and punctuation are accepted');
 $check(!fm_valid_name('a/b') && !fm_valid_name('..') && !fm_valid_name(' lead') && !fm_valid_name('x;id') && !fm_valid_name('$(id)'),
     'separators, traversal, padding and shell metacharacters are rejected');
+$check(fm_valid_name('Résumé – final.pdf') && fm_valid_name('日本語のファイル.txt') && fm_valid_name("Tom's notes [v2].md"),
+    'names in other languages and common punctuation are accepted');
+$check(!fm_valid_name('-rf') && !fm_valid_name("tab\tname") && !fm_valid_name('a:b') && !fm_valid_name("bad\xff"),
+    'leading dashes, control characters, colons and invalid UTF-8 are rejected');
 $check(fm_executable_upload_name('.user.ini') && fm_executable_upload_name('.HTACCESS')
     && fm_executable_upload_name('shell.phtml') && fm_executable_upload_name('x.php7') && !fm_executable_upload_name('notes.txt'),
     'uploads that configure or execute PHP are recognised');
 
 $helperSource = (string) file_get_contents(APP_ROOT . '/bin/nebula-helper');
-$check(strpos($helperSource, "local re='^[A-Za-z0-9._ ()+,@=~-]{1,255}$'") !== false,
-    'the helper accepts exactly the File Manager name charset');
+$check(strpos($helperSource, 'valid_component(){') !== false && strpos($helperSource, '[[:cntrl:]]') !== false,
+    'the helper validates File Manager names');
 $check(preg_match('/file-delete\)\s*\n.*\n\s*fmsafe trash /', $helperSource) === 1
     && strpos($helperSource, "subprocess.run(['chown', '-hR', 'root:root'") !== false,
     'the helper trashes a symlink itself, never its target');

@@ -151,6 +151,43 @@ $apacheStatus = service_status('apache2');
     </div></div>
   <?php endif; ?>
 
+  <?php if (sites_available()): ?>
+  <div class="card hidden" id="wsArchived" style="margin-top:16px">
+    <div class="card-header"><div><h3>Deleted websites</h3><span class="muted">Archived folders are removed automatically after <?= (int) ($config['trash_retention_days'] ?? 30) ?> days. To bring a site back, create it again and restore its final backup (named <span class="mono">deleted-…</span>) from Backups.</span></div>
+      <a class="btn btn-secondary btn-sm" href="<?= e(url('backups')) ?>"><i data-lucide="archive-restore"></i>Backups</a></div>
+    <div class="table-wrap"><table class="data-table"><thead><tr><th>Website</th><th>Deleted</th><th class="num">Size</th><th class="actions-col"><span class="sr-only">Actions</span></th></tr></thead><tbody id="wsArchivedBody"></tbody></table></div>
+  </div>
+  <script nonce="<?= e(csp_nonce()) ?>">
+  document.addEventListener('DOMContentLoaded', async () => {
+    const { apiGet, apiPost, toast, fmtDate, fmtBytes, confirm: ask } = window.Nebula;
+    let res;
+    try { res = await apiGet('sites&trash=1', { background: true }); } catch (e) { return; }
+    const rows = res.archived || [];
+    if (!rows.length) return;
+    const body = document.getElementById('wsArchivedBody');
+    rows.forEach((row) => {
+      const tr = document.createElement('tr');
+      const cell = (text, cls) => { const td = document.createElement('td'); if (cls) td.className = cls; td.textContent = text; return td; };
+      const when = cell(fmtDate(row.deleted_at));
+      when.dataset.sortValue = row.deleted_at;
+      const size = cell(fmtBytes(row.size), 'num mono text-tertiary');
+      size.dataset.sortValue = row.size;
+      const actions = document.createElement('td'); actions.className = 'actions-col';
+      const purge = document.createElement('button'); purge.type = 'button'; purge.className = 'btn btn-ghost btn-sm danger'; purge.textContent = 'Delete permanently';
+      purge.addEventListener('click', async () => {
+        if (!await ask({ title: 'Permanently delete the archived files of ' + (row.domain || row.name) + '?', message: 'Its final backup on the Backups page is not affected.', danger: true, confirmLabel: 'Delete permanently' })) return;
+        const r = await apiPost('sites', { action: 'trash-purge', name: row.name });
+        if (r.ok) { tr.remove(); toast('Archived files deleted', 'success'); } else toast(r.error || 'Failed', 'error');
+      });
+      actions.appendChild(purge);
+      tr.append(cell(row.domain || row.name, 'mono'), when, size, actions);
+      body.appendChild(tr);
+    });
+    document.getElementById('wsArchived').classList.remove('hidden');
+  });
+  </script>
+  <?php endif; ?>
+
   <script nonce="<?= e(csp_nonce()) ?>">
   document.addEventListener('DOMContentLoaded', () => {
     const { apiPost, streamPost, toast } = window.Nebula;

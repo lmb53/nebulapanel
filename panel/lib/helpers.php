@@ -469,7 +469,7 @@ function attachment_header(string $filename): string
  * multi-gigabyte download would otherwise block every other request from the
  * same browser session until the transfer finished.
  */
-function send_download(string $abs, string $type): void
+function send_download(string $abs, string $type, bool $inline = false): void
 {
     if (session_status() === PHP_SESSION_ACTIVE) {
         session_write_close();
@@ -484,7 +484,14 @@ function send_download(string $abs, string $type): void
         exit('Not found');
     }
     header('Content-Type: ' . $type);
-    header('Content-Disposition: ' . attachment_header(basename($abs)));
+    if ($inline) {
+        // Preview only: no script, no navigation, no frames.
+        header('Content-Disposition: inline');
+        header("Content-Security-Policy: default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; sandbox");
+        header('Cache-Control: private, max-age=60');
+    } else {
+        header('Content-Disposition: ' . attachment_header(basename($abs)));
+    }
     header('Accept-Ranges: bytes');
     $start = 0;
     $end = $size !== false ? $size - 1 : -1;

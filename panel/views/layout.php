@@ -181,7 +181,7 @@ function nav_link(string $route, string $icon, string $label, string $active): s
 <!-- Command palette -->
 <div class="cmdk-overlay hidden" id="cmdk">
   <div class="cmdk" aria-label="Search pages">
-    <div class="cmdk-input"><i data-lucide="search" aria-hidden="true" style="width:16px;height:16px;color:var(--text-tertiary)"></i><input id="cmdkInput" placeholder="Search pages and features…" autocomplete="off" aria-label="Search pages and features" aria-controls="cmdkList"></div>
+    <div class="cmdk-input"><i data-lucide="search" aria-hidden="true" style="width:16px;height:16px;color:var(--text-tertiary)"></i><input id="cmdkInput" placeholder="Search pages, websites, mailboxes, databases…" autocomplete="off" aria-label="Search pages and features" aria-controls="cmdkList"></div>
     <div class="cmdk-list" id="cmdkList" role="listbox">
       <?php foreach (nebula_modules() as $route => $m): ?>
         <?php if (!role_route_allowed($route)) continue; ?>
@@ -193,7 +193,7 @@ function nav_link(string $route, string $icon, string $label, string $active): s
       <div class="cmdk-item" role="option" data-href="<?= e(url('account')) ?>" data-label="my account password profile sign in">
         <i data-lucide="user-round-cog" aria-hidden="true"></i><span>My account</span><span class="cmdk-section">Account</span>
       </div>
-      <div class="cmdk-empty hidden" id="cmdkEmpty">No pages match your search.</div>
+      <div class="cmdk-empty hidden" id="cmdkEmpty">Nothing matches your search.</div>
     </div>
   </div>
 </div>

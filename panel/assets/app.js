@@ -1130,8 +1130,31 @@
     const input = document.getElementById('cmdkInput');
     const list = document.getElementById('cmdkList');
     const empty = document.getElementById('cmdkEmpty');
-    const items = Array.from(list.querySelectorAll('.cmdk-item'));
+    let items = Array.from(list.querySelectorAll('.cmdk-item'));
     let sel = 0;
+    // Websites, zones, mailboxes, databases and stacks join the page list the
+    // first time the palette opens.
+    let entitiesLoaded = false;
+    async function loadEntities() {
+      if (entitiesLoaded) return;
+      entitiesLoaded = true;
+      let res;
+      try { res = await apiGet('search', { background: true }); } catch (e) { return; }
+      (res.items || []).forEach((entry) => {
+        const it = document.createElement('div');
+        it.className = 'cmdk-item'; it.setAttribute('role', 'option');
+        it.dataset.href = entry.href; it.dataset.label = entry.label;
+        const icon = document.createElement('i'); icon.dataset.lucide = /^[a-z0-9-]+$/.test(entry.icon || '') ? entry.icon : 'circle'; icon.setAttribute('aria-hidden', 'true');
+        const title = document.createElement('span'); title.textContent = entry.title;
+        const section = document.createElement('span'); section.className = 'cmdk-section'; section.textContent = entry.section;
+        it.append(icon, title, section);
+        it.addEventListener('click', () => (window.location.href = it.dataset.href));
+        list.insertBefore(it, empty);
+      });
+      if (window.lucide) lucide.createIcons();
+      items = Array.from(list.querySelectorAll('.cmdk-item'));
+      filter(input.value);
+    }
     const visible = () => items.filter((it) => !it.classList.contains('hidden'));
     function setSel(i) {
       const vis = visible();
@@ -1156,6 +1179,7 @@
       input.value = '';
       filter('');
       input.focus();
+      loadEntities();
     }
     function close() {
       overlay.classList.add('hidden');
