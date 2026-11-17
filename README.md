@@ -64,36 +64,36 @@ the URL (runtime state is migrated), or use a fixed name. Options (env vars):
 | Feature | Status |
 |---|---|
 | Token-gated first-run setup (Argon2id where available) + login/logout | ✅ |
-| **Two-factor sign-in** — authenticator-app codes (TOTP: Google Authenticator, 1Password, Authy…) with QR setup, ten single-use recovery codes, replay protection, and an administrator reset | ✅ |
+| **Two-factor sign-in** — authenticator-app codes (TOTP: Google Authenticator, 1Password, Authy…) with QR setup, ten single-use recovery codes, replay protection, and an administrator reset; **passkeys** (Touch ID, Windows Hello, phones, security keys) as a faster second factor | ✅ |
 | Session idle/absolute expiry, rotation, CSRF, account/IP throttling, structured audit | ✅ |
 | **Active sessions** — see every browser signed in to your account (device, address, last activity) and sign out one or all others | ✅ |
 | **Dashboard** — live charts plus 6-hour / 24-hour / 7-day CPU, memory and disk history, load, services, top processes and actionable health alerts (including SSL certificates about to expire) | ✅ |
-| **Alerts** — email or webhook (Slack, Discord, ntfy, generic JSON) notifications for low disk, failed services, old or failing backups, expiring certificates and panel problems; notifies on change, with reminders and recovery messages | ✅ |
+| **Alerts** — email or webhook (Slack, Discord, ntfy, generic JSON) notifications for low disk or inodes on any filesystem, memory and swap pressure, failed services, old or failing (including off-site) backups, expiring certificates and panel problems; notifies on change after a configurable delay, with reminders and recovery messages; email through local sendmail or an SMTP relay | ✅ |
 | **Services** — tabbed per-instance manager, virtual hosts, logs, start / stop / restart + boot state | ✅ sudo |
 | **Install Apps** — install apache2/redis/mariadb/fail2ban/ModSecurity + extra PHP versions with live output, each shown with its official brand logo. Every install runs in its own systemd unit, so a closed tab, a timeout or a PHP-FPM restart cannot leave dpkg half-configured; an interrupted dpkg is repaired automatically before the next install. Apache runs as a loopback backend (127.0.0.1:8080) beside Nginx | ✅ sudo/helper |
-| **Updates** — list upgradable, update one/all, with persistent streaming apt output | ✅ sudo |
+| **Updates** — list upgradable, update one/all, full upgrade with a preview of added/removed packages, autoremove, and **automatic security updates** (unattended-upgrades, optional reboot time) | ✅ sudo |
 | **Users & RBAC** — panel accounts with administrator/operator/developer/auditor roles, plus system-account inventory | ✅ |
 | **SSH Keys** — list/add/revoke authorized keys for interactive users | ✅ helper |
 | **Cron** — administrator-only CRUD on the panel account's crontab | ✅ |
 | **Security** — UFW status, enable/disable, add/delete rules, plus a **Fail2Ban** tab showing every jail's counters, the live banned-IP list with one-click unban, manual ban, and recent ban activity, and a **ModSecurity** tab (OWASP Core Rule Set WAF for nginx: blocking / detection-only / off, with nginx-validated switching and recent findings) | ✅ sudo/helper |
 | **Logs** — journalctl per-unit + `/var/log` file tails | ✅ |
-| **Websites** — immutable IDs, confined roots, per-site Unix/FPM identity, usage, TLS, and credential-free HTTPS Git deploy; deletion archives to root-owned trash. Each site has its own page with Overview, Domain & DNS, SSL, PHP, Databases, Files and Backups tabs | ✅ helper |
+| **Websites** — immutable IDs, confined roots, per-site Unix/FPM identity, usage, TLS, Git deploy (HTTPS or SSH deploy key, push-to-deploy webhook), www/redirect and per-site PHP limits, **scheduled tasks** run as the site user, chrooted **SFTP** access, and **clone to a staging domain** with database copies; deletion takes a final backup, then archives to root-owned trash. Each site has its own page with Overview, Domain & DNS, SSL, PHP, Databases, Files, Scheduled tasks and Backups tabs | ✅ helper |
 | **Domains + DNS** — authoritative BIND zones and record CRUD for panel-managed domains | ✅ helper |
 | **SSL** — list / issue / renew / delete certbot certificates + validated custom PEM upload | ✅ helper |
 | **PHP** — per-version ini settings (memory_limit, upload size…) + modules | ✅ helper |
-| **Databases** — website-owned MariaDB/MySQL DB/user CRUD, metadata and per-database quick access | ✅ sudo |
+| **Databases** — website-owned MariaDB/MySQL DB/user CRUD, passwords, read-only/full grants, export/import (chunked upload) and per-database quick access | ✅ sudo |
 | **phpMyAdmin** — one-click install + password-free, short-lived signed per-database signon | ✅ helper |
 | **Email** — one-click Postfix + Dovecot + OpenDKIM mail server, virtual mailboxes & aliases, per-domain **DKIM** keys, copy-ready **MX / SPF / DKIM / DMARC** records (auto-publish to panel DNS zones), a **statistics dashboard** (sent/received/bounced/rejected, per-day chart, top senders & recipients, mailbox storage) and one-click **Roundcube** webmail | ✅ helper |
 | **Docker** — create/control containers with their published ports, view container logs, pull/remove/prune images, manage volumes and networks, **Compose stacks (editable docker-compose.yml, deploy/pull/restart/logs, one-click Compose install when the CLI plugin is missing)** and a one-click **App Store** of popular self-hosted apps with official brand logos | ✅ sudo |
-| **File Manager** — expandable tree previews, browse/pinned/recent, recoverable trash (restore, delete permanently, empty), create **and extract** archives (.zip, .tar, .tar.gz, .tar.bz2, .tar.xz — upload a zip and unpack it into `public/`), popup multi-tab editor, ownership, permissions and drag-drop upload | ✅ helper |
+| **File Manager** — expandable tree previews, browse/pinned/recent, recoverable trash (restore, delete permanently, empty), create **and extract** archives (.zip, .tar, .tar.gz, .tar.bz2, .tar.xz — upload a zip and unpack it into `public/`), popup multi-tab editor, search, image preview, ownership, permissions and resumable drag-drop upload of files and folders up to 1 GB | ✅ helper |
 | **Diagnostics** — environment + per-privilege sudo checks with fix hints | ✅ |
-| **Backups** — website files plus a `mysqldump` of every linked database, **restore** (into the original site or a re-created one, with an automatic safety copy first), nightly or weekly **schedule** with keep-the-last-N retention, verify / download / delete | ✅ helper |
+| **Backups** — website files plus a `mysqldump` of every linked database, **restore** (into the original site or a re-created one, with an automatic safety copy first), nightly or weekly **schedule** with keep-the-last-N retention, **server configuration** backups, **encrypted off-site copies** to S3-compatible storage, verify / download / delete | ✅ helper |
 | **Terminal** — audited non-interactive command runner | ✅ |
 | **System Info** — OS, kernel, CPU, RAM, disk, network, plus **Restart server / Shut down** for administrators (also in the account menu; refused while packages are installing unless confirmed) | ✅ helper |
 | **Panel updates** — self-update from GitHub (check + apply), as the *Nebula Panel* tab of **Updates** | ✅ |
 | **Settings** — panel name, session timeout, health thresholds, alerts · **My account** — password, two-factor sign-in and active sessions for every role · searchable, filterable **audit log** with CSV/JSON export under **Security** | ✅ |
 | **Notifications** — live operational inbox, top-bar dropdown, mark-read and delete state | ✅ |
-| **Bearer API** — named, role-bound, scoped, expiring, optionally IP-bound tokens under `api/v1` | ✅ |
+| **Bearer API** — named, scoped, expiring, optionally IP-bound tokens under `api/v1`, owned by the person who creates them (never above their role) | ✅ |
 
 Rows marked **sudo** are routed through the root-owned validating helper; no
 tool receives a direct wildcard sudo grant. The panel is modular: each feature is `lib/mod_<x>.php` +
@@ -132,17 +132,20 @@ On phones the sidebar becomes a labelled drawer:
 
 ## Development checks
 
-Run the cross-platform smoke test and syntax checks before deploying:
+Run every suite before deploying (it exits non-zero if any fails and points to
+the failing suite's log):
 
 ```bash
-php tests/smoke.php
-php tests/security.php
-php tests/robustness.php
-php tests/session-lifecycle.php
-php tests/http-flows.php   # end-to-end browser flows against PHP's built-in server
-find panel -name '*.php' -print0 | xargs -0 -n1 php -l
-bash -n install.sh panel/bin/nebula-helper
+bash tests/run-all.sh
 ```
+
+It runs the smoke, security, robustness, session and end-to-end HTTP suites
+(the last against PHP's built-in server), the helper contract and sandbox
+tests, ShellCheck at warning level, and JavaScript syntax checks. CI also lints
+every PHP file and checks that the icon subset is current
+(`node tools/build-icons.js` after adding an icon). Do not leave
+`/usr/local/bin/nebula-helper` installed on a development machine while testing:
+the suites then exercise the real helper.
 
 ## Repairing an existing installation
 
@@ -256,7 +259,9 @@ The installer adds a systemd timer, `nebula-panel-scheduler.timer`, that runs
 - runs the **backup schedule** when its slot has passed (Backups → Schedule:
   nightly or weekly at a chosen hour, all or selected websites, with or
   without databases) and then deletes scheduled archives beyond *keep the
-  last N* per website — manual and pre-restore safety copies are never pruned;
+  last N* per website — manual and pre-restore safety copies are never pruned.
+  It can also back up the server configuration, and copies new archives
+  off-site when Backups → Off-site copies is on;
 - evaluates the dashboard health checks and sends **alerts** (Settings →
   Alerts) when something changes: a new problem, a warning that becomes
   critical, a reminder while it persists, and a recovery message.
@@ -275,7 +280,8 @@ selected database. To recover a deleted website, re-create it with the same
 domain and restore the archive into it.
 
 **Alert email** is sent through the server's local mail system (`sendmail`,
-which the Email page installs); without one, use a webhook. ntfy topics take a
+which the Email page installs) or through an SMTP relay set under Settings →
+Alerts; otherwise use a webhook. ntfy topics take a
 plain topic URL such as `https://ntfy.sh/my-server-alerts`.
 
 **Two-factor sign-in** is per account under My account. An administrator can
@@ -385,7 +391,7 @@ dedicated `nebula-panel` process. Notes:
 ## Still to build (natural next steps)
 
 - **Websites** — staged releases, rollback, wildcard certificates, Apache mode
-- **Recovery** — encrypted off-host backup destinations (S3/SFTP) and tested drills
-- **Authentication** — passkeys and step-up checks
+- **Recovery** — SFTP backup destinations, mailbox backups and tested drills
+- **Authentication** — passwordless passkey sign-in and step-up checks
 - **Live PTY terminal** — real interactive shell (needs a WebSocket sidecar)
 ```
