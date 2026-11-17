@@ -113,7 +113,7 @@ function db_error(string $out, int $code): string
         // that combination means the socket path or bind address is wrong.
         return $status['ready']
             ? 'Could not connect to the database server even though ' . ($status['unit'] ?? 'it')
-              . ' is running. Check its socket path and bind-address, then retry. Server said: ' . $raw
+              . ' is running. Check its socket path and bind-address in the server configuration, then retry.'
             : $status['message'];
     }
     if (stripos($raw, 'ERROR 1045') !== false || stripos($raw, 'Access denied') !== false) {
