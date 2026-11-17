@@ -28,12 +28,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         );
     } elseif ($action === 'drop_user') {
         $res = db_drop_user((string) ($body['user'] ?? ''), (string) ($body['host'] ?? ''));
+    } elseif ($action === 'user_password') {
+        $res = db_user_password((string) ($body['user'] ?? ''), (string) ($body['host'] ?? ''), (string) ($body['password'] ?? ''));
+    } elseif ($action === 'grant') {
+        $res = db_grant((string) ($body['user'] ?? ''), (string) ($body['host'] ?? ''), (string) ($body['database'] ?? ''), (string) ($body['level'] ?? ''));
+    } elseif ($action === 'export') {
+        $res = db_export((string) ($body['name'] ?? ''), stream_output_callback());
+    } elseif ($action === 'import') {
+        $res = db_import((string) ($body['name'] ?? ''), (string) ($body['staged'] ?? ''), stream_output_callback());
     } elseif ($action === 'link_website') {
         $res = db_link_website((string) ($body['database'] ?? ''), (string) ($body['website'] ?? ''));
     } else {
         $res = ['ok' => false, 'error' => 'Unknown action.'];
     }
-    json_out($res, $res['ok'] ? 200 : 400);
+    action_out($res);
 }
 
 $dbs = db_list();
@@ -51,13 +59,13 @@ foreach ($databases as &$database) {
     $database['website'] = (string) ($links[$name] ?? '');
 }
 unset($database);
+// Every ordinary account, including ones without grants yet; system and
+// panel-internal accounts (root, mariadb.sys, phpMyAdmin/import helpers) are hidden.
 $visibleUsers = [];
-foreach ($databases as $database) {
-    foreach (($database['users'] ?? []) as $grantee) {
-        if (preg_match("/^([^']+)'@'([^']+)$/", (string) $grantee, $match)) {
-            $visibleUsers[$match[1] . '@' . $match[2]] = ['user' => $match[1], 'host' => $match[2]];
-        }
-    }
+foreach ((db_users()['users'] ?? []) as $account) {
+    $user = (string) ($account['user'] ?? '');
+    if ($user === '' || db_user_reserved($user) || preg_match('/^nebula_(pma|imp)_/', $user)) { continue; }
+    $visibleUsers[$user . '@' . $account['host']] = ['user' => $user, 'host' => (string) $account['host']];
 }
 require_once APP_ROOT . '/lib/mod_sites.php';
 json_out([

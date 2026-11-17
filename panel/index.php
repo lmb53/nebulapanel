@@ -243,6 +243,19 @@ if ($route === 'file-download') {
     return;
 }
 
+if ($route === 'db-export-download') {
+    require_capability('databases.manage');
+    require APP_ROOT . '/lib/mod_db.php';
+    $abs = db_export_resolve((string) ($_GET['file'] ?? ''));
+    if ($abs === null) {
+        http_response_code(404);
+        exit('Not found');
+    }
+    audit('db.export.download', basename($abs));
+    send_download($abs, 'application/gzip');
+    return;
+}
+
 if ($route === 'backup-download') {
     require_capability('backups.manage');
     require APP_ROOT . '/lib/mod_backups.php';

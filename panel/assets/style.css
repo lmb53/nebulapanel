@@ -993,3 +993,6 @@ a.service-row{color:inherit}a.service-row:hover{background:var(--bg-surface-hove
 .bulk-bar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:8px 12px;margin-bottom:8px;border-radius:var(--radius-md);background:var(--accent-soft);border:1px solid color-mix(in srgb,var(--accent) 30%,transparent)}
 .bulk-bar .bulk-count{font-weight:600;font-size:13px;margin-right:auto}
 .data-table th.c-check,.data-table td.c-check{width:36px;padding-right:0}
+.access-badge{gap:4px;margin:0 4px 4px 0}
+.access-revoke{border:0;background:none;color:inherit;opacity:.6;cursor:pointer;padding:0 2px;font-size:13px;line-height:1}
+.access-revoke:hover,.access-revoke:focus-visible{opacity:1;color:var(--red-400)}

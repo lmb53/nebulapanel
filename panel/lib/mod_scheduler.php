@@ -101,7 +101,7 @@ function scheduler_housekeeping(int $now): array
     require_once APP_ROOT . '/lib/mod_jobs.php';
     require_once APP_ROOT . '/lib/files.php';
     $days = trash_retention_days();
-    $result = ['ok' => true, 'ran' => true, 'jobs_pruned' => jobs_prune($now), 'uploads_pruned' => fm_upload_prune(), 'trash_purged' => 0, 'pre_restore_pruned' => 0];
+    $result = ['ok' => true, 'ran' => true, 'jobs_pruned' => jobs_prune($now), 'uploads_pruned' => fm_upload_prune(), 'exports_pruned' => (require_once APP_ROOT . '/lib/mod_db.php') ? db_exports_prune() : 0, 'trash_purged' => 0, 'pre_restore_pruned' => 0];
     foreach (fm_trash_list() as $item) {
         if ($now - (int) $item['deleted_at'] > $days * 86400 && !empty(fm_trash_purge((string) $item['id'])['ok'])) {
             $result['trash_purged']++;

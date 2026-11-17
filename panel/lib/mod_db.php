@@ -59,6 +59,16 @@ function db_server_status(): array
             $state = 'stopped';
         }
     }
+    // No systemd answer (containers, other init systems): a listening server
+    // socket is proof enough that the server runs.
+    if ($state !== 'ready') {
+        foreach (['/run/mysqld/mysqld.sock', '/var/run/mysqld/mysqld.sock'] as $socket) {
+            if (@filetype($socket) === 'socket' && ($probe = @stream_socket_client('unix://' . $socket, $errno, $errstr, 1))) {
+                fclose($probe);
+                return ['state' => 'ready', 'unit' => $unit ?? 'mariadb', 'ready' => true, 'message' => ''];
+            }
+        }
+    }
     if ($unit === null && $serverInstalled) {
         // Present on disk but systemd knows nothing about it.
         $unit = 'mariadb';
@@ -380,5 +390,80 @@ function db_drop_user(string $user, string $host): array
         return ['ok' => false, 'error' => db_error($o, $c)];
     }
     audit('db.user.drop', $user . '@' . $host);
+    return ['ok' => true];
+}
+
+/** Change a database user's password. */
+function db_user_password(string $user, string $host, string $password): array
+{
+    if (!db_ident_ok($user) || db_user_reserved($user)) { return ['ok' => false, 'error' => 'Invalid user name.']; }
+    if (!db_host_ok($host)) { return ['ok' => false, 'error' => 'Invalid host.']; }
+    if (($passwordError = db_password_error($password)) !== null) { return ['ok' => false, 'error' => $passwordError]; }
+    [$c, $o] = db_action('user-password', [$user, $host, base64_encode($password)]);
+    if ($c !== 0) { return ['ok' => false, 'error' => db_error($o, $c)]; }
+    audit('db.user.password', $user . '@' . $host);
+    return ['ok' => true];
+}
+
+/** Set a user's access to one database: all, read (SELECT/SHOW VIEW) or none. */
+function db_grant(string $user, string $host, string $database, string $level): array
+{
+    if (!db_ident_ok($user) || db_user_reserved($user)) { return ['ok' => false, 'error' => 'Invalid user name.']; }
+    if (!db_host_ok($host)) { return ['ok' => false, 'error' => 'Invalid host.']; }
+    if (!db_ident_ok($database) || in_array($database, SYSTEM_DBS, true)) { return ['ok' => false, 'error' => 'Invalid database name.']; }
+    if (!in_array($level, ['all', 'read', 'none'], true)) { return ['ok' => false, 'error' => 'Choose full, read-only or no access.']; }
+    [$c, $o] = db_action('grant', [$user, $host, $database, $level]);
+    if ($c !== 0) { return ['ok' => false, 'error' => db_error($o, $c)]; }
+    audit('db.grant', $user . '@' . $host . ' ' . $database . ' ' . $level);
+    return ['ok' => true];
+}
+
+function db_exports_dir(): string
+{
+    return DATA_DIR . '/db-exports';
+}
+
+/** Dump a database (gzip) into data/db-exports for download. */
+function db_export(string $database, ?callable $onOutput = null): array
+{
+    if (!db_ident_ok($database) || in_array($database, SYSTEM_DBS, true)) { return ['ok' => false, 'error' => 'Invalid database name.']; }
+    $name = $database . '-' . date('Ymd-His') . '.sql.gz';
+    if ($onOutput) { $onOutput("==> Exporting $database\n", 'stdout'); }
+    [$c, $o] = db_action('export', [$database, $name], 3600);
+    if ($c !== 0) { return ['ok' => false, 'error' => db_error($o, $c)]; }
+    audit('db.export', $database);
+    return ['ok' => true, 'file' => $name, 'url' => url('db-export-download', ['file' => $name])];
+}
+
+/** Resolve an export file name to its path (or null). */
+function db_export_resolve(string $file): ?string
+{
+    if (!preg_match('/^[A-Za-z0-9_]{1,64}-[0-9]{8}-[0-9]{6}\.sql\.gz$/', $file)) { return null; }
+    $path = db_exports_dir() . '/' . $file;
+    return is_file($path) && !is_link($path) ? $path : null;
+}
+
+/** Remove exports older than a day (they exist only to be downloaded). */
+function db_exports_prune(): int
+{
+    $removed = 0;
+    foreach (glob(db_exports_dir() . '/*.sql.gz') ?: [] as $file) {
+        if (time() - (int) @filemtime($file) > 86400 && @unlink($file)) { $removed++; }
+    }
+    return $removed;
+}
+
+/** Import a staged dump (uploaded through the chunked uploader) into a database. */
+function db_import(string $database, string $stagedId, ?callable $onOutput = null): array
+{
+    if (!db_ident_ok($database) || in_array($database, SYSTEM_DBS, true)) { return ['ok' => false, 'error' => 'Invalid database name.']; }
+    if (!preg_match('/^[a-f0-9]{32}$/', $stagedId) || !is_file(DATA_DIR . '/file-staging/' . $stagedId)) {
+        return ['ok' => false, 'error' => 'The uploaded dump was not found. Upload it again.'];
+    }
+    if ($onOutput) { $onOutput("==> Importing into $database (as an account limited to this database)\n", 'stdout'); }
+    [$c, $o] = db_action('import', [$database, realpath(DATA_DIR . '/file-staging/' . $stagedId)], 3600);
+    @unlink(DATA_DIR . '/file-staging/' . $stagedId);
+    if ($c !== 0) { return ['ok' => false, 'error' => db_error($o, $c)]; }
+    audit('db.import', $database);
     return ['ok' => true];
 }

@@ -1181,15 +1181,25 @@ function fm_upload_chunk(array $p, string $chunk): array
     if (empty($config['allow_php_uploads']) && fm_executable_upload_name($name)) {
         return ['ok' => false, 'error' => '“' . $name . '” was not uploaded: PHP files, .htaccess and .user.ini uploads are disabled by policy.'];
     }
-    $base = fm_resolve($relDir);
-    if ($base === null || !is_dir($base)) { return ['ok' => false, 'error' => 'Directory not found or not allowed.']; }
+    // purpose=staging: keep the file in the panel's private staging area and
+    // hand back its id (database imports); nothing is written below FM_ROOT.
+    $staging = ($p['purpose'] ?? '') === 'staging';
+    if ($staging) {
+        if (!preg_match('/\.(sql|sql\.gz|gz)$/i', $name)) { return ['ok' => false, 'error' => 'Upload a .sql or .sql.gz file.']; }
+        $base = DATA_DIR;
+        $relDir = '';
+        $subdir = '';
+    } else {
+        $base = fm_resolve($relDir);
+        if ($base === null || !is_dir($base)) { return ['ok' => false, 'error' => 'Directory not found or not allowed.']; }
+    }
     $meta = @json_decode((string) @file_get_contents($paths['meta']), true);
     $identity = ['uid' => (int) ($_SESSION['uid'] ?? 0), 'name' => $name, 'dir' => $relDir, 'subdir' => $subdir, 'total' => $total];
     if ($offset === 0 && !is_array($meta)) {
         $free = @disk_free_space($base);
         if ($free !== false && $free < $total + 32 * 1024 * 1024) { return ['ok' => false, 'error' => 'Not enough free disk space for this upload.']; }
         $target = $base . '/' . trim(str_replace('\\', '/', $subdir), '/') . '/' . $name;
-        if (!$overwrite && (file_exists($target) || is_link($target))) {
+        if (!$staging && !$overwrite && (file_exists($target) || is_link($target))) {
             return ['ok' => false, 'conflict' => true, 'name' => $name, 'error' => 'A file with that name already exists.'];
         }
         $meta = $identity + ['created' => time()];
@@ -1212,6 +1222,12 @@ function fm_upload_chunk(array $p, string $chunk): array
     $have += strlen($chunk);
     if ($have < $total) {
         return ['ok' => true, 'done' => false, 'received' => $have];
+    }
+    if ($staging) {
+        $staged = bin2hex(random_bytes(16));
+        if (!@rename($paths['data'], DATA_DIR . '/file-staging/' . $staged)) { fm_upload_abort($paths); return ['ok' => false, 'error' => 'Could not store the upload.']; }
+        @unlink($paths['meta']);
+        return ['ok' => true, 'done' => true, 'received' => $have, 'staged' => $staged];
     }
     // Complete: create any folders from a folder upload, then install.
     $dir = fm_ensure_subdirs($base, $subdir);
