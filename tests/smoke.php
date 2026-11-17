@@ -209,7 +209,7 @@ $check(strpos($helperSource, 'HOSTFQDN="${1:-}"') !== false
     && strpos($helperSource, 'certbot "${CERTBOT_ARGS[@]}"') !== false
     && strpos($helperSource, 'useradd --system -g vmail') !== false,
     'mail setup does not preflight an explicit hostname/certificate or create a portable system user');
-$check(strpos($helperSource, 'read -r email hash || [[ -n "$email" ]]') !== false && strpos($helperSource, 'read -r d || [[ -n "$d" ]]') !== false, 'mail-apply drops the final line without a trailing newline (single-mailbox login bug)');
+$check(strpos($helperSource, 'read -r email hash quota || [[ -n "$email" ]]') !== false && strpos($helperSource, 'read -r d || [[ -n "$d" ]]') !== false, 'mail-apply drops the final line without a trailing newline (single-mailbox login bug)');
 $check(function_exists('mail_webmail_install') && function_exists('mail_webmail_remove') && function_exists('mail_webmail_installed'), 'webmail functions are missing');
 $snappy = mail_webmail_install('snappymail');
 $check(empty($snappy['ok']) && stripos((string) ($snappy['error'] ?? ''), 'roundcube') !== false, 'SnappyMail is still installable');
