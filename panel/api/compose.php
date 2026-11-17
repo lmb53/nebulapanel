@@ -33,25 +33,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $body = read_json_body();
     $action = (string) ($body['action'] ?? '');
     $name = (string) ($body['name'] ?? '');
-    $streaming = ($_GET['stream'] ?? '') === '1';
-    $emit = null;
-    if ($streaming) {
-        stream_json_start();
-        stream_json_event(['type' => 'start']);
-        $emit = static function (string $text, string $channel): void {
-            stream_json_event(['type' => 'output', 'channel' => $channel, 'text' => $text]);
-        };
-    }
+    // Starts the NDJSON progress stream when ?stream=1 (or in a background job).
+    $emit = stream_output_callback();
 
     // Everything except installing Compose itself needs a working Compose CLI.
     // Report *why* it is missing rather than a bare "not available".
     if ($action !== 'install-compose' && !compose_available()) {
         $res = ['ok' => false, 'error' => compose_availability()['reason']];
-        if ($streaming) {
-            stream_json_event(['type' => 'result', 'result' => $res]);
-            exit;
-        }
-        json_out($res, 400);
+        action_out($res);
     }
 
     switch ($action) {
@@ -102,11 +91,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $res = ['ok' => false, 'error' => 'Unknown action.'];
     }
 
-    if ($streaming) {
-        stream_json_event(['type' => 'result', 'result' => $res]);
-        exit;
-    }
-    json_out($res, !empty($res['ok']) ? 200 : 400);
+    action_out($res);
 }
 
 require_capability('docker.manage');

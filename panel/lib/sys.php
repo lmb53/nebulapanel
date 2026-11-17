@@ -28,70 +28,10 @@ function terminate_command_process($proc, array $status): void
     @proc_terminate($proc, 9);
 }
 
+/** Run a command and capture its output (bounded at 2 MB): [exit code, stdout, stderr]. */
 function run_cmd(string $cmd, int $timeout = 15): array
 {
-    if (!function_exists('proc_open')) {
-        return [127, '', 'proc_open disabled'];
-    }
-    $desc = [1 => ['pipe', 'w'], 2 => ['pipe', 'w']];
-    $proc = @proc_open(command_launch_spec($cmd), $desc, $pipes);
-    if (!is_resource($proc)) {
-        return [127, '', 'could not start process'];
-    }
-    stream_set_blocking($pipes[1], false);
-    stream_set_blocking($pipes[2], false);
-    $out = '';
-    $err = '';
-    $maxBytes = 2 * 1024 * 1024;
-    $truncated = false;
-    $timedOut = false;
-    $start = microtime(true);
-    $capturedBytes = 0;
-    $append = static function (string &$target, string $chunk) use ($maxBytes, &$capturedBytes, &$truncated): void {
-        $left = $maxBytes - $capturedBytes;
-        if ($left <= 0) {
-            $truncated = true;
-            return;
-        }
-        if (strlen($chunk) > $left) {
-            $target .= substr($chunk, 0, $left);
-            $capturedBytes += $left;
-            $truncated = true;
-            return;
-        }
-        $target .= $chunk;
-        $capturedBytes += strlen($chunk);
-    };
-    $status = ['running' => true, 'exitcode' => -1];
-    do {
-        $append($out, (string) stream_get_contents($pipes[1]));
-        $append($err, (string) stream_get_contents($pipes[2]));
-        $status = proc_get_status($proc);
-        if (!$status['running']) {
-            break;
-        }
-        if (microtime(true) - $start >= max(1, $timeout)) {
-            $timedOut = true;
-            terminate_command_process($proc, $status);
-            break;
-        }
-        $readable = [$pipes[1], $pipes[2]];
-        $write = null; $except = null;
-        @stream_select($readable, $write, $except, 0, 200000);
-    } while (true);
-    $append($out, (string) stream_get_contents($pipes[1]));
-    $append($err, (string) stream_get_contents($pipes[2]));
-    fclose($pipes[1]);
-    fclose($pipes[2]);
-    $closeCode = proc_close($proc);
-    $code = $timedOut ? 124 : (($status['exitcode'] ?? -1) >= 0 ? $status['exitcode'] : $closeCode);
-    if ($timedOut) {
-        $err .= ($err === '' ? '' : "\n") . 'Command timed out after ' . max(1, $timeout) . ' seconds.';
-    }
-    if ($truncated) {
-        $err .= ($err === '' ? '' : "\n") . 'Command output was truncated at 2 MB.';
-    }
-    return [$code, $out, $err];
+    return run_cmd_stream($cmd, static function (): void {}, $timeout);
 }
 
 /**

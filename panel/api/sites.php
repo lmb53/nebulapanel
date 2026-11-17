@@ -7,15 +7,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     csrf_check();
     $body = read_json_body();
     $action = (string) ($body['action'] ?? '');
-    $streaming = ($_GET['stream'] ?? '') === '1';
-    $emit = null;
-    if ($streaming) {
-        stream_json_start();
-        stream_json_event(['type' => 'start']);
-        $emit = static function (string $text, string $channel): void {
-            stream_json_event(['type' => 'output', 'channel' => $channel, 'text' => $text]);
-        };
-    }
+    // Starts the NDJSON progress stream when ?stream=1 (or in a background job).
+    $emit = stream_output_callback();
     if ($action === 'create') {
         require_capability('websites.manage');
         $res = site_create(
@@ -24,7 +17,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         );
     } elseif ($action === 'delete') {
         require_capability('websites.manage');
-        $res = site_delete((string) ($body['domain'] ?? ''), !empty($body['drop_databases']), $emit ?? stream_output_callback());
+        $res = site_delete((string) ($body['domain'] ?? ''), !empty($body['drop_databases']), $emit);
     } elseif ($action === 'ssl') {
         require_capability('websites.manage');
         $res = site_ssl(
@@ -46,7 +39,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $res = site_sftp((string) ($body['domain'] ?? ''), !empty($body['enable']), (string) ($body['password'] ?? ''));
     } elseif ($action === 'clone') {
         require_capability('websites.manage');
-        $res = site_clone((string) ($body['domain'] ?? ''), (string) ($body['new_domain'] ?? ''), !empty($body['databases']), $emit ?? stream_output_callback());
+        $res = site_clone((string) ($body['domain'] ?? ''), (string) ($body['new_domain'] ?? ''), !empty($body['databases']), $emit);
     } elseif ($action === 'settings') {
         require_capability('websites.manage');
         $res = site_save_settings((string) ($body['domain'] ?? ''), (array) ($body['settings'] ?? []));
@@ -59,11 +52,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     } else {
         $res = ['ok' => false, 'error' => 'Unknown action.'];
     }
-    if ($streaming) {
-        stream_json_event(['type' => 'result', 'result' => $res]);
-        exit;
-    }
-    json_out($res, $res['ok'] ? 200 : 400);
+    action_out($res);
 }
 
 if (($_GET['trash'] ?? '') === '1') {

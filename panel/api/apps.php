@@ -8,15 +8,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     require_capability('packages.manage');
     $b = read_json_body();
     $action = (string) ($b['action'] ?? '');
-    $streaming = ($_GET['stream'] ?? '') === '1';
-    $emit = null;
-    if ($streaming) {
-        stream_json_start();
-        stream_json_event(['type' => 'start']);
-        $emit = static function (string $text, string $channel): void {
-            stream_json_event(['type' => 'output', 'channel' => $channel, 'text' => $text]);
-        };
-    }
+    // Starts the NDJSON progress stream when ?stream=1 (or in a background job).
+    $emit = stream_output_callback();
     if ($action === 'install') {
         $res = app_install((string) ($b['key'] ?? ''), $emit);
     } elseif ($action === 'uninstall') {
@@ -26,11 +19,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     } else {
         $res = ['ok' => false, 'error' => 'Unknown action.'];
     }
-    if ($streaming) {
-        stream_json_event(['type' => 'result', 'result' => $res]);
-        exit;
-    }
-    json_out($res, $res['ok'] ? 200 : 400);
+    action_out($res);
 }
 
 $catalog = [];

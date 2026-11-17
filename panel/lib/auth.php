@@ -121,35 +121,99 @@ function panel_user_create(string $username, string $password, string $role): ar
     if (($passwordError = panel_password_error($password, $username)) !== null) return ['ok' => false, 'error' => $passwordError];
     if (!isset(panel_roles()[$role])) return ['ok' => false, 'error' => 'Invalid role.'];
     if ((panel_roles()[$role]['assignable'] ?? true) === false) return ['ok' => false, 'error' => 'That role cannot be assigned yet.'];
-    return with_panel_users_lock(function() use($username,$password,$role){
-        $users=panel_users();foreach($users as $user)if(strcasecmp((string)($user['username']??''),$username)===0)return ['ok'=>false,'error'=>'That username already exists.'];
-        $ids=array_map(fn($user)=>(int)($user['id']??0),$users);$users[]=['id'=>$ids?max($ids)+1:1,'username'=>$username,'hash'=>panel_password_hash($password),'role'=>$role,'enabled'=>true,'created'=>date('c'),'session_version'=>1];
-        if(!save_panel_users($users))return ['ok'=>false,'error'=>'Could not save the panel user.'];audit('panel_user.create',$username.' ('.$role.')');return ['ok'=>true];
+    return with_panel_users_lock(function () use ($username, $password, $role): array {
+        $users = panel_users();
+        foreach ($users as $user) {
+            if (strcasecmp((string) ($user['username'] ?? ''), $username) === 0) {
+                return ['ok' => false, 'error' => 'That username already exists.'];
+            }
+        }
+        $ids = array_map(fn($user) => (int) ($user['id'] ?? 0), $users);
+        $users[] = [
+            'id' => $ids ? max($ids) + 1 : 1,
+            'username' => $username,
+            'hash' => panel_password_hash($password),
+            'role' => $role,
+            'enabled' => true,
+            'created' => date('c'),
+            'session_version' => 1,
+        ];
+        if (!save_panel_users($users)) { return ['ok' => false, 'error' => 'Could not save the panel user.']; }
+        audit('panel_user.create', $username . ' (' . $role . ')');
+        return ['ok' => true];
     });
 }
 
 function panel_user_update(int $id, string $role, bool $enabled, string $password = ''): array
 {
     if (!isset(panel_roles()[$role])) return ['ok' => false, 'error' => 'Invalid role.'];
-    return with_panel_users_lock(function() use($id,$role,$enabled,$password){
-        foreach(panel_users() as $existing){if((int)($existing['id']??0)===$id&&($existing['role']??'')!==$role&&(panel_roles()[$role]['assignable']??true)===false)return ['ok'=>false,'error'=>'That role cannot be assigned yet.'];}
-        $users=panel_users();$found=false;foreach($users as &$user){if((int)($user['id']??0)!==$id)continue;if((int)($_SESSION['uid']??0)===$id&&(!$enabled||$role!=='admin'))return ['ok'=>false,'error'=>'You cannot disable or demote your own active administrator account.'];if($password!==''&&($passwordError=panel_password_error($password,(string)($user['username']??'')))!==null)return ['ok'=>false,'error'=>$passwordError];$changed=($user['role']??'')!==$role||(bool)($user['enabled']??true)!==$enabled||$password!=='';$user['role']=$role;$user['enabled']=$enabled;if($password!=='')$user['hash']=panel_password_hash($password);if($changed)$user['session_version']=max(1,(int)($user['session_version']??1))+1;$found=true;break;}unset($user);
-        if(!$found)return ['ok'=>false,'error'=>'Panel user not found.'];
+    return with_panel_users_lock(function () use ($id, $role, $enabled, $password): array {
+        $users = panel_users();
+        $found = false;
+        foreach ($users as &$user) {
+            if ((int) ($user['id'] ?? 0) !== $id) { continue; }
+            if (($user['role'] ?? '') !== $role && (panel_roles()[$role]['assignable'] ?? true) === false) {
+                return ['ok' => false, 'error' => 'That role cannot be assigned yet.'];
+            }
+            if ((int) ($_SESSION['uid'] ?? 0) === $id && (!$enabled || $role !== 'admin')) {
+                return ['ok' => false, 'error' => 'You cannot disable or demote your own active administrator account.'];
+            }
+            if ($password !== '' && ($passwordError = panel_password_error($password, (string) ($user['username'] ?? ''))) !== null) {
+                return ['ok' => false, 'error' => $passwordError];
+            }
+            $changed = ($user['role'] ?? '') !== $role || (bool) ($user['enabled'] ?? true) !== $enabled || $password !== '';
+            $user['role'] = $role;
+            $user['enabled'] = $enabled;
+            if ($password !== '') { $user['hash'] = panel_password_hash($password); }
+            // Signs the user out everywhere when their access or password changes.
+            if ($changed) { $user['session_version'] = max(1, (int) ($user['session_version'] ?? 1)) + 1; }
+            $found = true;
+            break;
+        }
+        unset($user);
+        if (!$found) { return ['ok' => false, 'error' => 'Panel user not found.']; }
         // A bearer token has no session account, so the self-demotion guard
         // above cannot protect the last administrator on its own.
-        if(!array_filter($users,fn($user)=>($user['role']??'')==='admin'&&!empty($user['enabled'])))return ['ok'=>false,'error'=>'At least one enabled administrator is required.'];
-        if(!save_panel_users($users))return ['ok'=>false,'error'=>'Could not save the panel user.'];
+        if (!array_filter($users, fn($user) => ($user['role'] ?? '') === 'admin' && !empty($user['enabled']))) {
+            return ['ok' => false, 'error' => 'At least one enabled administrator is required.'];
+        }
+        if (!save_panel_users($users)) { return ['ok' => false, 'error' => 'Could not save the panel user.']; }
         // Setting your own password here must not sign out the session that did it.
-        if((int)($_SESSION['uid']??0)===$id){foreach($users as $saved){if((int)($saved['id']??0)===$id){session_persist(['session_version'=>(int)$saved['session_version']]);break;}}}
-        audit('panel_user.update','id '.$id.' ('.$role.', '.($enabled?'enabled':'disabled').')');return ['ok'=>true];
+        if ((int) ($_SESSION['uid'] ?? 0) === $id) {
+            foreach ($users as $saved) {
+                if ((int) ($saved['id'] ?? 0) === $id) { session_persist(['session_version' => (int) $saved['session_version']]); break; }
+            }
+        }
+        audit('panel_user.update', 'id ' . $id . ' (' . $role . ', ' . ($enabled ? 'enabled' : 'disabled') . ')');
+        return ['ok' => true];
     });
 }
 
 function panel_user_delete(int $id): array
 {
     if ((int) ($_SESSION['uid'] ?? 0) === $id) return ['ok' => false, 'error' => 'You cannot delete your own active account.'];
-    return with_panel_users_lock(function() use($id){$users=panel_users();$next=array_values(array_filter($users,fn($user)=>(int)($user['id']??0)!==$id));if(count($next)===count($users))return ['ok'=>false,'error'=>'Panel user not found.'];$admins=array_filter($next,fn($user)=>($user['role']??'')==='admin'&&(!isset($user['enabled'])||$user['enabled']));if(!$admins)return ['ok'=>false,'error'=>'At least one enabled administrator is required.'];if(!save_panel_users($next))return ['ok'=>false,'error'=>'Could not save the panel users.'];audit('panel_user.delete','id '.$id);return ['ok'=>true];});
+    $res = with_panel_users_lock(function () use ($id): array {
+        $users = panel_users();
+        $next = array_values(array_filter($users, fn($user) => (int) ($user['id'] ?? 0) !== $id));
+        if (count($next) === count($users)) { return ['ok' => false, 'error' => 'Panel user not found.']; }
+        $admins = array_filter($next, fn($user) => ($user['role'] ?? '') === 'admin' && (!isset($user['enabled']) || $user['enabled']));
+        if (!$admins) { return ['ok' => false, 'error' => 'At least one enabled administrator is required.']; }
+        if (!save_panel_users($next)) { return ['ok' => false, 'error' => 'Could not save the panel users.']; }
+        audit('panel_user.delete', 'id ' . $id);
+        return ['ok' => true];
+    });
+    if (!empty($res['ok'])) {
+        // Their tokens already stop authenticating; remove them from the list too.
+        require_once APP_ROOT . '/lib/mod_api.php';
+        with_api_tokens_lock(static function () use ($id): array {
+            $tokens = api_tokens_load();
+            $kept = array_values(array_filter($tokens, static fn($t) => (int) ($t['owner_id'] ?? 0) !== $id));
+            return ['ok' => count($kept) === count($tokens) || api_tokens_save($kept)];
+        });
+    }
+    return $res;
 }
+
 
 function current_role(): string
 {
