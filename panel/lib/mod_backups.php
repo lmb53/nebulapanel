@@ -49,6 +49,7 @@ function backup_list(?string $siteId = null): array
             'databases' => $databases,
             'scheduled' => !empty($manifest['scheduled']),
             'kind' => (string) ($manifest['kind'] ?? (!empty($manifest['scheduled']) ? 'scheduled' : 'manual')),
+            'offsite_at' => (string) ($manifest['offsite_at'] ?? ''),
         ];
         if ($siteId !== null && $row['site_id'] !== $siteId) { continue; }
         $rows[] = $row;
@@ -217,6 +218,9 @@ function backup_restore(string $file, bool $restoreFiles, array $databases, ?str
     if ($abs === null) { return ['ok' => false, 'error' => 'Backup not found.']; }
     $name = basename($abs);
     $manifest = backup_manifest($name);
+    if (($manifest['kind'] ?? '') === 'system' || str_starts_with($name, 'system-')) {
+        return ['ok' => false, 'error' => 'Server configuration backups are restored by hand (see docs/operations.md); download the archive instead.'];
+    }
     $targetSiteId = $targetSiteId !== null && $targetSiteId !== '' ? $targetSiteId : (string) ($manifest['site_id'] ?? '');
     $site = backup_find_site($targetSiteId);
     if (!$site) {
@@ -275,7 +279,7 @@ function backup_schedule_file(): string
 function backup_schedule_defaults(): array
 {
     return ['enabled' => false, 'frequency' => 'daily', 'hour' => 2, 'weekday' => 0, 'keep' => 7,
-        'include_databases' => true, 'sites' => [], 'last_run' => 0, 'last_result' => null];
+        'include_databases' => true, 'include_system' => true, 'sites' => [], 'last_run' => 0, 'last_result' => null];
 }
 
 function backup_schedule(): array
@@ -304,7 +308,7 @@ function backup_schedule_save(array $input): array
     $enabled = (bool) ($input['enabled'] ?? false);
     $next = array_merge($current, [
         'enabled' => $enabled, 'frequency' => $frequency, 'hour' => $hour, 'weekday' => $weekday, 'keep' => $keep,
-        'include_databases' => (bool) ($input['include_databases'] ?? true), 'sites' => array_values(array_unique($sites)),
+        'include_databases' => (bool) ($input['include_databases'] ?? true), 'include_system' => (bool) ($input['include_system'] ?? $current['include_system']), 'sites' => array_values(array_unique($sites)),
     ]);
     // A schedule switched on mid-day should start at its next slot, not
     // immediately for the slot that already passed.
@@ -366,9 +370,21 @@ function backup_schedule_run(?callable $onOutput = null, ?int $now = null): arra
         if (!empty($res['ok'])) { $created[] = $res['file']; }
         else { $failed[] = ['domain' => (string) $site['domain'], 'error' => (string) ($res['error'] ?? 'failed')]; }
     }
+    if (!empty($schedule['include_system'])) {
+        require_once APP_ROOT . '/lib/mod_offsite.php';
+        if ($onOutput) { $onOutput("==> Backing up the server configuration\n", 'stdout'); }
+        $res = system_backup_create($onOutput, true);
+        if (!empty($res['ok'])) { $created[] = $res['file']; } else { $failed[] = ['domain' => 'server configuration', 'error' => (string) ($res['error'] ?? 'failed')]; }
+    }
     if ($onOutput) { $onOutput("==> Applying retention\n", 'stdout'); }
     $pruned = backup_apply_retention((int) $schedule['keep']);
-    $result = ['at' => $now, 'ok' => !$failed, 'created' => count($created), 'failed' => $failed, 'pruned' => count($pruned)];
+    $offsite = null;
+    if ($created) {
+        require_once APP_ROOT . '/lib/mod_offsite.php';
+        $offsite = offsite_sync($created, $onOutput);
+    }
+    $result = ['at' => $now, 'ok' => !$failed, 'created' => count($created), 'failed' => $failed, 'pruned' => count($pruned),
+        'offsite' => $offsite && empty($offsite['skipped']) ? ['ok' => !empty($offsite['ok']), 'uploaded' => (int) ($offsite['uploaded'] ?? 0)] : null];
     $latest = backup_schedule();
     $latest['last_run'] = $now;
     $latest['last_result'] = $result;
@@ -412,6 +428,8 @@ function backup_health_items(): array
         $items[] = ['level' => 'warning', 'key' => 'backups', 'title' => 'Latest backup is over ' . (int) ($maxAge / 86400) . ' days old',
             'detail' => 'Most recent: ' . fmt_datetime((int) $backups[0]['mtime']), 'route' => 'backups', 'icon' => 'archive'];
     }
+    require_once APP_ROOT . '/lib/mod_offsite.php';
+    $items = array_merge($items, offsite_health_items());
     $last = $schedule['last_result'] ?? null;
     if (!empty($schedule['enabled']) && is_array($last) && empty($last['ok'])) {
         $domains = implode(', ', array_column((array) ($last['failed'] ?? []), 'domain'));

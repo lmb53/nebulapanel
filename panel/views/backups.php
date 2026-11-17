@@ -1,6 +1,8 @@
 <?php
 require_once APP_ROOT . '/lib/mod_backups.php';
 require_once APP_ROOT . '/lib/mod_sites.php';
+require_once APP_ROOT . '/lib/mod_offsite.php';
+$offsite = offsite_public();
 $filterSite = preg_match('/^[a-f0-9]{32}$/', (string) ($_GET['site'] ?? '')) ? (string) $_GET['site'] : null;
 $backups = backup_list($filterSite);
 $sites = array_values(array_filter(sites_list(), fn($site) => preg_match('/^[a-f0-9]{32}$/', (string) ($site['id'] ?? ''))));
@@ -14,7 +16,7 @@ $schedule = backup_schedule();
 $nextRun = backup_schedule_next($schedule);
 $last = is_array($schedule['last_result'] ?? null) ? $schedule['last_result'] : null;
 $days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-$kindLabels = ['manual' => ['Manual', 'badge-slate'], 'scheduled' => ['Scheduled', 'badge-blue'], 'pre-restore' => ['Safety copy', 'badge-purple']];
+$kindLabels = ['manual' => ['Manual', 'badge-slate'], 'scheduled' => ['Scheduled', 'badge-blue'], 'pre-restore' => ['Safety copy', 'badge-purple'], 'system' => ['Server config', 'badge-orange']];
 ?>
 <div class="page-header">
   <div>
@@ -83,6 +85,7 @@ $kindLabels = ['manual' => ['Manual', 'badge-slate'], 'scheduled' => ['Scheduled
         </div>
       </div>
       <label class="check-line"><input type="checkbox" id="bsDbs"<?= $schedule['include_databases'] ? ' checked' : '' ?>><span>Include linked databases</span></label>
+      <label class="check-line"><input type="checkbox" id="bsSystem"<?= !empty($schedule['include_system']) ? ' checked' : '' ?>><span>Also back up the server configuration <span class="text-tertiary">(web server, certificates, mail, DNS, panel settings)</span></span></label>
       <?php if ($sites): ?>
       <fieldset class="check-group">
         <legend class="field-label">Websites</legend>
@@ -110,12 +113,15 @@ $kindLabels = ['manual' => ['Manual', 'badge-slate'], 'scheduled' => ['Scheduled
 <div class="card">
   <div class="card-header">
     <h3>Archives</h3>
+    <div class="flex gap-2" style="flex-wrap:wrap">
+    <button class="btn btn-secondary btn-sm" type="button" id="bkSystem" title="Web server, certificates, mail, DNS and panel settings — not website files or mailboxes"><i data-lucide="server-cog"></i>Back up server config</button>
     <?php if ($sites): ?>
     <select class="select" id="bkFilter" aria-label="Show backups for" style="width:auto;min-width:200px">
       <option value="">All websites</option>
       <?php foreach ($sites as $site): ?><option value="<?= e($site['id']) ?>"<?= $filterSite === $site['id'] ? ' selected' : '' ?>><?= e($site['domain']) ?></option><?php endforeach; ?>
     </select>
     <?php endif; ?>
+    </div>
   </div>
   <div class="table-wrap">
     <table class="data-table">
@@ -125,13 +131,14 @@ $kindLabels = ['manual' => ['Manual', 'badge-slate'], 'scheduled' => ['Scheduled
           <tr data-file="<?= e($b['file']) ?>">
             <td>
               <div class="mono" style="font-size:13px;word-break:break-all"><?= e($b['file']) ?></div>
-              <div class="text-tertiary" style="font-size:12px;margin-top:2px"><?= e($b['domain'] !== '' ? $b['domain'] : 'Unknown website') ?> · <span class="badge <?= e($kindClass) ?>"><?= e($kindLabel) ?></span></div>
+              <div class="text-tertiary" style="font-size:12px;margin-top:2px"><?= e($b['kind'] === 'system' ? 'Server configuration' : ($b['domain'] !== '' ? $b['domain'] : 'Unknown website')) ?> · <span class="badge <?= e($kindClass) ?>"><?= e($kindLabel) ?></span><?php if ($b['offsite_at'] !== ''): ?> <span class="badge badge-emerald" title="Copied off-site <?= e(fmt_datetime((int) strtotime($b['offsite_at']))) ?>"><i data-lucide="cloud" style="width:11px;height:11px;vertical-align:-1px"></i> Off-site</span><?php endif; ?></div>
             </td>
-            <td><span class="badge badge-slate"><i data-lucide="folder" style="width:11px;height:11px;vertical-align:-1px"></i> Files</span><?php foreach ($b['databases'] as $db): ?> <span class="badge badge-blue mono"><i data-lucide="database" style="width:11px;height:11px;vertical-align:-1px"></i> <?= e($db) ?></span><?php endforeach; ?></td>
+            <td><?php if ($b['kind'] === 'system'): ?><span class="badge badge-orange"><i data-lucide="key-round" style="width:11px;height:11px;vertical-align:-1px"></i> Configuration &amp; keys</span><?php else: ?><span class="badge badge-slate"><i data-lucide="folder" style="width:11px;height:11px;vertical-align:-1px"></i> Files</span><?php endif; ?><?php foreach ($b['databases'] as $db): ?> <span class="badge badge-blue mono"><i data-lucide="database" style="width:11px;height:11px;vertical-align:-1px"></i> <?= e($db) ?></span><?php endforeach; ?></td>
             <td class="mono text-tertiary num"><?= e(human_bytes($b['size'])) ?></td>
             <td class="text-tertiary" style="white-space:nowrap"><?= e(fmt_datetime($b['mtime'])) ?></td>
             <td class="actions-col" style="white-space:nowrap">
-              <button class="btn btn-secondary btn-sm" type="button" data-bk-restore="<?= e($b['file']) ?>" data-site="<?= e($b['site_id']) ?>" data-dbs="<?= e(implode(',', $b['databases'])) ?>" data-domain="<?= e($b['domain']) ?>"><i data-lucide="history"></i>Restore</button>
+              <?php if ($b['kind'] !== 'system'): ?><button class="btn btn-secondary btn-sm" type="button" data-bk-restore="<?= e($b['file']) ?>" data-site="<?= e($b['site_id']) ?>" data-dbs="<?= e(implode(',', $b['databases'])) ?>" data-domain="<?= e($b['domain']) ?>"><i data-lucide="history"></i>Restore</button><?php endif; ?>
+              <?php if ($offsite['configured']): ?><button class="btn btn-secondary btn-sm btn-icon" type="button" data-bk-offsite="<?= e($b['file']) ?>" title="Copy off-site" aria-label="Copy <?= e($b['file']) ?> off-site"><i data-lucide="cloud-upload"></i></button><?php endif; ?>
               <a class="btn btn-secondary btn-sm btn-icon" href="<?= e(url('backup-download', ['file' => $b['file']])) ?>" title="Download" aria-label="Download <?= e($b['file']) ?>"><i data-lucide="download"></i></a>
               <button class="btn btn-secondary btn-sm btn-icon" type="button" data-bk-verify="<?= e($b['file']) ?>" title="Verify integrity" aria-label="Verify <?= e($b['file']) ?>"><i data-lucide="shield-check"></i></button>
               <button class="btn btn-danger btn-sm btn-icon" type="button" data-bk-del="<?= e($b['file']) ?>" title="Delete" aria-label="Delete <?= e($b['file']) ?>"><i data-lucide="trash-2"></i></button>
@@ -144,6 +151,31 @@ $kindLabels = ['manual' => ['Manual', 'badge-slate'], 'scheduled' => ['Scheduled
       </tbody>
     </table>
   </div>
+</div>
+
+<div class="card" style="margin-top:16px" id="offsite">
+  <div class="card-header"><div><h3>Off-site copies</h3><span class="muted">Encrypted on this server, then stored in S3-compatible object storage (AWS S3, Backblaze B2, Wasabi, Cloudflare R2, MinIO…)</span></div>
+    <span class="badge <?= $offsite['enabled'] ? 'badge-emerald' : 'badge-slate' ?>"><span class="bdot"></span><?= $offsite['enabled'] ? 'On' : 'Off' ?></span></div>
+  <form class="card-pad form-grid" id="osForm" style="--cols:repeat(auto-fit,minmax(220px,1fr))" novalidate>
+    <div style="grid-column:1/-1"><label class="check-line"><input type="checkbox" id="osEnabled"<?= $offsite['enabled'] ? ' checked' : '' ?>><span>Copy every scheduled backup off-site</span></label></div>
+    <div><label class="field-label" for="osEndpoint">Endpoint</label><input class="input mono" id="osEndpoint" value="<?= e($offsite['endpoint']) ?>" placeholder="https://s3.eu-central-1.amazonaws.com" autocomplete="off"></div>
+    <div><label class="field-label" for="osRegion">Region</label><input class="input mono" id="osRegion" value="<?= e($offsite['region']) ?>" placeholder="us-east-1" autocomplete="off"></div>
+    <div><label class="field-label" for="osBucket">Bucket</label><input class="input mono" id="osBucket" value="<?= e($offsite['bucket']) ?>" autocomplete="off"></div>
+    <div><label class="field-label" for="osPrefix">Folder in bucket</label><input class="input mono" id="osPrefix" value="<?= e($offsite['prefix']) ?>" placeholder="nebula" autocomplete="off"></div>
+    <div><label class="field-label" for="osAccess">Access key ID</label><input class="input mono" id="osAccess" value="<?= e($offsite['access_key']) ?>" autocomplete="off"></div>
+    <div><label class="field-label" for="osSecret">Secret access key</label><input class="input mono" id="osSecret" type="password" placeholder="<?= $offsite['has_secret'] ? '•••••••• (saved — leave blank to keep)' : '' ?>" autocomplete="new-password"></div>
+    <div><label class="field-label" for="osKeep">Keep off-site</label><input class="input mono" id="osKeep" type="number" min="1" max="365" value="<?= (int) $offsite['keep'] ?>"><div class="field-help">automatic copies per website</div></div>
+    <div style="align-self:center"><label class="check-line"><input type="checkbox" id="osPathStyle"<?= $offsite['path_style'] ? ' checked' : '' ?>><span>Path-style addresses <span class="text-tertiary">(MinIO, most non-AWS)</span></span></label></div>
+    <div style="grid-column:1/-1" class="field-help">Encryption: <span class="mono">openssl aes-256-cbc, pbkdf2</span>. <?= $offsite['has_passphrase'] ? 'A passphrase is set.' : 'A passphrase is generated when you first save.' ?> Without it the copies cannot be decrypted, so keep it somewhere safe off this server. Decrypt by hand with <span class="mono">openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -in FILE.enc -out FILE</span>.
+      <?php if ($offsite['enabled'] && is_array($offsite['last_result'])): ?><br>Last upload <?= e(fmt_datetime((int) $offsite['last_result']['at'])) ?>: <?= (int) $offsite['last_result']['uploaded'] ?> copied<?= !empty($offsite['last_result']['failed']) ? ', <span style="color:var(--crit)">' . count($offsite['last_result']['failed']) . ' failed</span>' : '' ?>.<?php endif; ?></div>
+    <div style="grid-column:1/-1" class="flex gap-2">
+      <button class="btn btn-primary" type="submit" id="osSave"><i data-lucide="save"></i>Save</button>
+      <button class="btn btn-secondary" type="button" id="osTest"<?= $offsite['configured'] ? '' : ' disabled' ?>><i data-lucide="plug-zap"></i>Test connection</button>
+      <button class="btn btn-secondary" type="button" id="osBrowse"<?= $offsite['configured'] ? '' : ' disabled' ?>><i data-lucide="cloud-download"></i>Browse off-site copies</button>
+      <?php if ($offsite['has_passphrase']): ?><button class="btn btn-ghost" type="button" id="osReveal"><i data-lucide="eye"></i>Show passphrase</button><?php endif; ?>
+    </div>
+  </form>
+  <div class="table-wrap hidden" id="osListWrap"><table class="data-table"><thead><tr><th>Off-site archive</th><th class="num">Size</th><th>Uploaded</th><th class="actions-col"><span class="sr-only">Actions</span></th></tr></thead><tbody id="osList"></tbody></table></div>
 </div>
 
 <div class="modal-overlay hidden" id="bkRestoreModal">
@@ -203,7 +235,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (!validateForm(event.currentTarget, extra)) return;
     const button = $('bsSave'); setBusy(button, true);
     const res = await apiPost('backups', { action: 'schedule', enabled: $('bsEnabled').checked, frequency: $('bsFrequency').value,
-      hour: Number($('bsHour').value), weekday: Number($('bsWeekday').value), keep: Number($('bsKeep').value), include_databases: $('bsDbs').checked, sites });
+      hour: Number($('bsHour').value), weekday: Number($('bsWeekday').value), keep: Number($('bsKeep').value), include_databases: $('bsDbs').checked, include_system: $('bsSystem').checked, sites });
     setBusy(button, false);
     if (res.ok) { toast('Backup schedule saved', 'success'); setTimeout(() => location.reload(), 500); }
     else toast(res.error || 'Could not save the schedule', 'error');
@@ -261,6 +293,69 @@ document.addEventListener('DOMContentLoaded', () => {
     const res = await runTask({ title: 'Restoring ' + targetName, endpoint: 'backups', successMessage: 'Restore complete',
       body: { action: 'restore', file: restoreFile, files, databases, target_site_id: $('bkRestoreTarget').value, safety_backup: $('bkRestoreSafety').checked } });
     if (res.ok) { toast('Restored ' + targetName + (res.safety_backup ? ' — safety copy ' + res.safety_backup : ''), 'success'); setTimeout(() => location.reload(), 800); }
+  });
+
+  // ---- Server configuration + off-site ----
+  $('bkSystem')?.addEventListener('click', async () => {
+    const res = await runTask({ title: 'Backing up server configuration', endpoint: 'backups', body: { action: 'system-backup' }, successMessage: 'Server configuration backed up' });
+    if (res.ok) location.reload();
+  });
+  document.querySelectorAll('[data-bk-offsite]').forEach((btn) => btn.addEventListener('click', async () => {
+    const res = await runTask({ title: 'Copying off-site', endpoint: 'backups', body: { action: 'offsite-upload', file: btn.dataset.bkOffsite }, successMessage: 'Copied off-site' });
+    if (res.ok) location.reload();
+  }));
+  const showSecret = (title, value, message) => window.Nebula.dialog({ title, icon: 'key-round', message, input: { label: 'Passphrase', value, mono: true, required: false }, confirmLabel: 'Copy', cancelLabel: 'Close' })
+    .then((r) => { if (r.ok) window.Nebula.copyText(value).then((ok) => toast(ok ? 'Copied' : 'Copy failed', ok ? 'success' : 'error')); });
+  $('osForm')?.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const button = $('osSave'); setBusy(button, true);
+    const res = await apiPost('backups', { action: 'offsite-save', settings: { enabled: $('osEnabled').checked, endpoint: $('osEndpoint').value.trim(), region: $('osRegion').value.trim(),
+      bucket: $('osBucket').value.trim(), prefix: $('osPrefix').value.trim(), access_key: $('osAccess').value.trim(), secret_key: $('osSecret').value, keep: Number($('osKeep').value), path_style: $('osPathStyle').checked } });
+    setBusy(button, false);
+    if (!res.ok) { toast(res.error || 'Could not save', 'error'); return; }
+    if (res.passphrase) await showSecret('Save your encryption passphrase', res.passphrase, res.message);
+    toast('Off-site settings saved', 'success'); setTimeout(() => { location.hash = 'offsite'; location.reload(); }, 400);
+  });
+  $('osTest')?.addEventListener('click', async (event) => {
+    setBusy(event.currentTarget, true);
+    const res = await apiPost('backups', { action: 'offsite-test' });
+    setBusy(event.currentTarget, false);
+    toast(res.ok ? res.message : (res.error || 'Test failed'), res.ok ? 'success' : 'error');
+  });
+  $('osReveal')?.addEventListener('click', async () => {
+    const password = await window.Nebula.prompt({ title: 'Show the encryption passphrase', label: 'Your panel password', type: 'password', autocomplete: 'current-password', confirmLabel: 'Show' });
+    if (password === null) return;
+    const res = await apiPost('backups', { action: 'offsite-reveal', password });
+    if (res.ok) showSecret('Encryption passphrase', res.passphrase, 'Keep it somewhere safe outside this server.'); else toast(res.error || 'Could not show it', 'error');
+  });
+  $('osBrowse')?.addEventListener('click', async (event) => {
+    setBusy(event.currentTarget, true);
+    const res = await apiPost('backups', { action: 'offsite-list' });
+    setBusy(event.currentTarget, false);
+    if (!res.ok) { toast(res.error || 'Could not list the bucket', 'error'); return; }
+    const body = $('osList'); body.replaceChildren(); $('osListWrap').classList.remove('hidden');
+    const cell = (text, cls) => { const c = document.createElement('td'); if (cls) c.className = cls; c.textContent = text; return c; };
+    if (!res.items.length) { const row = document.createElement('tr'); row.className = 'empty-row'; const c = cell('No off-site copies yet.'); c.colSpan = 4; row.append(c); body.append(row); return; }
+    res.items.forEach((item) => {
+      const row = document.createElement('tr');
+      const actions = cell('', 'actions-col');
+      const fetchBtn = document.createElement('button'); fetchBtn.type = 'button'; fetchBtn.className = 'btn btn-secondary btn-sm';
+      fetchBtn.textContent = item.local ? 'On this server' : 'Download to server'; fetchBtn.disabled = item.local;
+      fetchBtn.addEventListener('click', async () => {
+        const out = await runTask({ title: 'Fetching ' + item.file, endpoint: 'backups', body: { action: 'offsite-fetch', file: item.file }, successMessage: 'Downloaded and verified' });
+        if (out.ok) { toast(out.message || 'Ready to restore', 'success'); setTimeout(() => location.reload(), 800); }
+      });
+      const del = document.createElement('button'); del.type = 'button'; del.className = 'btn btn-danger btn-sm btn-icon'; del.setAttribute('aria-label', 'Delete off-site copy'); del.innerHTML = '<i data-lucide="trash-2"></i>';
+      del.addEventListener('click', async () => {
+        if (!await window.Nebula.confirm({ title: 'Delete the off-site copy?', message: item.file, danger: true })) return;
+        const out = await apiPost('backups', { action: 'offsite-delete', file: item.file });
+        if (out.ok) { row.remove(); toast('Deleted', 'success'); } else toast(out.error || 'Failed', 'error');
+      });
+      actions.append(fetchBtn, ' ', del);
+      row.append(cell(item.file, 'mono'), cell(window.Nebula.fmtBytes(item.size), 'num mono text-tertiary'), cell(window.Nebula.fmtDate(item.mtime), 'text-tertiary'), actions);
+      body.append(row);
+    });
+    if (window.lucide) lucide.createIcons();
   });
 
   // ---- Delete / verify ----

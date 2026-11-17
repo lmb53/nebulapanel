@@ -203,6 +203,14 @@ $check(strpos($helperSource, 'rsync -a --delete --one-file-system --no-specials 
 require_once APP_ROOT . '/lib/mod_sites.php';
 $check(empty(site_cron_add('missing.example', '* * * * *', 'echo hi')['ok']) && empty(site_sftp('missing.example', true, 'short')['ok'])
     && empty(site_clone('missing.example', 'copy.example', false)['ok']), 'site cron/SFTP/clone accept an unknown website');
+$check(strpos($helperSource, 'system-backup)') !== false && strpos($helperSource, '--exclude="${PANEL_DATA#/}/backups"') !== false, 'server configuration backup is missing or would include the backup store');
+require_once APP_ROOT . '/lib/mod_offsite.php';
+$check(empty(offsite_save(['endpoint' => 'http://s3.example.com', 'bucket' => 'b-1'])['ok']) && empty(offsite_save(['endpoint' => 'https://s3.example.com/path'])['ok'])
+    && empty(offsite_save(['bucket' => 'Bad_Bucket'])['ok']) && empty(offsite_save(['prefix' => '../x y'])['ok']), 'off-site settings accept unsafe endpoints or names');
+$check(empty(offsite_save(['enabled' => true, 'endpoint' => 'https://s3.example.com', 'bucket' => 'nebula'])['ok']), 'off-site copies can be enabled without credentials');
+$check(empty(offsite_test()['ok']) && empty(offsite_fetch('../../etc-20260101-000000.tar.gz')['ok']), 'off-site operations run unconfigured or with unsafe names');
+$check(empty(backup_restore('system-20260101-000000.tar.gz', true, [])['ok']), 'a server configuration backup can be restored into a website');
+@unlink(offsite_file());
 $check(strpos($helperSource, 'snappymail-install)') === false, 'SnappyMail installer is still present (Roundcube is the only supported webmail)');
 $check(strpos($helperSource, 'compose-install)') !== false, 'Docker Compose installer helper action is missing');
 $check(strpos($helperSource, 'docker-query)') !== false && strpos($helperSource, 'compose-run)') !== false,

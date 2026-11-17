@@ -2197,6 +2197,43 @@ EOF
     echo "databases=$(IFS=,; echo "${DBS[*]}")"
     ;;
 
+  # system-backup <archive-name> — the server's configuration (web server,
+  # certificates, mail, DNS, panel state and keys, cron, PHP), not website
+  # files or mailboxes. Holds private keys: the archive is panel-only (0600)
+  # and should only leave the server encrypted (off-site backups do that).
+  system-backup)
+    ARCHIVE_NAME="${1:-}"
+    [[ "$ARCHIVE_NAME" =~ ^system-[0-9]{8}-[0-9]{6}\.tar\.gz$ ]] || die "invalid archive name"
+    BACKUP_DIR="$(backup_dir)"
+    PANEL_DATA="$(dirname "$BACKUP_DIR")"
+    PANEL_USER="$(stat -c %U "$PANEL_DATA")"
+    install -d -m 0700 -o "$PANEL_USER" -g "$PANEL_USER" "$BACKUP_DIR"
+    DEST="$BACKUP_DIR/$ARCHIVE_NAME"; [[ ! -e "$DEST" ]] || die "backup already exists"
+    TMP="$BACKUP_DIR/.${ARCHIVE_NAME}.tmp"
+    trap 'rm -f "$TMP"' EXIT
+    PATHS=()
+    for P in /etc/nginx /etc/apache2 /etc/letsencrypt /etc/nebula-panel /etc/nebula-mail /etc/postfix /etc/dovecot \
+             /etc/opendkim.conf /etc/default/opendkim /etc/bind /etc/php /etc/mysql /etc/ssh/sshd_config.d /etc/fail2ban/jail.d \
+             /etc/cron.d /var/spool/cron/crontabs /etc/ufw /etc/docker/daemon.json; do
+      [[ -e "$P" && ! -L "$P" ]] && PATHS+=("${P#/}")
+    done
+    [[ -d "$PANEL_DATA" ]] && PATHS+=("${PANEL_DATA#/}")
+    (( ${#PATHS[@]} )) || die "nothing to back up"
+    echo "==> Archiving server configuration"
+    tar --one-file-system --numeric-owner --warning=no-file-changed -czf "$TMP" -C / \
+      --exclude="${PANEL_DATA#/}/backups" --exclude="${PANEL_DATA#/}/cache" --exclude="${PANEL_DATA#/}/file-staging" \
+      --exclude="${PANEL_DATA#/}/uploads" --exclude="${PANEL_DATA#/}/jobs" --exclude='*.sock' \
+      "${PATHS[@]}" || [[ $? -eq 1 ]] || die "could not archive the configuration"
+    echo "==> Verifying the archive"
+    gzip -t "$TMP"
+    mv "$TMP" "$DEST"
+    chown "$PANEL_USER:$PANEL_USER" "$DEST"; chmod 0600 "$DEST"
+    echo "sha256=$(sha256sum "$DEST" | awk '{print $1}')"
+    echo "bytes=$(stat -c %s "$DEST")"
+    echo "entries=$(tar -tzf "$DEST" | wc -l | tr -d ' ')"
+    echo "paths=$(IFS=,; echo "${PATHS[*]}")"
+    ;;
+
   # site-restore <site-id> <archive-name> <yes|no: restore files> [database ...]
   # Restores public/ into the site (as the site's own Unix user, through a
   # private staging directory) and/or replaces each named database with its

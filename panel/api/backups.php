@@ -1,7 +1,7 @@
 <?php
 /**
  * api/backups — GET list + schedule; POST {action: create|delete|verify|
- * restore|schedule|run-schedule, ...}. create, restore and run-schedule
+ * restore|schedule|run-schedule|system-backup|offsite-*, ...}. create, restore and run-schedule
  * support ?stream=1 progress output.
  */
 require APP_ROOT . '/lib/mod_backups.php';
@@ -28,6 +28,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             (bool) ($body['safety_backup'] ?? true),
             stream_output_callback()
         );
+    } elseif ($action === 'system-backup') {
+        require_once APP_ROOT . '/lib/mod_offsite.php';
+        $res = system_backup_create(stream_output_callback());
+    } elseif (str_starts_with($action, 'offsite-')) {
+        require_once APP_ROOT . '/lib/mod_offsite.php';
+        @set_time_limit(0);
+        $file = (string) ($body['file'] ?? '');
+        $res = match ($action) {
+            'offsite-save' => offsite_save((array) ($body['settings'] ?? [])),
+            'offsite-test' => offsite_test(),
+            'offsite-upload' => offsite_upload($file, stream_output_callback()),
+            'offsite-list' => offsite_list(),
+            'offsite-fetch' => offsite_fetch($file, stream_output_callback()),
+            'offsite-delete' => offsite_delete($file),
+            'offsite-reveal' => (($blocked = reauth_throttle_error('offsite')) !== null)
+                ? ['ok' => false, 'error' => $blocked]
+                : (static function (string $password): array { $r = offsite_reveal_passphrase($password); if (!empty($r['ok'])) { reauth_succeeded('offsite'); } return $r; })((string) ($body['password'] ?? '')),
+            default => ['ok' => false, 'error' => 'Unknown action.'],
+        };
     } elseif ($action === 'schedule') {
         $res = backup_schedule_save($body);
     } elseif ($action === 'run-schedule') {
