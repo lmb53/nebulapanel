@@ -28,9 +28,10 @@ $healthCritical = (int) ($config['health_critical_percent'] ?? 90);
         <div class="field-help">Shown in the sidebar, the sign-in page and browser tabs.</div>
       </div>
       <div>
-        <label class="field-label" for="setTimeout">Idle session timeout (seconds)<span class="req" aria-hidden="true">*</span></label>
-        <input class="input mono" id="setTimeout" type="number" required min="60" max="86400" value="<?= e($timeout) ?>">
-        <div class="field-help">Between 60 and 86,400. Idle sessions are signed out after this long.</div>
+        <label class="field-label" for="setTimeout">Sign out after being idle for (minutes)<span class="req" aria-hidden="true">*</span></label>
+        <input class="input mono" id="setTimeout" type="number" required min="1" max="1440" step="1" list="setTimeoutPresets" value="<?= e((int) max(1, round($timeout / 60))) ?>">
+        <datalist id="setTimeoutPresets"><option value="15"></option><option value="30"></option><option value="60"></option><option value="240"></option><option value="480"></option></datalist>
+        <div class="field-help">1 to 1,440 minutes (24 hours). You get a warning two minutes before.</div>
       </div>
       <div class="form-grid" style="--cols:1fr 1fr">
         <div>
@@ -115,7 +116,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const res = await apiPost('settings', {
       action: 'general',
       panel_name: document.getElementById('setPanelName').value.trim(),
-      session_timeout: document.getElementById('setTimeout').value,
+      session_timeout: Math.round(Number(document.getElementById('setTimeout').value) * 60),
       health_warn_percent: warn.value,
       health_critical_percent: crit.value,
     });

@@ -51,6 +51,8 @@ function nav_link(string $route, string $icon, string $label, string $active): s
 <?php endif; ?>
 <meta name="csrf-token" content="<?= e(csrf_token()) ?>">
 <meta name="base-url" content="<?= e(base_url()) ?>">
+<meta name="server-timezone" content="<?= e(date_default_timezone_get()) ?>">
+<meta name="session-timeout" content="<?= (int) ($config['session_timeout'] ?? 1800) ?>">
 <meta name="health-thresholds" content="<?= (int) ($config['health_warn_percent'] ?? 80) ?>,<?= (int) ($config['health_critical_percent'] ?? 90) ?>">
 </head>
 <body class="<?= $active === 'file-edit' ? 'editor-window' : '' ?>">

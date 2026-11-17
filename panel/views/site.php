@@ -31,8 +31,13 @@ $helper = helper_available();
 // Usage
 $diskUsed = 0; $fileCount = 0;
 if ($helper && sv_managed_path_ok($docroot, $siteId)) {
-    [$c, $o] = helper_cmd('site-stats ' . escapeshellarg($siteId), 60);
-    if ($c === 0) { [$diskUsed, $fileCount] = array_map('intval', array_pad(explode("\t", trim($o), 2), 2, 0)); }
+    $stats = cache_remember('site-stats-' . $siteId, 600, static function () use ($siteId): ?array {
+        [$c, $o] = helper_cmd('site-stats ' . escapeshellarg($siteId), 60);
+        if ($c !== 0) { return null; }
+        [$bytes, $files] = array_pad(explode("\t", trim($o), 2), 2, 0);
+        return ['bytes' => max(0, (int) $bytes), 'files' => max(0, (int) $files)];
+    });
+    if (is_array($stats)) { $diskUsed = $stats['bytes']; $fileCount = $stats['files']; }
 }
 
 // DNS
@@ -83,7 +88,6 @@ $tab = static fn(string $id, string $icon, string $label, bool $active = false, 
       <?php if (!empty($site['php'])): ?><span class="badge badge-slate">PHP <?= e($site['php']) ?></span><?php endif; ?>
       <span class="badge <?= $ssl ? 'badge-emerald' : 'badge-slate' ?>"><span class="bdot"></span><?= $ssl ? 'HTTPS' : 'No SSL' ?></span>
       <?php if ($pointsHere === true): ?><span class="badge badge-emerald">DNS points here</span><?php elseif ($pointsHere === false): ?><span class="badge badge-orange">DNS not pointing here</span><?php endif; ?>
-      <span class="mono text-tertiary" style="font-size:12px"><?= e($siteId) ?></span>
     </p>
   </div>
   <div class="page-actions"><a class="btn btn-secondary" href="<?= e($siteUrl) ?>" target="_blank" rel="noopener"><i data-lucide="external-link"></i>Visit site</a></div>
@@ -112,10 +116,14 @@ $tab = static fn(string $id, string $icon, string $label, bool $active = false, 
       <div class="card-header"><h3>Details</h3></div>
       <div class="card-pad">
         <div class="fm-prop-row"><span class="k">Domain</span><span class="v"><a href="<?= e($siteUrl) ?>" target="_blank" rel="noopener"><?= e($siteUrl) ?></a></span></div>
-        <div class="fm-prop-row"><span class="k">Document root</span><span class="v mono"><?= e($docroot) ?></span></div>
-        <div class="fm-prop-row"><span class="k">Web server</span><span class="v"><?= e(($site['server'] ?? 'nginx') === 'apache2' ? 'Apache' : 'Nginx') ?></span></div>
-        <div class="fm-prop-row"><span class="k">PHP-FPM identity</span><span class="v mono">nebula-s-<?= e(substr($siteId, 0, 12)) ?></span></div>
+        <div class="fm-prop-row"><span class="k">Web server</span><span class="v"><?= e(($site['server'] ?? 'nginx') === 'apache2' ? 'Apache' : 'Nginx') ?> · PHP <?= e((string) ($site['php'] ?? '?')) ?></span></div>
         <?php if (!empty($site['created'])): ?><div class="fm-prop-row"><span class="k">Created</span><span class="v"><?= e(fmt_datetime($site['created'])) ?></span></div><?php endif; ?>
+        <details class="site-tech">
+          <summary>Technical details</summary>
+          <div class="fm-prop-row"><span class="k">Site ID</span><span class="v mono"><?= e($siteId) ?></span></div>
+          <div class="fm-prop-row"><span class="k">Document root</span><span class="v mono" style="word-break:break-all"><?= e($docroot) ?></span></div>
+          <div class="fm-prop-row"><span class="k">PHP-FPM identity</span><span class="v mono">nebula-s-<?= e(substr($siteId, 0, 12)) ?></span></div>
+        </details>
         <div class="flex gap-2" style="margin-top:14px;flex-wrap:wrap">
           <?php if ($filesPath !== null): ?><a class="btn btn-secondary btn-sm" href="<?= e(url('files', ['path' => $filesPath])) ?>"><i data-lucide="folder-open"></i>Open files</a><?php endif; ?>
           <a class="btn btn-secondary btn-sm" href="<?= e(url('logs')) ?>"><i data-lucide="scroll-text"></i>Logs</a>
@@ -209,7 +217,7 @@ $tab = static fn(string $id, string $icon, string $label, bool $active = false, 
   <!-- Files -->
   <section data-tab-panel id="site-files" class="hidden">
     <div class="card">
-      <div class="card-header"><div><h3>Files</h3><span class="muted mono"><?= e($docroot) ?></span></div><?php if ($filesPath !== null): ?><a class="btn btn-primary btn-sm" href="<?= e(url('files', ['path' => $filesPath])) ?>"><i data-lucide="folder-open"></i>Open in File Manager</a><?php endif; ?></div>
+      <div class="card-header"><div><h3>Files</h3><span class="muted">Website content (public/)</span></div><?php if ($filesPath !== null): ?><a class="btn btn-primary btn-sm" href="<?= e(url('files', ['path' => $filesPath])) ?>"><i data-lucide="folder-open"></i>Open in File Manager</a><?php endif; ?></div>
       <?php if ($listing === null): ?>
         <div class="card-pad field-help" style="margin:0">The document root is outside the File Manager root or is not readable by the panel.</div>
       <?php else: $entries = array_merge($listing['dirs'] ?? [], $listing['files'] ?? []); ?>

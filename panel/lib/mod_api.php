@@ -34,7 +34,7 @@ function api_token_generate(string $label, string $role = 'auditor', array $scop
 {
     $label = trim($label);
     if ($label === '' || strlen($label) > 80) { return ['ok' => false, 'error' => 'Label must be 1–80 characters.']; }
-    if (!isset(panel_roles()[$role])) { return ['ok' => false, 'error' => 'Invalid token role.']; }
+    if (!isset(panel_roles()[$role]) || (panel_roles()[$role]['assignable'] ?? true) === false) { return ['ok' => false, 'error' => 'Invalid token role.']; }
     $ttlDays = max(1, min(365, $ttlDays));
     $scopes = array_values(array_unique(array_map('strtolower', array_map('trim', $scopes))));
     if (!$scopes || count($scopes) > 50) { return ['ok' => false, 'error' => 'At least one scope is required.']; }

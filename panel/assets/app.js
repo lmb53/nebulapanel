@@ -301,14 +301,37 @@
 
   // ---- Shared formatting --------------------------------------------------
   const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-  /** One date format across the panel: "7 Oct 2026, 09:21" (local time). */
+  // Times are shown in the server's timezone everywhere, matching the pages
+  // the server renders (cron schedules and logs use it too); hovering a time
+  // shows the zone and how long ago it was.
+  const SERVER_TZ = META('server-timezone');
+  let tzFormatter = null;
+  try {
+    tzFormatter = new Intl.DateTimeFormat('en-GB', { timeZone: SERVER_TZ || undefined, day: 'numeric', month: 'short', year: 'numeric',
+      hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
+  } catch (e) { tzFormatter = null; }
+  /** One date format across the panel: "7 Oct 2026, 09:21" (server time). */
   function fmtDate(value, withTime = true) {
     if (value === null || value === undefined || value === '' || value === 0) return '—';
     const d = value instanceof Date ? value : new Date(typeof value === 'number' && value < 1e12 ? value * 1000 : value);
     if (Number.isNaN(d.getTime())) return String(value);
+    if (tzFormatter) {
+      const p = {};
+      tzFormatter.formatToParts(d).forEach((part) => { p[part.type] = part.value; });
+      const date = `${p.day} ${p.month} ${p.year}`;
+      return withTime ? `${date}, ${p.hour}:${p.minute}` : date;
+    }
     const date = `${d.getDate()} ${MONTHS[d.getMonth()]} ${d.getFullYear()}`;
     if (!withTime) return date;
     return `${date}, ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  }
+  /** Hover text for <time datetime> elements: zone and relative age. */
+  function decorateTimes(root = document) {
+    root.querySelectorAll?.('time[datetime]:not([title])').forEach((el) => {
+      const when = new Date(el.getAttribute('datetime'));
+      if (Number.isNaN(when.getTime())) return;
+      el.title = `${fmtDate(when)} ${SERVER_TZ ? '(' + SERVER_TZ + ')' : ''} · ${fmtRelative(when.getTime())}`.trim();
+    });
   }
 
   // ---- Theme-aware colours -----------------------------------------------
@@ -643,7 +666,7 @@
     const text = (attr, value) => document.querySelectorAll(`[data-stat="${attr}"]`).forEach((e) => (e.textContent = value));
     if (document.querySelector('[data-stat="cpu"]')) {
       stat('cpu', cpuPct);
-      if (m.load) text('load', `CPU · Load ${m.load.map((n) => (+n).toFixed(2)).join(', ')}`);
+      if (m.load) text('load', `Load ${m.load.map((n) => (+n).toFixed(2)).join(', ')}`);
       stat('mem', memPct);
       if (m.mem) text('mem-detail', `${fmtBytes(m.mem.used)} / ${fmtBytes(m.mem.total)}`);
       stat('disk', diskPct);
@@ -1270,6 +1293,7 @@
         if (first) first.focus();
         else { dialog.setAttribute('tabindex', '-1'); dialog.focus(); }
       } else if (!open && state.open) {
+        touched.delete(overlay);
         setBackgroundInert(overlay, false);
         state.returnFocus?.focus?.();
       }
@@ -1278,10 +1302,21 @@
     };
     labelIcons();
     document.querySelectorAll('.drawer-overlay, #cmdk').forEach(prepareDialog);
-    // Clicking the dimmed backdrop closes a drawer, like Escape does.
+    // Escape and a click on the dimmed backdrop close a drawer, but not
+    // silently when the person has typed into it: ask before discarding.
+    const touched = new WeakSet();
+    document.addEventListener('input', (event) => {
+      const overlay = event.isTrusted && event.target instanceof Element ? event.target.closest('.drawer-overlay') : null;
+      if (overlay) touched.add(overlay);
+    }, true);
+    const requestClose = async (overlay) => {
+      if (touched.has(overlay) && !await confirmDialog({ title: 'Discard your changes?', message: 'What you entered in this panel has not been saved.', confirmLabel: 'Discard', cancelLabel: 'Keep editing', danger: true })) return;
+      touched.delete(overlay);
+      overlay.classList.add('hidden');
+    };
     document.addEventListener('mousedown', (event) => {
       if (event.target instanceof Element && event.target.matches('.drawer-overlay:not(.hidden)')) {
-        event.target.classList.add('hidden');
+        requestClose(event.target);
       }
     });
 
@@ -1307,7 +1342,8 @@
       const overlay = Array.from(document.querySelectorAll('.drawer-overlay:not(.hidden)')).pop();
       if (!overlay) return;
       if (event.key === 'Escape') {
-        overlay.classList.add('hidden');
+        if (document.querySelector('.modal-overlay')) return; // a confirm dialog is on top
+        requestClose(overlay);
         return;
       }
       if (event.key !== 'Tab') return;
@@ -1325,10 +1361,127 @@
     });
   }
 
+  // ---- Idle sign-out warning ---------------------------------------------
+  // Background polling does not keep a session alive, so warn before the
+  // idle timeout ends it, and tell the server about real activity (typing in
+  // the editor sends no requests) every few minutes.
+  function wireIdleWarning() {
+    const timeout = Number(META('session-timeout')) * 1000;
+    if (!timeout || !document.querySelector('.topbar')) return;
+    let lastActivity = Date.now(), lastPing = Date.now(), warning = null;
+    const ping = () => { lastPing = Date.now(); apiGet('jobs').catch(() => {}); };
+    ['keydown', 'pointerdown', 'wheel', 'touchstart'].forEach((type) => document.addEventListener(type, () => {
+      lastActivity = Date.now();
+      if (!warning && Date.now() - lastPing > Math.min(300000, timeout / 3)) ping();
+    }, { passive: true, capture: true }));
+    setInterval(async () => {
+      if (sessionLost || warning) return;
+      const left = timeout - (Date.now() - Math.max(lastActivity, lastPing));
+      if (left > 120000 || left <= 0) return;
+      warning = dialog({ title: 'Still there?', icon: 'clock', confirmLabel: 'Stay signed in', cancelLabel: 'Sign out',
+        message: `You will be signed out in about ${Math.max(1, Math.round(left / 60000))} minute${left > 90000 ? 's' : ''} because of inactivity.` });
+      const answer = await warning;
+      warning = null;
+      if (answer.ok) { lastActivity = Date.now(); ping(); }
+      else document.querySelector('form[action*="logout"]')?.submit();
+    }, 15000);
+  }
+
+  // ---- Sortable tables -----------------------------------------------------
+  // Every data table sorts by clicking a column header (sizes, numbers and
+  // <time datetime> cells sort by value). Rows that JS re-renders keep the
+  // chosen order. Tables opt out with data-nosort; columns with data-nosort.
+  const SIZE_UNITS = { B: 1, KB: 1024, MB: 1024 ** 2, GB: 1024 ** 3, TB: 1024 ** 4, PB: 1024 ** 5 };
+  function cellValue(cell) {
+    if (!cell) return '';
+    const time = cell.querySelector('time[datetime]');
+    if (time) return new Date(time.getAttribute('datetime')).getTime() || 0;
+    if (cell.dataset.sortValue !== undefined) return isNaN(Number(cell.dataset.sortValue)) ? cell.dataset.sortValue : Number(cell.dataset.sortValue);
+    const text = cell.textContent.trim();
+    const size = /^([\d.]+)\s*(B|KB|MB|GB|TB|PB)$/i.exec(text);
+    if (size) return parseFloat(size[1]) * SIZE_UNITS[size[2].toUpperCase()];
+    if (/^-?[\d.,]+%?$/.test(text) && text !== '') return parseFloat(text.replace(/,/g, ''));
+    return text.toLowerCase();
+  }
+  function sortTable(table, column, dir) {
+    const body = table.tBodies[0];
+    if (!body) return;
+    const rows = Array.from(body.rows).filter((row) => row.cells.length > 1 && !row.querySelector('td[colspan]'));
+    if (rows.length < 2) return;
+    rows.sort((a, b) => {
+      const x = cellValue(a.cells[column]), y = cellValue(b.cells[column]);
+      const cmp = typeof x === 'number' && typeof y === 'number' ? x - y : String(x).localeCompare(String(y), undefined, { numeric: true });
+      return dir * cmp;
+    });
+    rows.forEach((row) => body.appendChild(row));
+  }
+  function wireSortableTables(root = document) {
+    root.querySelectorAll?.('table.data-table:not([data-nosort]):not([data-sort-wired])').forEach((table) => {
+      table.dataset.sortWired = '1';
+      const head = table.tHead?.rows[0];
+      if (!head) return;
+      Array.from(head.cells).forEach((th, column) => {
+        const label = th.textContent.trim();
+        if (!label || th.hasAttribute('data-nosort') || th.querySelector('input,button')) return;
+        th.classList.add('sortable');
+        th.tabIndex = 0;
+        th.setAttribute('aria-sort', 'none');
+        const activate = () => {
+          const dir = th.getAttribute('aria-sort') === 'ascending' ? -1 : 1;
+          Array.from(head.cells).forEach((cell) => cell.hasAttribute('aria-sort') && cell.setAttribute('aria-sort', 'none'));
+          th.setAttribute('aria-sort', dir === 1 ? 'ascending' : 'descending');
+          table.dataset.sortColumn = column;
+          table.dataset.sortDir = dir;
+          sortTable(table, column, dir);
+        };
+        th.addEventListener('click', activate);
+        th.addEventListener('keydown', (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); activate(); } });
+      });
+      // Keep the order when a view script re-renders the rows.
+      if (table.tBodies[0]) {
+        new MutationObserver(() => {
+          if (table.dataset.sortColumn === undefined || table.dataset.sorting) return;
+          table.dataset.sorting = '1';
+          sortTable(table, Number(table.dataset.sortColumn), Number(table.dataset.sortDir));
+          requestAnimationFrame(() => { delete table.dataset.sorting; });
+        }).observe(table.tBodies[0], { childList: true });
+      }
+    });
+  }
+  // A text box with data-table-filter="<table selector>" hides rows that do not match.
+  function wireTableFilters() {
+    document.querySelectorAll('input[data-table-filter]').forEach((input) => {
+      input.addEventListener('input', () => {
+        const q = input.value.trim().toLowerCase();
+        document.querySelectorAll(input.dataset.tableFilter + ' tbody tr').forEach((row) => {
+          if (row.querySelector('td[colspan]')) return;
+          row.classList.toggle('hidden', q !== '' && !row.textContent.toLowerCase().includes(q));
+        });
+      });
+    });
+  }
+
+  // ---- Top bar title ------------------------------------------------------
+  // The page heading already names the page; repeat it in the top bar only
+  // after it has scrolled out of view.
+  function wireStickyTitle() {
+    const topbar = document.querySelector('.topbar');
+    const heading = document.querySelector('main .page-title');
+    if (!topbar || !heading || !('IntersectionObserver' in window)) return;
+    topbar.classList.add('title-hidden');
+    new IntersectionObserver(([entry]) => topbar.classList.toggle('title-hidden', entry.isIntersecting), { rootMargin: '-64px 0px 0px 0px' }).observe(heading);
+  }
+
   // ---- Boot ---------------------------------------------------------------
   document.addEventListener('DOMContentLoaded', () => {
     if (window.lucide) lucide.createIcons();
     wireChrome();
+    wireStickyTitle();
+    wireIdleWarning();
+    decorateTimes();
+    wireSortableTables();
+    wireTableFilters();
+    new MutationObserver(() => wireSortableTables()).observe(document.querySelector('main') || document.body, { childList: true, subtree: true });
     wireCmdk();
     wireTabs();
     wireNotifications();

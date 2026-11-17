@@ -432,7 +432,8 @@ html:not(.light) .btn-danger-solid{color:#2A0E09}
 
 /* ---------- Stat card ---------- */
 .stat-card{padding:16px;border-radius:var(--radius-lg);background:var(--bg-surface);border:1px solid var(--border-subtle);position:relative;overflow:hidden;display:flex;flex-direction:column;min-height:132px}
-.stat-card .stat-top{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}
+.stat-card .stat-top{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;gap:8px}
+.stat-card .stat-name{flex:1;font-size:13px;font-weight:600;color:var(--text-secondary)}
 .stat-card .stat-icon{width:32px;height:32px;border-radius:8px;display:flex;align-items:center;justify-content:center;background:var(--bg-surface-2);color:var(--text-tertiary)}
 .stat-card .stat-icon svg{width:17px;height:17px}
 .stat-card .stat-val{font:650 28px/1.1 var(--font-display);letter-spacing:-.02em;font-variant-numeric:tabular-nums}
@@ -941,3 +942,34 @@ a.service-row{color:inherit}a.service-row:hover{background:var(--bg-surface-hove
 @keyframes nebula-job-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .jobs-spinner { animation: none; border-color: var(--accent); } }
 .fm-locked{color:var(--text-tertiary);cursor:help}
+
+/* ---- Top bar title: only once the page heading has scrolled away -------- */
+.topbar .top-title{transition:opacity .15s ease}
+.topbar.title-hidden .top-title{opacity:0;pointer-events:none}
+@media (prefers-reduced-motion:reduce){.topbar .top-title{transition:none}}
+
+/* ---- Phones: compact two-column stat cards ------------------------------ */
+@media (max-width:600px){
+  .grid-4:has(> .stat-card){grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+  .stat-card{min-height:0;padding:12px}
+  .stat-card .stat-top{margin-bottom:8px}
+  .stat-card .stat-icon{width:26px;height:26px}
+  .stat-card .stat-val{font-size:22px}
+  .stat-card .stat-label{font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .stat-card .badge{display:none}
+}
+
+/* ---- Sortable table headers -------------------------------------------- */
+.data-table th.sortable{cursor:pointer;user-select:none;white-space:nowrap}
+.data-table th.sortable:hover{color:var(--text-primary)}
+.data-table th.sortable::after{content:"";display:inline-block;width:0;height:0;margin-left:6px;vertical-align:middle;border:4px solid transparent;opacity:0}
+.data-table th.sortable[aria-sort="ascending"]::after{border-bottom-color:currentColor;border-top-width:0;opacity:.8}
+.data-table th.sortable[aria-sort="descending"]::after{border-top-color:currentColor;border-bottom-width:0;opacity:.8}
+.data-table th.sortable:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+.table-filter{max-width:260px}
+
+/* ---- Website page ------------------------------------------------------- */
+#site-overview .stat-card{min-height:96px}
+.site-tech{margin-top:8px}
+.site-tech>summary{cursor:pointer;font-size:13px;color:var(--text-tertiary);padding:6px 0}
+.site-tech>summary:hover{color:var(--text-secondary)}

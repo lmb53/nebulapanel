@@ -242,7 +242,7 @@ if ($rel !== '') {
 
         <!-- List view -->
         <div class="table-wrap" id="fmListView">
-          <table class="data-table fm-table">
+          <table class="data-table fm-table" data-nosort>
             <thead>
               <tr>
                 <th class="c-check"><input type="checkbox" id="fmSelectAll" aria-label="Select all items"></th>

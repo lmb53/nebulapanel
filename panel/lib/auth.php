@@ -20,7 +20,7 @@ function panel_roles(): array
     return [
         'admin' => ['label' => 'Administrator', 'description' => 'Full panel access, including users, updates and settings.'],
         'operator' => ['label' => 'Operator', 'description' => 'Reads operational state and controls the fixed service allowlist; root-equivalent features remain administrator-only.'],
-        'developer' => ['label' => 'Developer', 'description' => 'Read-only until per-resource ownership assignments are configured.'],
+        'developer' => ['label' => 'Developer', 'assignable' => false, 'description' => 'Not assignable yet: per-website ownership is still to come, so this role is read-only. Existing developer accounts keep working.'],
         'auditor' => ['label' => 'Auditor', 'description' => 'Read-only access to dashboards, services, logs and diagnostics.'],
     ];
 }
@@ -120,6 +120,7 @@ function panel_user_create(string $username, string $password, string $role): ar
     if (!preg_match('/^[A-Za-z0-9_.-]{3,64}$/', $username)) return ['ok' => false, 'error' => 'Username must be 3-64 letters, numbers, dots, dashes, or underscores.'];
     if (($passwordError = panel_password_error($password, $username)) !== null) return ['ok' => false, 'error' => $passwordError];
     if (!isset(panel_roles()[$role])) return ['ok' => false, 'error' => 'Invalid role.'];
+    if ((panel_roles()[$role]['assignable'] ?? true) === false) return ['ok' => false, 'error' => 'That role cannot be assigned yet.'];
     return with_panel_users_lock(function() use($username,$password,$role){
         $users=panel_users();foreach($users as $user)if(strcasecmp((string)($user['username']??''),$username)===0)return ['ok'=>false,'error'=>'That username already exists.'];
         $ids=array_map(fn($user)=>(int)($user['id']??0),$users);$users[]=['id'=>$ids?max($ids)+1:1,'username'=>$username,'hash'=>panel_password_hash($password),'role'=>$role,'enabled'=>true,'created'=>date('c'),'session_version'=>1];
@@ -131,6 +132,7 @@ function panel_user_update(int $id, string $role, bool $enabled, string $passwor
 {
     if (!isset(panel_roles()[$role])) return ['ok' => false, 'error' => 'Invalid role.'];
     return with_panel_users_lock(function() use($id,$role,$enabled,$password){
+        foreach(panel_users() as $existing){if((int)($existing['id']??0)===$id&&($existing['role']??'')!==$role&&(panel_roles()[$role]['assignable']??true)===false)return ['ok'=>false,'error'=>'That role cannot be assigned yet.'];}
         $users=panel_users();$found=false;foreach($users as &$user){if((int)($user['id']??0)!==$id)continue;if((int)($_SESSION['uid']??0)===$id&&(!$enabled||$role!=='admin'))return ['ok'=>false,'error'=>'You cannot disable or demote your own active administrator account.'];if($password!==''&&($passwordError=panel_password_error($password,(string)($user['username']??'')))!==null)return ['ok'=>false,'error'=>$passwordError];$changed=($user['role']??'')!==$role||(bool)($user['enabled']??true)!==$enabled||$password!=='';$user['role']=$role;$user['enabled']=$enabled;if($password!=='')$user['hash']=panel_password_hash($password);if($changed)$user['session_version']=max(1,(int)($user['session_version']??1))+1;$found=true;break;}unset($user);
         if(!$found)return ['ok'=>false,'error'=>'Panel user not found.'];
         // A bearer token has no session account, so the self-demotion guard

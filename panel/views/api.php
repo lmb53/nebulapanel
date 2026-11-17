@@ -13,7 +13,7 @@ $activeCount = count(array_filter($tokens, fn($t) => !$isExpired($t)));
   <form class="card-pad form-stack" id="apiForm" novalidate>
     <div class="form-grid" style="--cols:minmax(0,1.4fr) minmax(0,1fr) minmax(0,.8fr)">
       <div><label class="field-label" for="apiLabel">Name<span class="req" aria-hidden="true">*</span></label><input class="input" id="apiLabel" required maxlength="80" placeholder="monitoring-bot" autocomplete="off"></div>
-      <div><label class="field-label" for="apiRole">Role</label><select class="select" id="apiRole"><option value="auditor">Auditor (read-only)</option><option value="operator">Operator</option><option value="developer">Developer</option><option value="admin">Administrator</option></select></div>
+      <div><label class="field-label" for="apiRole">Role</label><select class="select" id="apiRole"><option value="auditor">Auditor (read-only)</option><option value="operator">Operator</option><option value="admin">Administrator</option></select></div>
       <div><label class="field-label" for="apiTtl">Expires after (days)<span class="req" aria-hidden="true">*</span></label><input class="input mono" id="apiTtl" type="number" required min="1" max="365" value="30"></div>
     </div>
     <div><label class="field-label" for="apiScopes">Scopes<span class="req" aria-hidden="true">*</span></label><input class="input mono" id="apiScopes" required value="get:health" aria-describedby="apiScopesHelp"><div class="field-help" id="apiScopesHelp">Comma-separated <span class="mono">method:endpoint</span> pairs, e.g. <span class="mono">get:health, get:metrics</span>.</div></div>
