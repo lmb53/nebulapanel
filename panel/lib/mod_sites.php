@@ -484,3 +484,142 @@ function site_save_settings(string $domain, array $input): array
         return ['ok' => true, 'settings' => $next] + ($warning ? ['warning' => $warning] : []);
     });
 }
+
+function site_find(string $domain): ?array
+{
+    $domain = strtolower(rtrim(trim($domain), '.'));
+    foreach (sites_list() as $site) {
+        if (($site['domain'] ?? '') === $domain && preg_match('/^[a-f0-9]{32}$/', (string) ($site['id'] ?? ''))) { return $site; }
+    }
+    return null;
+}
+
+/** The site's own crontab as lines (jobs run as the site's Unix user). */
+function site_cron_lines(string $domain): array
+{
+    $site = site_find($domain);
+    if ($site === null) { return ['ok' => false, 'error' => 'Website not found.']; }
+    [$code, $out] = helper_cmd('site-cron-get ' . escapeshellarg((string) $site['id']), 30);
+    if ($code !== 0) { return ['ok' => false, 'error' => trim($out) ?: 'Could not read the schedule.']; }
+    $lines = array_values(array_filter(preg_split('/\r?\n/', rtrim($out)), static fn($l) => $l !== ''));
+    $jobs = [];
+    foreach ($lines as $i => $line) {
+        if ($line[0] === '#' || preg_match('/^[A-Z_]+=/', $line)) { continue; }
+        if (preg_match('/^(@\w+)\s+(.+)$/', $line, $m) || preg_match('/^((?:\S+\s+){4}\S+)\s+(.+)$/', $line, $m)) {
+            $jobs[] = ['index' => $i, 'schedule' => $m[1], 'command' => $m[2], 'raw' => $line];
+        }
+    }
+    return ['ok' => true, 'lines' => $lines, 'jobs' => $jobs];
+}
+
+function site_cron_save_lines(array $site, array $lines): array
+{
+    $text = $lines ? implode("\n", $lines) . "\n" : '';
+    [$code, $out] = helper_cmd('site-cron-put ' . escapeshellarg((string) $site['id']) . ' ' . escapeshellarg(base64_encode($text)), 30);
+    return $code === 0 ? ['ok' => true] : ['ok' => false, 'error' => trim($out) ?: 'Could not save the schedule.'];
+}
+
+function site_cron_add(string $domain, string $schedule, string $command): array
+{
+    require_once APP_ROOT . '/lib/mod_cron.php';
+    $site = site_find($domain);
+    if ($site === null) { return ['ok' => false, 'error' => 'Website not found.']; }
+    $schedule = trim($schedule); $command = trim($command);
+    if (($error = cron_validate($schedule, $command)) !== null) { return ['ok' => false, 'error' => $error]; }
+    $current = site_cron_lines($domain);
+    if (empty($current['ok'])) { return $current; }
+    $lines = $current['lines'];
+    $lines[] = $schedule . ' ' . $command;
+    $res = site_cron_save_lines($site, $lines);
+    if (!empty($res['ok'])) { audit('site.cron.add', $domain . ' ' . $schedule); }
+    return $res;
+}
+
+function site_cron_delete(string $domain, int $index, string $expect): array
+{
+    $site = site_find($domain);
+    if ($site === null) { return ['ok' => false, 'error' => 'Website not found.']; }
+    $current = site_cron_lines($domain);
+    if (empty($current['ok'])) { return $current; }
+    $lines = $current['lines'];
+    if (!isset($lines[$index]) || $lines[$index] !== $expect) {
+        return ['ok' => false, 'conflict' => true, 'error' => 'The schedule changed since this page loaded. Refresh and try again.'];
+    }
+    array_splice($lines, $index, 1);
+    $res = site_cron_save_lines($site, $lines);
+    if (!empty($res['ok'])) { audit('site.cron.delete', $domain . ' #' . $index); }
+    return $res;
+}
+
+/** Turn SFTP access (chrooted to the site folder, no shell) on or off. */
+function site_sftp(string $domain, bool $enable, string $password = ''): array
+{
+    return with_sites_lock(static function () use ($domain, $enable, $password): array {
+        $site = site_find($domain);
+        if ($site === null) { return ['ok' => false, 'error' => 'Website not found.']; }
+        if ($enable && (strlen($password) < 12 || strlen($password) > 256 || str_contains($password, ':') || !preg_match('/^[\x20-\x7E]+$/', $password))) {
+            return ['ok' => false, 'error' => 'Use a password of at least 12 printable characters, without a colon.'];
+        }
+        $args = 'site-sftp ' . escapeshellarg((string) $site['id']) . ' ' . ($enable ? 'enable ' . escapeshellarg(base64_encode($password)) : 'disable');
+        [$code, $out] = helper_cmd($args, 60);
+        if ($code !== 0) { return ['ok' => false, 'error' => trim($out) ?: 'Could not change SFTP access.']; }
+        $sites = sites_stored();
+        foreach ($sites as &$stored) {
+            if (($stored['id'] ?? '') === $site['id']) {
+                $stored['sftp'] = $enable ? ['enabled' => true, 'since' => date('c'), 'user' => 'nebula-s-' . substr((string) $site['id'], 0, 12)] : ['enabled' => false];
+            }
+        }
+        unset($stored);
+        sites_save($sites);
+        audit('site.sftp.' . ($enable ? 'enable' : 'disable'), $domain);
+        return ['ok' => true, 'user' => 'nebula-s-' . substr((string) $site['id'], 0, 12)];
+    });
+}
+
+/**
+ * Copy a website to a new domain (staging): same PHP version and limits,
+ * the files, and optionally copies of its linked databases (linked to the
+ * copy). The copy's configuration still names the original databases until
+ * it is edited; the result says which copies were made.
+ */
+function site_clone(string $sourceDomain, string $newDomain, bool $copyDatabases, ?callable $onOutput = null): array
+{
+    $step = static function (string $text) use ($onOutput): void { if ($onOutput) { $onOutput('==> ' . $text . "\n", 'stdout'); } };
+    $source = site_find($sourceDomain);
+    if ($source === null) { return ['ok' => false, 'error' => 'Source website not found.']; }
+    $step('Creating ' . $newDomain);
+    $created = site_create($newDomain, (string) ($source['php'] ?? ''));
+    if (empty($created['ok'])) { return $created; }
+    $target = site_find($newDomain);
+    if ($target === null) { return ['ok' => false, 'error' => 'The new website was created but could not be found.']; }
+    [$code, $out] = $onOutput ? helper_cmd_stream('site-clone-files ' . escapeshellarg((string) $source['id']) . ' ' . escapeshellarg((string) $target['id']), $onOutput, 3600)
+        : helper_cmd('site-clone-files ' . escapeshellarg((string) $source['id']) . ' ' . escapeshellarg((string) $target['id']), 3600);
+    if ($code !== 0) { return ['ok' => false, 'error' => 'The site was created but copying files failed: ' . trim($out)]; }
+    $settings = site_settings($source);
+    $settings['www'] = false; $settings['redirect'] = 'none';
+    site_save_settings($newDomain, $settings);
+    $copies = [];
+    if ($copyDatabases) {
+        require_once APP_ROOT . '/lib/mod_db.php';
+        require_once APP_ROOT . '/lib/mod_backups.php';
+        $existing = array_column(db_list()['databases'] ?? [], 'name');
+        foreach (backup_site_databases((string) $source['domain']) as $database) {
+            $base = substr($database, 0, 56) . '_copy';
+            $name = $base;
+            for ($n = 2; in_array($name, $existing, true); $n++) { $name = $base . $n; }
+            $step('Copying database ' . $database . ' to ' . $name);
+            [$dc, $do] = db_action('clone', [$database, $name], 3600);
+            if ($dc !== 0) { return ['ok' => false, 'error' => 'Files were copied, but copying database ' . $database . ' failed: ' . db_error($do, $dc)]; }
+            db_link_website($name, $newDomain);
+            $existing[] = $name;
+            $copies[$database] = $name;
+        }
+    }
+    audit('site.clone', $sourceDomain . ' -> ' . $newDomain . ($copies ? ' (+ ' . implode(',', $copies) . ')' : ''));
+    $message = 'Copied to ' . $newDomain . '.';
+    if ($copies) {
+        $message .= ' Database copies: ' . implode(', ', array_map(static fn($from, $to) => "$from → $to", array_keys($copies), $copies))
+            . '. Edit the copy’s configuration (for example wp-config.php) to use them — until then it still talks to the original databases.';
+    }
+    return ['ok' => true, 'domain' => $newDomain, 'id' => $target['id'], 'databases' => $copies, 'message' => $message];
+}

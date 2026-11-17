@@ -197,6 +197,12 @@ $check(strpos($helperSource, 'site-list)') !== false && strpos($helperSource, 's
 $check(strpos($helperSource, 'php-extension)') !== false && strpos($helperSource, 'php-ini-replace)') !== false, 'expanded PHP management helper actions are missing');
 $check(strpos($helperSource, 'pma-signon)') !== false && strpos($helperSource, "SignonSession") !== false, 'phpMyAdmin signed signon support is missing');
 $check(strpos($helperSource, 'roundcube-install)') !== false && strpos($helperSource, 'webmail-remove)') !== false, 'Roundcube installer or generic webmail remover is missing');
+$check(strpos($helperSource, 'site-cron-put)') !== false && strpos($helperSource, 'crontab -u "$SITE_USER" "$TMP"') !== false, 'per-site crontabs do not run as the site user');
+$check(strpos($helperSource, 'ChrootDirectory %h') !== false && strpos($helperSource, 'ForceCommand internal-sftp') !== false, 'website SFTP is not chrooted to SFTP only');
+$check(strpos($helperSource, 'rsync -a --delete --one-file-system --no-specials --no-devices') !== false, 'site cloning can copy devices or cross filesystems');
+require_once APP_ROOT . '/lib/mod_sites.php';
+$check(empty(site_cron_add('missing.example', '* * * * *', 'echo hi')['ok']) && empty(site_sftp('missing.example', true, 'short')['ok'])
+    && empty(site_clone('missing.example', 'copy.example', false)['ok']), 'site cron/SFTP/clone accept an unknown website');
 $check(strpos($helperSource, 'snappymail-install)') === false, 'SnappyMail installer is still present (Roundcube is the only supported webmail)');
 $check(strpos($helperSource, 'compose-install)') !== false, 'Docker Compose installer helper action is missing');
 $check(strpos($helperSource, 'docker-query)') !== false && strpos($helperSource, 'compose-run)') !== false,

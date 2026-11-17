@@ -580,7 +580,7 @@
   }
   async function promptDialog(label, value = '', opts = {}) {
     if (typeof label === 'object') { opts = label; label = opts.label; value = opts.value || ''; }
-    const res = await dialog({ title: opts.title || label, ...opts, input: { label, value, placeholder: opts.placeholder, validate: opts.validate, mono: opts.mono, selectStem: opts.selectStem }, confirmLabel: opts.confirmLabel || 'Save' });
+    const res = await dialog({ title: opts.title || label, ...opts, input: { label, value, placeholder: opts.placeholder, validate: opts.validate, mono: opts.mono, selectStem: opts.selectStem, type: opts.type, autocomplete: opts.autocomplete }, confirmLabel: opts.confirmLabel || 'Save' });
     return res.ok ? res.value : null;
   }
 

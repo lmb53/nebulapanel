@@ -77,6 +77,16 @@ $siteBackups = backup_list($siteId);
 $schedule = backup_schedule();
 $scheduled = !empty($schedule['enabled']) && (!$schedule['sites'] || in_array($siteId, $schedule['sites'], true));
 
+// SFTP
+$sftp = (array) ($site['sftp'] ?? []);
+$sftpOn = !empty($sftp['enabled']);
+$sftpUser = 'nebula-s-' . substr($siteId, 0, 12);
+$sshPort = 22;
+foreach ((array) @file('/etc/ssh/sshd_config', FILE_IGNORE_NEW_LINES) as $line) {
+    if (preg_match('/^\s*Port\s+(\d{1,5})\s*$/i', (string) $line, $m)) { $sshPort = (int) $m[1]; break; }
+}
+$serverHost = preg_replace('/:\d+$/', '', (string) ($_SERVER['HTTP_HOST'] ?? '')) ?: 'this server';
+
 $tab = static fn(string $id, string $icon, string $label, bool $active = false, string $extra = ''): string =>
     '<button class="tab' . ($active ? ' active' : '') . '" type="button" data-tab-target="site-' . $id . '" data-tab-hash="' . $id . '" data-tab-panel-group="#sitePanels"><i data-lucide="' . $icon . '"></i>' . $label . $extra . '</button>';
 ?>
@@ -90,7 +100,7 @@ $tab = static fn(string $id, string $icon, string $label, bool $active = false, 
       <?php if ($pointsHere === true): ?><span class="badge badge-emerald">DNS points here</span><?php elseif ($pointsHere === false): ?><span class="badge badge-orange">DNS not pointing here</span><?php endif; ?>
     </p>
   </div>
-  <div class="page-actions"><a class="btn btn-secondary" href="<?= e($siteUrl) ?>" target="_blank" rel="noopener"><i data-lucide="external-link"></i>Visit site</a></div>
+  <div class="page-actions"><?php if ($helper && role_can('websites.manage')): ?><button class="btn btn-secondary" type="button" id="siteClone"><i data-lucide="copy"></i>Clone…</button><?php endif; ?><a class="btn btn-secondary" href="<?= e($siteUrl) ?>" target="_blank" rel="noopener"><i data-lucide="external-link"></i>Visit site</a></div>
 </div>
 
 <div class="tabs page-tabs" id="siteTabs">
@@ -100,6 +110,7 @@ $tab = static fn(string $id, string $icon, string $label, bool $active = false, 
   <?= $tab('php', 'code-2', 'PHP') ?>
   <?= $tab('databases', 'database', 'Databases', false, $linkedDbs ? ' <span class="badge badge-slate">' . count($linkedDbs) . '</span>' : '') ?>
   <?= $tab('files', 'folder-tree', 'Files') ?>
+  <?= $tab('schedule', 'calendar-clock', 'Scheduled tasks') ?>
   <?= $tab('backups', 'archive-restore', 'Backups', false, $siteBackups ? ' <span class="badge badge-slate">' . count($siteBackups) . '</span>' : '') ?>
 </div>
 
@@ -255,6 +266,38 @@ $tab = static fn(string $id, string $icon, string $label, bool $active = false, 
         <?php if (count($entries) > 40 || !empty($listing['truncated'])): ?><div class="card-pad field-help" style="margin:0">Showing the first 40 items.</div><?php endif; ?>
       <?php endif; ?>
     </div>
+    <?php if ($helper && role_can('websites.manage')): ?>
+    <div class="card" style="margin-top:16px">
+      <div class="card-header"><div><h3>SFTP access</h3><span class="muted">Upload with FileZilla, WinSCP or an editor; locked to this website, no shell</span></div>
+        <span class="badge <?= $sftpOn ? 'badge-emerald' : 'badge-slate' ?>"><span class="bdot"></span><?= $sftpOn ? 'On' : 'Off' ?></span></div>
+      <div class="card-pad">
+        <div class="fm-prop-row"><span class="k">Host</span><span class="v mono"><?= e((string) $serverHost) ?></span></div>
+        <div class="fm-prop-row"><span class="k">Port</span><span class="v mono"><?= (int) $sshPort ?></span></div>
+        <div class="fm-prop-row"><span class="k">Username</span><span class="v mono"><?= e($sftpUser) ?></span></div>
+        <div class="fm-prop-row"><span class="k">Starts in</span><span class="v mono">/public</span></div>
+        <div class="flex gap-2" style="margin-top:12px">
+          <button class="btn btn-primary btn-sm" type="button" id="sftpEnable"><i data-lucide="key-round"></i><?= $sftpOn ? 'Set new password' : 'Turn on SFTP' ?></button>
+          <?php if ($sftpOn): ?><button class="btn btn-secondary btn-sm" type="button" id="sftpDisable"><i data-lucide="lock"></i>Turn off</button><?php endif; ?>
+        </div>
+        <div class="field-help">SSH keys can be added to <span class="mono">.ssh/authorized_keys</span> in the website folder. The firewall must allow port <?= (int) $sshPort ?>.</div>
+      </div>
+    </div>
+    <?php endif; ?>
+  </section>
+
+  <!-- Schedule -->
+  <section data-tab-panel id="site-schedule" class="hidden">
+    <div class="card">
+      <div class="card-header"><div><h3>Scheduled tasks</h3><span class="muted">Run as the website’s own user (<span class="mono"><?= e($sftpUser) ?></span>), not root</span></div></div>
+      <form class="card-pad form-grid" id="siteCronForm" style="grid-template-columns:minmax(140px,200px) 1fr auto;align-items:end;gap:12px">
+        <div><label class="field-label" for="scSchedule">Schedule</label><input class="input mono" id="scSchedule" placeholder="*/5 * * * *" list="scPresets" required autocomplete="off">
+          <datalist id="scPresets"><option value="*/5 * * * *">Every 5 minutes</option><option value="@hourly">Hourly</option><option value="@daily">Daily</option><option value="0 3 * * 0">Weekly (Sunday 03:00)</option></datalist></div>
+        <div><label class="field-label" for="scCommand">Command</label><input class="input mono" id="scCommand" placeholder="php <?= e($docroot) ?>/artisan schedule:run" required autocomplete="off"></div>
+        <button class="btn btn-primary" type="submit" id="scAdd"><i data-lucide="plus"></i>Add</button>
+      </form>
+      <div class="table-wrap"><table class="data-table"><thead><tr><th>Schedule</th><th>Command</th><th class="actions-col"><span class="sr-only">Actions</span></th></tr></thead><tbody id="scBody"><tr class="empty-row"><td colspan="3">Loading…</td></tr></tbody></table></div>
+      <div class="card-pad field-help" style="margin:0">Escape every <span class="mono">%</span> as <span class="mono">\%</span>. Output is discarded unless the command redirects it, e.g. <span class="mono">&gt;&gt; ~/logs/cron.log 2&gt;&amp;1</span>.</div>
+    </div>
   </section>
 
   <!-- Backups -->
@@ -305,6 +348,66 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('siteNamesForm')?.addEventListener('submit', (event) => {
     event.preventDefault();
     saveSettings({ www: document.getElementById('snWww').checked, redirect: document.getElementById('snRedirect').value }, 'domain', event.submitter);
+  });
+  // Scheduled tasks (the site user's crontab)
+  const scBody = document.getElementById('scBody');
+  const td = (text, cls) => { const cell = document.createElement('td'); if (cls) cell.className = cls; cell.textContent = text; return cell; };
+  const loadCron = async () => {
+    const res = await apiPost('sites', { action: 'cron-list', domain });
+    scBody.replaceChildren();
+    if (!res.ok) { const row = document.createElement('tr'); row.className = 'empty-row'; row.append(td(res.error || 'Could not load the schedule.')); row.firstChild.colSpan = 3; scBody.append(row); return; }
+    if (!res.jobs.length) { const row = document.createElement('tr'); row.className = 'empty-row'; row.append(td('No scheduled tasks for this website.')); row.firstChild.colSpan = 3; scBody.append(row); return; }
+    res.jobs.forEach((job) => {
+      const row = document.createElement('tr');
+      const actions = td('', 'actions-col');
+      const del = document.createElement('button'); del.type = 'button'; del.className = 'btn btn-ghost btn-sm'; del.setAttribute('aria-label', 'Delete task');
+      del.innerHTML = '<i data-lucide="trash-2"></i>';
+      del.addEventListener('click', async () => {
+        if (!await window.Nebula.confirm({ title: 'Delete this scheduled task?', message: job.raw, danger: true, confirmLabel: 'Delete' })) return;
+        const out = await apiPost('sites', { action: 'cron-delete', domain, index: job.index, expect: job.raw });
+        toast(out.ok ? 'Task deleted' : (out.error || 'Could not delete'), out.ok ? 'success' : 'error');
+        loadCron();
+      });
+      actions.append(del);
+      row.append(td(job.schedule, 'mono'), td(job.command, 'mono'), actions);
+      scBody.append(row);
+    });
+    if (window.lucide) lucide.createIcons();
+  };
+  let cronLoaded = false;
+  const maybeLoadCron = () => { if (!cronLoaded && !document.getElementById('site-schedule').classList.contains('hidden')) { cronLoaded = true; loadCron(); } };
+  document.querySelector('[data-tab-target="site-schedule"]')?.addEventListener('click', () => setTimeout(maybeLoadCron, 0));
+  setTimeout(maybeLoadCron, 0);
+  document.getElementById('siteCronForm')?.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const button = document.getElementById('scAdd'); setBusy(button, true);
+    const res = await apiPost('sites', { action: 'cron-add', domain, schedule: document.getElementById('scSchedule').value.trim(), command: document.getElementById('scCommand').value.trim() });
+    setBusy(button, false);
+    if (res.ok) { toast('Task added', 'success'); event.target.reset(); loadCron(); } else toast(res.error || 'Could not add the task', 'error');
+  });
+  // SFTP
+  document.getElementById('sftpEnable')?.addEventListener('click', async () => {
+    const password = await window.Nebula.prompt({ title: 'SFTP password', label: 'Password for ' + <?= js_json($sftpUser) ?>, type: 'password',
+      message: 'At least 12 characters. Store it in your SFTP client — it is not shown again.', confirmLabel: 'Save', autocomplete: 'new-password',
+      validate: (v) => v.length < 12 ? 'Use at least 12 characters.' : (v.includes(':') ? 'Do not use a colon.' : null) });
+    if (password === null) return;
+    const res = await apiPost('sites', { action: 'sftp', domain, enable: true, password });
+    if (res.ok) { toast('SFTP is on', 'success'); reloadTo('files'); } else toast(res.error || 'Could not turn on SFTP', 'error');
+  });
+  document.getElementById('sftpDisable')?.addEventListener('click', async () => {
+    if (!await window.Nebula.confirm({ title: 'Turn off SFTP?', message: 'Connected clients are disconnected at their next login and the password stops working.', confirmLabel: 'Turn off' })) return;
+    const res = await apiPost('sites', { action: 'sftp', domain, enable: false });
+    if (res.ok) { toast('SFTP is off', 'success'); reloadTo('files'); } else toast(res.error || 'Could not turn off SFTP', 'error');
+  });
+  // Clone to a new domain
+  document.getElementById('siteClone')?.addEventListener('click', async () => {
+    const choice = await window.Nebula.dialog({ title: 'Clone ' + domain, icon: 'copy', confirmLabel: 'Clone',
+      message: 'Copies the files, PHP version and limits to a new website. The new domain should point to this server before you issue SSL.',
+      input: { label: 'New domain', placeholder: 'staging.' + domain, mono: true, validate: (v) => /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/i.test(v) ? null : 'Enter a domain like staging.example.com' },
+      option: <?= js_json($linkedDbs ? ['label' => 'Also copy the linked databases (' . implode(', ', $linkedDbs) . ')', 'checked' => true, 'help' => 'The copy still uses the original databases until you edit its configuration to use the new copies.'] : null) ?> });
+    if (!choice.ok) return;
+    const res = await runTask({ title: 'Cloning to ' + choice.value, endpoint: 'sites', body: { action: 'clone', domain, new_domain: choice.value.toLowerCase(), databases: !!choice.option }, successMessage: 'Cloned' });
+    if (res.ok) { await window.Nebula.dialog({ title: 'Website cloned', icon: 'circle-check', message: res.message, confirmLabel: 'Open the copy', cancelLabel: 'Stay here' }).then((r) => { if (r.ok) location.href = <?= js_json(url('site')) ?> + '&id=' + encodeURIComponent(res.id); }); }
   });
   document.getElementById('sitePhpForm')?.addEventListener('submit', async (event) => {
     event.preventDefault();

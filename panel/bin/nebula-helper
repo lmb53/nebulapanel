@@ -1383,6 +1383,16 @@ case "$CMD" in
           none) db_sql "REVOKE ALL PRIVILEGES ON \`$3\`.* FROM '$1'@'$2'; FLUSH PRIVILEGES;" ;;
           *) die "invalid grant level" ;;
         esac ;;
+      # clone <source-db> <new-db>: create new-db and copy source into it.
+      clone)
+        db_ident "${1:-}"; db_not_system "$1"; db_ident "${2:-}"; db_not_system "$2"
+        command -v mysqldump >/dev/null 2>&1 || die "mysqldump is not installed"
+        db_sql "CREATE DATABASE \`$2\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+        timeout 3600s mysqldump --single-transaction --quick --routines --triggers --events --no-tablespaces \
+          --default-character-set=utf8mb4 "$1" | timeout 3600s "${MYSQL[@]}" "$2" \
+          || { db_sql "DROP DATABASE IF EXISTS \`$2\`;"; die "could not copy database $1"; }
+        echo "copied $1 to $2"
+        ;;
       # export <db> <archive-name>: gzip'd mysqldump into the panel's private
       # data/db-exports folder (served to the browser by the panel).
       export)
@@ -2460,6 +2470,100 @@ EOF
     systemctl reload nginx
     schedule_php_service reload "$PHPVER"
     echo "settings applied to $DOMAIN"
+    ;;
+
+  # site-cron-get <site-id> / site-cron-put <site-id> <base64-crontab>
+  # The site's own crontab: jobs run as the site user, not the panel.
+  site-cron-get)
+    SITE_ID="${1:-}"; site_state_check "$SITE_ID"
+    crontab -l -u "$SITE_USER" 2>/dev/null || true
+    ;;
+
+  site-cron-put)
+    SITE_ID="${1:-}"; site_state_check "$SITE_ID"
+    exec 8>"/run/lock/nebula-site-${SITE_ID}.lock"
+    flock -w 30 8 || die "another operation is running for this site"
+    TMP="$(mktemp)"; trap 'rm -f "$TMP"' EXIT
+    decode_payload_file "${2:-}" "$TMP" 16384 || [[ -z "${2:-}" ]] || die "invalid crontab payload"
+    [[ -n "${2:-}" ]] || : > "$TMP"
+    # One job per line; environment assignments only for the usual names.
+    while IFS= read -r LINE || [[ -n "$LINE" ]]; do
+      [[ -z "$LINE" || "$LINE" == \#* ]] && continue
+      [[ "$LINE" =~ ^(MAILTO|SHELL|PATH|HOME|CRON_TZ)= ]] && continue
+      [[ "$LINE" =~ ^(@(reboot|yearly|annually|monthly|weekly|daily|midnight|hourly)|[0-9A-Za-z*/,-]+[[:space:]]+[0-9A-Za-z*/,-]+[[:space:]]+[0-9A-Za-z*/,-]+[[:space:]]+[0-9A-Za-z*/,-]+[[:space:]]+[0-9A-Za-z*/,-]+)[[:space:]]+[^[:space:]] ]] \
+        || die "invalid crontab line: ${LINE:0:80}"
+    done < "$TMP"
+    crontab -u "$SITE_USER" "$TMP" || die "cron rejected the schedule"
+    echo "saved"
+    ;;
+
+  # site-sftp <site-id> <enable|disable> [base64-password]
+  # SFTP only (no shell), locked into the site's folder. The site folder
+  # becomes root-owned (OpenSSH requires that for a chroot); everything the
+  # site writes lives in its own subfolders.
+  site-sftp)
+    SITE_ID="${1:-}"; MODE="${2:-}"; site_state_check "$SITE_ID"
+    exec 8>"/run/lock/nebula-site-${SITE_ID}.lock"
+    flock -w 30 8 || die "another operation is running for this site"
+    SFTP_CONF=/etc/ssh/sshd_config.d/nebula-sftp.conf
+    case "$MODE" in
+      enable)
+        TMP="$(mktemp)"; trap 'rm -f "$TMP"' EXIT
+        decode_payload_file "${3:-}" "$TMP" 256 || die "invalid password encoding"
+        PASSWORD="$(<"$TMP")"
+        [[ ${#PASSWORD} -ge 12 && "$PASSWORD" != *:* && "$PASSWORD" =~ ^[[:print:]]+$ ]] || die "SFTP passwords must be 12+ printable characters without a colon"
+        getent group nebula-sftp >/dev/null || groupadd --system nebula-sftp
+        usermod -aG nebula-sftp "$SITE_USER"
+        install -d -m 0700 -o "$SITE_USER" -g "$SITE_USER" "$SITE_BASE/.ssh"
+        chown root:"$SITE_USER" "$SITE_BASE"; chmod 0750 "$SITE_BASE"
+        if [[ ! -f "$SFTP_CONF" ]]; then
+          cat > "$SFTP_CONF" <<'SSHD'
+# Managed by Nebula Panel: website SFTP accounts (no shell, chrooted).
+Match Group nebula-sftp
+    ChrootDirectory %h
+    ForceCommand internal-sftp -d /public
+    AllowTcpForwarding no
+    AllowAgentForwarding no
+    PermitTunnel no
+    X11Forwarding no
+    PasswordAuthentication yes
+SSHD
+          chmod 0644 "$SFTP_CONF"
+          if ! sshd -t 2>/dev/null; then rm -f "$SFTP_CONF"; die "sshd rejected the SFTP configuration"; fi
+          systemctl reload ssh 2>/dev/null || systemctl reload sshd 2>/dev/null || true
+        fi
+        printf '%s:%s\n' "$SITE_USER" "$PASSWORD" | chpasswd || die "could not set the SFTP password"
+        usermod -U "$SITE_USER" 2>/dev/null || true
+        echo "user=$SITE_USER"
+        ;;
+      disable)
+        gpasswd -d "$SITE_USER" nebula-sftp >/dev/null 2>&1 || true
+        passwd -l "$SITE_USER" >/dev/null 2>&1 || true
+        # Give the folder back to the site (it only had to be root-owned for the chroot).
+        chown "$SITE_USER:$SITE_USER" "$SITE_BASE"; chmod 0750 "$SITE_BASE"
+        echo "disabled"
+        ;;
+      *) die "invalid SFTP action" ;;
+    esac
+    ;;
+
+  # site-clone-files <source-site-id> <target-site-id> — copy public/ into a
+  # freshly created site (symlinks stay links; ownership becomes the target's).
+  site-clone-files)
+    SRC_ID="${1:-}"; DST_ID="${2:-}"
+    site_state_check "$SRC_ID"; SRC_PUBLIC="$SITE_PUBLIC"
+    site_state_check "$DST_ID"; DST_PUBLIC="$SITE_PUBLIC"; DST_USER="$SITE_USER"
+    [[ "$SRC_ID" != "$DST_ID" ]] || die "source and target are the same site"
+    exec 8>"/run/lock/nebula-site-${DST_ID}.lock"
+    flock -w 30 8 || die "another operation is running for the target site"
+    echo "==> Copying website files"
+    rsync -a --delete --one-file-system --no-specials --no-devices "$SRC_PUBLIC/" "$DST_PUBLIC/" || die "copy failed"
+    chown -hR "$DST_USER:$DST_USER" "$DST_PUBLIC"
+    find "$DST_PUBLIC" -perm /6000 -exec chmod ug-s {} + 2>/dev/null || true
+    PANEL_USER="$(stat -c %U "$(realpath "$(head -n 1 "$PANEL_ROOT_FILE")")/data")"
+    setfacl -R -P -m "u:${PANEL_USER}:rX,u:www-data:rX" "$DST_PUBLIC"
+    find "$DST_PUBLIC" -type d -exec setfacl -m "d:u:${PANEL_USER}:rX,d:u:www-data:rX" {} +
+    echo "copied"
     ;;
 
   # site-trash-list -> name<TAB>domain<TAB>deleted-epoch<TAB>bytes, one per archived site.

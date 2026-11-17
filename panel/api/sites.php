@@ -32,6 +32,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             (string) ($body['email'] ?? ''),
             $emit
         );
+    } elseif ($action === 'cron-list') {
+        require_capability('websites.manage');
+        $res = site_cron_lines((string) ($body['domain'] ?? ''));
+    } elseif ($action === 'cron-add') {
+        require_capability('websites.manage');
+        $res = site_cron_add((string) ($body['domain'] ?? ''), (string) ($body['schedule'] ?? ''), (string) ($body['command'] ?? ''));
+    } elseif ($action === 'cron-delete') {
+        require_capability('websites.manage');
+        $res = site_cron_delete((string) ($body['domain'] ?? ''), (int) ($body['index'] ?? -1), (string) ($body['expect'] ?? ''));
+    } elseif ($action === 'sftp') {
+        require_capability('websites.manage');
+        $res = site_sftp((string) ($body['domain'] ?? ''), !empty($body['enable']), (string) ($body['password'] ?? ''));
+    } elseif ($action === 'clone') {
+        require_capability('websites.manage');
+        $res = site_clone((string) ($body['domain'] ?? ''), (string) ($body['new_domain'] ?? ''), !empty($body['databases']), $emit ?? stream_output_callback());
     } elseif ($action === 'settings') {
         require_capability('websites.manage');
         $res = site_save_settings((string) ($body['domain'] ?? ''), (array) ($body['settings'] ?? []));
