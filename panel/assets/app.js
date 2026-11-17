@@ -86,8 +86,50 @@
     }
   }
 
-  /** POST JSON and consume newline-delimited progress events as they arrive. */
+  // ---- Background jobs ----------------------------------------------------
+  // Long actions run on the server as background jobs, so a closed tab or a
+  // dropped connection cannot stop a backup or install half way. streamPost()
+  // starts the job and follows its event log; the Jobs menu re-attaches later.
+  const JOB_ENDPOINTS = new Set(['apps', 'backups', 'compose', 'file-extract', 'git', 'mail', 'php', 'pma',
+    'provision', 'sites', 'ssl', 'updates', 'databases']);
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  async function followJob(id, onEvent) {
+    let offset = 0, delay = 300, failures = 0;
+    for (;;) {
+      let res;
+      try {
+        res = await apiGet(`jobs&id=${encodeURIComponent(id)}&offset=${offset}`, { background: true });
+        failures = 0;
+      } catch (e) {
+        if (sessionLost) return { ok: false, error: 'Your session ended. The action keeps running on the server; sign in again and open Jobs to see how it finished.' };
+        failures += 1;
+        if (failures > 40) return { ok: false, error: (e?.message || 'Lost contact with the server') + ' — the action may still be running; check Jobs.' };
+        await sleep(Math.min(5000, 500 * failures));
+        continue;
+      }
+      (res.events || []).forEach((event) => { if (onEvent) onEvent(event); });
+      offset = Number.isFinite(res.offset) ? res.offset : offset;
+      const job = res.job || {};
+      if (job.status === 'done' || job.status === 'failed') {
+        refreshJobs();
+        return job.result || { ok: job.status === 'done', error: job.status === 'failed' ? 'The action failed' : undefined };
+      }
+      await sleep(delay);
+      delay = Math.min(1500, delay + 150);
+    }
+  }
   async function streamPost(endpoint, body, onEvent) {
+    const name = String(endpoint).split('&')[0];
+    if (!JOB_ENDPOINTS.has(name)) return streamPostDirect(endpoint, body, onEvent);
+    const started = await apiPost('jobs', { action: 'start', endpoint: name, body: body || {} });
+    if (!started.ok || !started.job) return started;
+    if (onEvent) onEvent({ type: 'job', job: started.job });
+    refreshJobs();
+    return followJob(started.job.id, onEvent);
+  }
+
+  /** POST JSON and consume newline-delimited progress events as they arrive. */
+  async function streamPostDirect(endpoint, body, onEvent) {
     try {
       const r = await fetch(api(endpoint) + '&stream=1', {
         method: 'POST',
@@ -200,9 +242,9 @@
   }
 
   // Public API for per-module view scripts (available by DOMContentLoaded).
-  window.Nebula = { api, apiGet, apiPost, streamPost, toast, copyText, fmtBytes, fmtDate, cmTheme, registerCM, registerRefresh, refreshAll,
+  window.Nebula = { api, apiGet, apiPost, streamPost, followJob, toast, copyText, fmtBytes, fmtDate, cmTheme, registerCM, registerRefresh, refreshAll,
     confirm: confirmDialog, prompt: promptDialog, runTask, updateSvcBadge, updateSvcEnabled, dialog, validateForm, setFieldError, clearFieldError, setBusy, colorFor, openEditor,
-    cssVar: (name) => cssVar(name), withAlpha: (color, alpha) => withAlpha(color, alpha) };
+    fmtRelative: (value) => fmtRelative(value), cssVar: (name) => cssVar(name), withAlpha: (color, alpha) => withAlpha(color, alpha) };
 
   // ---- Toasts -------------------------------------------------------------
   function toast(msg, type = 'success') {
@@ -462,8 +504,9 @@
       if (opts.showOutput) details.open = true;
       body.appendChild(details);
       const foot = document.createElement('div'); foot.className = 'modal-footer';
-      const hint = document.createElement('span'); hint.className = 'field-help'; hint.style.marginRight = 'auto'; hint.textContent = 'Keep this tab open until the action finishes.';
-      const close = document.createElement('button'); close.type = 'button'; close.className = 'btn btn-secondary'; close.textContent = 'Close'; close.disabled = true;
+      const hint = document.createElement('span'); hint.className = 'field-help'; hint.style.marginRight = 'auto';
+      hint.textContent = 'This keeps running on the server if you close it or leave the page — reopen it from Jobs in the top bar.';
+      const close = document.createElement('button'); close.type = 'button'; close.className = 'btn btn-secondary'; close.textContent = 'Run in background';
       foot.append(hint, close);
       box.append(head, body, foot);
       overlay.appendChild(box);
@@ -479,9 +522,9 @@
         overlay.remove();
         document.removeEventListener('keydown', onKey, true);
         returnFocus?.focus?.();
-        resolve(result || { ok: false, error: 'Cancelled' });
+        resolve(result || { ok: false, background: true, error: 'Still running in the background — see Jobs.' });
       };
-      const onKey = (event) => { if (event.key === 'Escape' && !close.disabled) { event.preventDefault(); finish(); } };
+      const onKey = (event) => { if (event.key === 'Escape') { event.preventDefault(); finish(); } };
       document.addEventListener('keydown', onKey, true);
       close.addEventListener('click', finish);
       const append = (text) => {
@@ -492,13 +535,15 @@
         const steps = text.split(/\r?\n/).filter((line) => line.startsWith('==> '));
         if (steps.length) step.textContent = steps[steps.length - 1].slice(4);
       };
-      streamPost(opts.endpoint, opts.body, (event) => {
+      const onEvent = (event) => {
         if (event.type === 'output' && typeof event.text === 'string') append(event.text);
         if (event.type === 'step' && event.text) { step.textContent = event.text; append('==> ' + event.text + '\n'); }
-      }).then((res) => {
+      };
+      (opts.jobId ? followJob(opts.jobId, onEvent) : streamPost(opts.endpoint, opts.body, onEvent)).then((res) => {
+        if (!document.body.contains(overlay)) return; // closed while it ran: the job carries on server-side
         result = res || { ok: false, error: 'No result' };
         clearInterval(tick);
-        close.disabled = false;
+        close.textContent = 'Close';
         hint.textContent = '';
         icon.classList.add(result.ok ? 'success' : 'danger');
         icon.innerHTML = `<i data-lucide="${result.ok ? 'circle-check' : 'circle-x'}"></i>`;
@@ -1110,6 +1155,51 @@
     overlay.addEventListener('mousedown', (e) => { if (e.target === overlay) close(); });
   }
 
+  // ---- Jobs menu ----------------------------------------------------------
+  let jobsTimer = null;
+  function refreshJobs() { clearTimeout(jobsTimer); jobsTimer = setTimeout(loadJobs, 250); }
+  const JOB_BADGE = { queued: ['badge-slate', 'Queued'], running: ['badge-blue', 'Running'], done: ['badge-emerald', 'Done'], failed: ['badge-red', 'Failed'] };
+  async function loadJobs() {
+    const trigger = document.getElementById('jobsTrigger');
+    const list = document.getElementById('jobsMenuList');
+    if (!trigger || !list || sessionLost) return;
+    let res;
+    try { res = await apiGet('jobs', { background: true }); } catch (e) { return; }
+    const jobs = res.jobs || [];
+    const running = jobs.filter((job) => job.status === 'running' || job.status === 'queued').length;
+    trigger.classList.toggle('has-running', running > 0);
+    document.getElementById('jobsCount').textContent = running ? `${running} running` : (jobs.length ? 'Nothing running' : 'No recent jobs');
+    trigger.setAttribute('aria-label', running ? `Jobs (${running} running)` : 'Jobs');
+    list.innerHTML = '';
+    if (!jobs.length) { list.innerHTML = '<div class="fm-empty-hint">Long actions such as backups and installs appear here.</div>'; }
+    jobs.slice(0, 10).forEach((job) => {
+      const row = document.createElement('button'); row.type = 'button'; row.className = 'job-row';
+      const title = document.createElement('span'); title.className = 'job-title'; title.textContent = job.title || job.endpoint;
+      const meta = document.createElement('span'); meta.className = 'job-meta';
+      meta.textContent = fmtRelative(job.started_at || job.created_at) + (job.result && job.result.error && job.status === 'failed' ? ' · ' + job.result.error : '');
+      const [cls, label] = JOB_BADGE[job.status] || JOB_BADGE.queued;
+      const badge = document.createElement('span'); badge.className = 'badge ' + cls; badge.textContent = label;
+      const text = document.createElement('span'); text.className = 'job-text'; text.append(title, meta);
+      row.append(text, badge);
+      row.addEventListener('click', () => {
+        document.getElementById('jobsMenu')?.classList.add('hidden');
+        runTask({ jobId: job.id, title: job.title || 'Job', autoClose: false, showOutput: true });
+      });
+      list.appendChild(row);
+    });
+    if (running) jobsTimer = setTimeout(loadJobs, 5000);
+  }
+  /** "just now", "5 min ago", "3 h ago", else the full date. */
+  function fmtRelative(value) {
+    const t = typeof value === 'number' && value < 1e12 ? value * 1000 : new Date(value).getTime();
+    if (!Number.isFinite(t) || !t) return '—';
+    const s = Math.round((Date.now() - t) / 1000);
+    if (s < 45) return 'just now';
+    if (s < 3600) return `${Math.round(s / 60)} min ago`;
+    if (s < 86400) return `${Math.round(s / 3600)} h ago`;
+    return fmtDate(t);
+  }
+
   // ---- Accessibility ------------------------------------------------------
   const ICON_LABELS = { x: 'Close', 'trash-2': 'Delete', pencil: 'Edit', 'square-pen': 'Edit', 'refresh-cw': 'Refresh', play: 'Start', square: 'Stop', 'rotate-cw': 'Restart', 'rotate-ccw': 'Restart', download: 'Download', copy: 'Copy', check: 'Confirm', info: 'Details', eye: 'View', 'scroll-text': 'Logs' };
   // Any button with data-copy-text copies that text (used by command hints).
@@ -1240,6 +1330,8 @@
     wireCmdk();
     wireTabs();
     wireNotifications();
+    wireMenu(document.getElementById('jobsTrigger'), document.getElementById('jobsMenu'), loadJobs);
+    loadJobs();
     wireAccessibility();
     restoreCarriedErrors();
 

@@ -66,6 +66,7 @@ import os, sys, stat, pwd, subprocess, secrets, errno
 FM_ROOT_FILE = os.environ.get('NEBULA_FM_ROOT_FILE', '/etc/nebula-panel/fm-root')
 PANEL_ROOT_FILE = os.environ.get('NEBULA_PANEL_ROOT_FILE', '/etc/nebula-panel/panel-root')
 FILE_TRASH = os.environ.get('NEBULA_FILE_TRASH', '/var/lib/nebula-panel/file-trash')
+SITES_ROOT = os.environ.get('NEBULA_SITES_ROOT', '/srv/nebula/sites').rstrip('/')
 MAX_COPY_ENTRIES = 200000
 
 def fail(msg):
@@ -144,6 +145,16 @@ def lstat_at(fd, name):
         return os.stat(name, dir_fd=fd, follow_symlinks=False)
     except OSError:
         return None
+
+def site_locked(path):
+    """A website's own folder (sites root/<id> or its public/): the vhost,
+    PHP pool and identity check point at these exact paths."""
+    path = path.rstrip('/')
+    parent, base = os.path.split(path)
+    is_id = lambda name: len(name) == 32 and all(c in '0123456789abcdef' for c in name)
+    if parent == SITES_ROOT and is_id(base):
+        return True
+    return base == 'public' and os.path.dirname(parent) == SITES_ROOT and is_id(os.path.basename(parent))
 
 def contains_panel(path):
     return bool(PANEL) and (PANEL == path or PANEL.startswith(path.rstrip('/') + '/'))
@@ -224,6 +235,8 @@ def op_rename(src, dst):
         fail('path not found')
     if stat.S_ISDIR(st.st_mode) and contains_panel(src):
         fail('path contains the panel installation')
+    if site_locked(src):
+        fail("this is a website's own folder; manage it from the Websites page")
     rename_noreplace(sfd, sname, sfd, dname)
     print('renamed')
 
@@ -290,6 +303,8 @@ def op_copy_or_move(op, src, dst):
         fail('path contains the panel installation')
     if lstat_at(dfd, dname) is not None:
         fail('destination already exists')
+    if op == 'move' and site_locked(src):
+        fail("this is a website's own folder; manage it from the Websites page")
     if op == 'move':
         try:
             os.rename(sname, dname, src_dir_fd=sfd, dst_dir_fd=dfd)
@@ -384,6 +399,8 @@ def op_trash(path):
         fail('path not found')
     if stat.S_ISDIR(st.st_mode) and contains_panel(path):
         fail('path contains the panel installation')
+    if site_locked(path):
+        fail("this is a website's own folder; delete the website from the Websites page")
     tfd, tpath = trash_dir_for(os.fstat(pfd).st_dev, os.path.dirname(path))
     trashed = '%s-%s-%s' % (__import__('time').strftime('%Y%m%d-%H%M%S'), name[:180], secrets.token_hex(4))
     os.rename(name, trashed, src_dir_fd=pfd, dst_dir_fd=tfd)
@@ -417,7 +434,7 @@ def main(argv):
 main(sys.argv[1:])
 PYEOF
 fmsafe() {
-  NEBULA_FM_ROOT_FILE="$FM_ROOT_FILE" NEBULA_PANEL_ROOT_FILE="$PANEL_ROOT_FILE" NEBULA_FILE_TRASH="$FILE_TRASH" \
+  NEBULA_FM_ROOT_FILE="$FM_ROOT_FILE" NEBULA_PANEL_ROOT_FILE="$PANEL_ROOT_FILE" NEBULA_FILE_TRASH="$FILE_TRASH" NEBULA_SITES_ROOT="$SITES_ROOT" \
     python3 -I -c "$FMSAFE_PY" "$@"
 }
 
@@ -1718,7 +1735,7 @@ case "$CMD" in
   # older than <days> (the scheduler runs this daily).
   file-trash-purge)
     DAYS="${1:-}"; [[ "$DAYS" =~ ^[0-9]{1,4}$ && "$DAYS" -ge 1 ]] || die "invalid retention"
-    for TRASH in "$FILE_TRASH" "$SITES_TRASH"; do
+    for TRASH in "$FILE_TRASH" "$SITES_TRASH" "$MAIL_STORE/.deleted"/*; do
       [[ -d "$TRASH" && ! -L "$TRASH" ]] || continue
       find "$TRASH" -mindepth 1 -maxdepth 1 -mtime +"$DAYS" -exec rm -rf --one-file-system -- {} +
     done
@@ -2144,14 +2161,47 @@ EOF
     fi
     for DB in "${DBS[@]}"; do
       command -v mysql >/dev/null 2>&1 || die "the mysql client is not installed"
-      echo "==> Restoring database $DB"
+      # Import into a scratch database first. A dump that fails half way then
+      # never costs the live database; only a clean import replaces it.
+      SCRATCH="nebula_rs_$(od -An -N5 -tx1 /dev/urandom | tr -d '[:space:]')"
+      OLD="nebula_old_$(od -An -N5 -tx1 /dev/urandom | tr -d '[:space:]')"
+      restore_cleanup() { mysql --binary-mode -e "DROP DATABASE IF EXISTS \`$SCRATCH\`; DROP DATABASE IF EXISTS \`$OLD\`;" >/dev/null 2>&1 || true; }
+      trap 'rm -f "$LISTING"; [[ -n "$STAGE" ]] && rm -rf --one-file-system "$STAGE"; restore_cleanup' EXIT
       CHARSET="$(mysql -N -B -e "SELECT DEFAULT_CHARACTER_SET_NAME, DEFAULT_COLLATION_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME='${DB}'" 2>/dev/null || true)"
-      CREATE="CREATE DATABASE \`${DB}\`"
+      CHARSET_SQL=""
       if [[ "$CHARSET" =~ ^([A-Za-z0-9_]+)[[:space:]]+([A-Za-z0-9_]+)$ ]]; then
-        CREATE="$CREATE CHARACTER SET ${BASH_REMATCH[1]} COLLATE ${BASH_REMATCH[2]}"
+        CHARSET_SQL=" CHARACTER SET ${BASH_REMATCH[1]} COLLATE ${BASH_REMATCH[2]}"
       fi
-      mysql -e "DROP DATABASE IF EXISTS \`${DB}\`; ${CREATE};" || die "could not recreate database $DB"
-      tar -xzOf "$ARCHIVE" "databases/$DB.sql" | timeout 3600s mysql --binary-mode "$DB" || die "could not import database $DB"
+      echo "==> Checking the dump of $DB in a scratch database"
+      mysql --binary-mode -e "CREATE DATABASE \`$SCRATCH\`${CHARSET_SQL};" || die "could not create a scratch database"
+      tar -xzOf "$ARCHIVE" "databases/$DB.sql" | timeout 3600s mysql --binary-mode "$SCRATCH" \
+        || die "the dump of $DB does not import cleanly; the live database was not changed"
+      echo "==> Replacing database $DB"
+      EXTRAS="$(mysql -N -B -e "SELECT (SELECT COUNT(*) FROM information_schema.VIEWS WHERE TABLE_SCHEMA IN ('${DB}','${SCRATCH}')) + (SELECT COUNT(*) FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA IN ('${DB}','${SCRATCH}')) + (SELECT COUNT(*) FROM information_schema.ROUTINES WHERE ROUTINE_SCHEMA IN ('${DB}','${SCRATCH}')) + (SELECT COUNT(*) FROM information_schema.EVENTS WHERE EVENT_SCHEMA IN ('${DB}','${SCRATCH}'))" 2>/dev/null || echo 1)"
+      EXISTS="$(mysql -N -B -e "SELECT COUNT(*) FROM information_schema.SCHEMATA WHERE SCHEMA_NAME='${DB}'" 2>/dev/null || echo 0)"
+      if [[ "$EXTRAS" == 0 && "$EXISTS" == 1 ]]; then
+        # Tables only: swap them in one atomic RENAME TABLE statement.
+        RENAMES=""
+        while IFS= read -r T; do
+          [[ "$T" =~ ^[A-Za-z0-9_\$-]{1,64}$ ]] || die "unexpected table name in $DB"
+          RENAMES+="${RENAMES:+, }\`$DB\`.\`$T\` TO \`$OLD\`.\`$T\`"
+        done < <(mysql -N -B -e "SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA='${DB}'")
+        while IFS= read -r T; do
+          [[ "$T" =~ ^[A-Za-z0-9_\$-]{1,64}$ ]] || die "unexpected table name in the dump of $DB"
+          RENAMES+="${RENAMES:+, }\`$SCRATCH\`.\`$T\` TO \`$DB\`.\`$T\`"
+        done < <(mysql -N -B -e "SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA='${SCRATCH}'")
+        mysql --binary-mode -e "CREATE DATABASE \`$OLD\`;" || die "could not prepare the swap"
+        if [[ -n "$RENAMES" ]]; then
+          mysql --binary-mode -e "RENAME TABLE $RENAMES;" || die "could not swap in the restored tables; the live database was not changed"
+        fi
+      else
+        # Views, triggers or routines cannot move between databases: the
+        # dump is known good now, so import it again into the real one.
+        mysql --binary-mode -e "DROP DATABASE IF EXISTS \`${DB}\`; CREATE DATABASE \`${DB}\`${CHARSET_SQL};" || die "could not recreate database $DB"
+        tar -xzOf "$ARCHIVE" "databases/$DB.sql" | timeout 3600s mysql --binary-mode "$DB" \
+          || die "could not import database $DB after a successful check; restore the safety backup taken before this restore"
+      fi
+      restore_cleanup
       echo "restored database $DB"
     done
     ;;
@@ -3438,6 +3488,21 @@ EOF
       install -d -m 0700 -o vmail -g vmail "$MAIL_STORE/${sub%/}" \
         "$MAIL_STORE/${sub%/}/cur" "$MAIL_STORE/${sub%/}/new" "$MAIL_STORE/${sub%/}/tmp"
     done < "$MAIL_DIR/vmailbox"
+    # A deleted mailbox's mail must not reappear for whoever gets the same
+    # address next: move maildirs without an account to .deleted (purged
+    # after the trash retention period).
+    declare -A LIVE_BOX=()
+    while IFS= read -r line; do [[ -n "$line" ]] && LIVE_BOX["${line#* }"]=1; done < "$MAIL_DIR/vmailbox"
+    shopt -s nullglob
+    for BOX in "$MAIL_STORE"/*/*/; do
+      BOX="${BOX%/}"; DOM="$(basename "$(dirname "$BOX")")"; LOCAL="$(basename "$BOX")"
+      [[ "$DOM" == .* || -L "$BOX" ]] && continue
+      [[ -n "${LIVE_BOX["$DOM/$LOCAL/"]:-}" ]] && continue
+      install -d -m 0700 -o vmail -g vmail "$MAIL_STORE/.deleted" "$MAIL_STORE/.deleted/$DOM"
+      mv -- "$BOX" "$MAIL_STORE/.deleted/$DOM/$LOCAL-$(date +%Y%m%d-%H%M%S)"
+      echo "archived the mailbox folder of deleted account $LOCAL@$DOM"
+    done
+    shopt -u nullglob
 
     # Rebuild DKIM key tables from the domain list, generating any missing keys.
     : > "$TMP/KeyTable"; : > "$TMP/SigningTable"

@@ -143,9 +143,34 @@ function secret_open(string $value): string
     return $plain === false ? '' : $plain;
 }
 
+/** True inside a background job worker (bin/job.php). */
+function in_job(): bool
+{
+    return defined('NEBULA_JOB');
+}
+
+/** Append one event to the running job's log; a "result" event is also kept as the job outcome. */
+function job_log_event(array $event): void
+{
+    if (!in_job()) { return; }
+    if (($event['type'] ?? '') === 'result') {
+        if (isset($GLOBALS['NEBULA_JOB_RESULT'])) { return; } // first result wins
+        $GLOBALS['NEBULA_JOB_RESULT'] = (array) ($event['result'] ?? []);
+    }
+    @file_put_contents(DATA_DIR . '/jobs/' . NEBULA_JOB . '.log',
+        json_encode($event, JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE) . "\n", FILE_APPEND | LOCK_EX);
+}
+
 /** Send a JSON response and stop. */
 function json_out($data, int $code = 200): void
 {
+    if (in_job()) {
+        // A job's outcome is its first result; plain JSON replies become one.
+        $result = is_array($data) ? $data : ['ok' => false, 'error' => 'Unexpected response.'];
+        if (!isset($result['ok'])) { $result['ok'] = $code < 400; }
+        job_log_event(['type' => 'result', 'result' => $result]);
+        exit;
+    }
     if ($code === 400 && is_array($data)) {
         $message = strtolower((string) ($data['error'] ?? ''));
         if (!empty($data['conflict'])) $code = 409;
@@ -176,7 +201,11 @@ function json_out($data, int $code = 200): void
 /** Begin a newline-delimited JSON response that proxies must not buffer. */
 function stream_json_start(): void
 {
-    ignore_user_abort(false);
+    if (in_job()) { return; }
+    // Keep going if the browser goes away: stopping a backup, restore or
+    // install half way is what damages data. (Long actions normally run as
+    // background jobs; this covers direct API streaming clients.)
+    ignore_user_abort(true);
     @set_time_limit(900);
     @ini_set('zlib.output_compression', '0');
     header('Content-Type: application/x-ndjson; charset=UTF-8');
@@ -188,6 +217,11 @@ function stream_json_start(): void
 /** Emit one immediately-flushed NDJSON event. */
 function stream_json_event(array $event): void
 {
+    if (in_job()) {
+        job_log_event($event);
+        return;
+    }
+    if (connection_aborted()) { return; }
     echo json_encode($event, JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE) . "\n";
     @ob_flush();
     flush();
@@ -196,7 +230,7 @@ function stream_json_event(array $event): void
 /** Did the client ask for an NDJSON progress stream (?stream=1)? */
 function stream_requested(): bool
 {
-    return ($_GET['stream'] ?? '') === '1';
+    return in_job() || ($_GET['stream'] ?? '') === '1';
 }
 
 /**
@@ -206,7 +240,7 @@ function stream_requested(): bool
 function stream_output_callback(): ?callable
 {
     static $callback = null;
-    if (!stream_requested() || PHP_SAPI === 'cli') { return null; }
+    if (!stream_requested() || (PHP_SAPI === 'cli' && !in_job())) { return null; }
     if ($callback === null) {
         stream_json_start();
         stream_json_event(['type' => 'start']);
@@ -220,7 +254,7 @@ function stream_output_callback(): ?callable
 /** Finish an action endpoint: a stream "result" event, or a JSON response. */
 function action_out(array $res): void
 {
-    if (stream_requested() && headers_sent()) {
+    if (in_job() || (stream_requested() && headers_sent())) {
         stream_json_event(['type' => 'result', 'result' => $res]);
         exit;
     }
@@ -287,7 +321,8 @@ function csrf_field(): string
  */
 function csrf_check(): void
 {
-    if (function_exists('is_api_token_authenticated') && is_api_token_authenticated()) {
+    // Jobs were CSRF-checked when the browser started them.
+    if (in_job() || (function_exists('is_api_token_authenticated') && is_api_token_authenticated())) {
         return;
     }
     $sent = $_POST['_csrf'] ?? ($_SERVER['HTTP_X_CSRF_TOKEN'] ?? '');
@@ -511,6 +546,9 @@ function ini_size_bytes(string $value): int
  */
 function read_json_body(int $maxBytes = 1048576): array
 {
+    if (in_job()) {
+        return is_array($GLOBALS['NEBULA_JOB_BODY'] ?? null) ? $GLOBALS['NEBULA_JOB_BODY'] : [];
+    }
     $type = strtolower(trim(explode(';', (string) ($_SERVER['CONTENT_TYPE'] ?? ''))[0]));
     if ($type !== 'application/json') {
         json_out(['ok' => false, 'error' => 'Content-Type must be application/json.'], 415);
@@ -594,10 +632,15 @@ function audit(string $action, string $detail = ''): void
     $action = $clean($action, 120);
     $detail = redact_secrets($clean($detail, 2000));
     global $apiAuthId;
-    $authId = function_exists('is_api_token_authenticated') && is_api_token_authenticated()
-        ? 'token:' . $clean((string) ($apiAuthId ?? ''), 32)
-        : (session_status() === PHP_SESSION_ACTIVE && session_id() !== ''
-            ? 'session:' . substr(hash('sha256', session_id()), 0, 16) : 'none');
+    if (function_exists('is_api_token_authenticated') && is_api_token_authenticated()) {
+        $authId = 'token:' . $clean((string) ($apiAuthId ?? ''), 32);
+    } elseif (in_job()) {
+        $authId = 'job:' . NEBULA_JOB;
+    } elseif (session_status() === PHP_SESSION_ACTIVE && session_id() !== '') {
+        $authId = 'session:' . substr(hash('sha256', session_id()), 0, 16);
+    } else {
+        $authId = 'none';
+    }
     $event = [
         'time' => date('c'),
         'actor' => $user,

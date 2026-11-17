@@ -56,7 +56,7 @@ file_put_contents($app . '/data/panel-users.json', json_encode([
 $probe = stream_socket_server('tcp://127.0.0.1:0');
 $port = (int) substr(strrchr(stream_socket_get_name($probe, false), ':'), 1);
 fclose($probe);
-$env = array_merge(getenv(), ['NEBULA_FM_ROOT' => $fmRoot, 'NEBULA_SITES_ROOT' => $fmRoot, 'NEBULA_FORCE_HTTPS' => '0']);
+$env = array_merge(getenv(), ['NEBULA_FM_ROOT' => $fmRoot, 'NEBULA_SITES_ROOT' => $fmRoot, 'NEBULA_FORCE_HTTPS' => '0', 'NEBULA_JOB_ALLOW_ROOT' => '1']);
 $server = proc_open([PHP_BINARY, '-S', '127.0.0.1:' . $port, '-t', $app], [
     0 => ['pipe', 'r'], 1 => ['file', '/dev/null', 'w'], 2 => ['file', '/dev/null', 'w'],
 ], $pipes, $app, $env);
@@ -285,6 +285,24 @@ $check($status === 200 && str_contains($html, 'Schedule') && str_contains($html,
 [$status, $html] = $a->request('GET', 'dashboard');
 $check($status === 200 && str_contains($html, 'data-range="7d"'), 'the dashboard offers 7-day history');
 $check(str_contains($html, 'helper-banner') && str_contains($html, '/usr/local/bin/nebula-helper'), 'a missing helper is explained once, with the fix command');
+
+// 12. Long actions run as background jobs that survive the request.
+$res = $a->api('jobs', ['action' => 'start', 'endpoint' => 'backups', 'body' => ['action' => 'schedule', 'enabled' => false, 'frequency' => 'weekly', 'hour' => 4, 'weekday' => 2, 'keep' => 5]]);
+$jobId = (string) ($res['job']['id'] ?? '');
+$check(($res['ok'] ?? false) === true && $jobId !== '', 'a background job starts');
+$final = null;
+for ($n = 0; $n < 100 && $jobId !== ''; $n++) {
+    $poll = $a->api('jobs&id=' . $jobId . '&offset=0');
+    if (in_array($poll['job']['status'] ?? '', ['done', 'failed'], true)) { $final = $poll; break; }
+    usleep(100000);
+}
+$check(($final['job']['status'] ?? '') === 'done' && ($final['job']['result']['ok'] ?? false) === true, 'the job finishes and reports its result');
+$check(in_array('result', array_column((array) ($final['events'] ?? []), 'type'), true), 'the job log carries the result event');
+$check(($a->api('backups')['schedule']['frequency'] ?? '') === 'weekly', 'the job really ran the action');
+$res = $a->api('jobs', ['action' => 'start', 'endpoint' => 'terminal', 'body' => ['command' => 'id']]);
+$check(($res['ok'] ?? true) === false, 'endpoints outside the job allowlist are refused');
+$list = $a->api('jobs');
+$check(in_array($jobId, array_column((array) ($list['jobs'] ?? []), 'id'), true), 'the jobs list shows the job');
 
 if ($failures) {
     fwrite(STDERR, "$failures HTTP flow regression(s) failed.\n");

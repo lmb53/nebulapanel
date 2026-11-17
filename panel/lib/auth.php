@@ -203,7 +203,7 @@ function role_route_allowed(string $route, ?string $role = null): bool
 
 function api_route_owner(string $name): string
 {
-    $map = ['metrics'=>'dashboard','metrics-history'=>'dashboard','health'=>'dashboard','processes'=>'dashboard','file-upload'=>'files','file-state'=>'files','file-save'=>'files','file-rename'=>'files','file-op'=>'files','file-mkfile'=>'files','file-mkdir'=>'files','file-chmod'=>'files','file-compress'=>'files','file-extract'=>'files','file-delete'=>'files','file-trash'=>'files','file-tree'=>'files','sites'=>'websites','git'=>'websites','compose'=>'docker','fail2ban'=>'firewall','audit'=>'firewall','modsecurity'=>'firewall','provision'=>'apps','pma'=>'phpmyadmin','selfupdate'=>'selfupdate'];
+    $map = ['metrics'=>'dashboard','metrics-history'=>'dashboard','health'=>'dashboard','processes'=>'dashboard','file-upload'=>'files','file-state'=>'files','file-save'=>'files','file-rename'=>'files','file-op'=>'files','file-mkfile'=>'files','file-mkdir'=>'files','file-chmod'=>'files','file-compress'=>'files','file-extract'=>'files','file-delete'=>'files','file-trash'=>'files','file-tree'=>'files','sites'=>'websites','git'=>'websites','compose'=>'docker','fail2ban'=>'firewall','audit'=>'firewall','modsecurity'=>'firewall','provision'=>'apps','pma'=>'phpmyadmin','selfupdate'=>'selfupdate','jobs'=>'dashboard'];
     return $map[$name] ?? $name;
 }
 

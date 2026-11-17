@@ -182,6 +182,20 @@ function fm_site_labels(): array
     return $labels;
 }
 
+/**
+ * A managed website's base folder (sites_root/<id>) or its public/ folder.
+ * The site's Nginx vhost, PHP pool and identity check point at these exact
+ * paths, so renaming, moving or deleting them breaks the site.
+ */
+function fm_path_locked(string $abs): bool
+{
+    $abs = rtrim($abs, '/');
+    if (fm_is_site_base($abs)) { return true; }
+    return basename($abs) === 'public' && fm_is_site_base(dirname($abs));
+}
+
+const FM_LOCKED_MESSAGE = 'This is a website’s own folder. Rename or remove the website on the Websites page instead.';
+
 /** True when $absDir is a managed website's base folder (sites_root/<id>). */
 function fm_is_site_base(string $absDir): bool
 {
@@ -237,7 +251,7 @@ function fm_list(string $absDir, int $limit = FM_LIST_LIMIT): array
     $dirNames = [];
     $fileNames = [];
     while (($entry = readdir($handle)) !== false) {
-        if ($entry === '.' || $entry === '..' || fm_entry_hidden($absDir, $entry)) {
+        if ($entry === '.' || $entry === '..' || fm_entry_hidden($absDir, $entry) || $entry === '.nebula-recovery-trash') {
             continue;
         }
         if (is_dir($absDir . '/' . $entry)) {
@@ -275,6 +289,7 @@ function fm_list(string $absDir, int $limit = FM_LIST_LIMIT): array
                 'owner'    => fm_owner($full),
                 'group'    => fm_group($full),
                 'ext'      => $isDir ? '' : strtolower(pathinfo($full, PATHINFO_EXTENSION)),
+                'locked'   => $isDir && fm_path_locked($full),
             ];
             if ($isDir) {
                 $dirs[] = $item;
@@ -659,6 +674,9 @@ function fm_rename(string $rel, string $newName): array
     if ($abs === null) {
         return ['ok' => false, 'error' => 'Path not found or not allowed.'];
     }
+    if (fm_path_locked($abs)) {
+        return ['ok' => false, 'error' => FM_LOCKED_MESSAGE];
+    }
     if (!fm_valid_name($newName)) {
         return ['ok' => false, 'error' => 'Invalid name. ' . FM_NAME_RULES];
     }
@@ -683,6 +701,9 @@ function fm_chmod(string $rel, string $mode): array
     $abs = fm_resolve($rel);
     if ($abs === null || !file_exists($abs)) {
         return ['ok' => false, 'error' => 'Path not found or not allowed.'];
+    }
+    if (fm_is_site_base($abs)) {
+        return ['ok' => false, 'error' => 'Permissions of a website’s own folder are managed by the panel.'];
     }
     // The UI shows and submits modes as "0755"; accept that form but never a
     // special-bit digit (setuid/setgid/sticky stay out of reach).
@@ -791,6 +812,9 @@ function fm_op(string $rel, string $destDir, string $op): array
     $abs = $op === 'move' ? fm_resolve_entry($rel) : fm_resolve($rel);
     if ($abs === null || $abs === fm_root() || (!file_exists($abs) && !is_link($abs))) {
         return ['ok' => false, 'error' => 'Source not found or not allowed.'];
+    }
+    if ($op === 'move' && fm_path_locked($abs)) {
+        return ['ok' => false, 'error' => FM_LOCKED_MESSAGE];
     }
     $destAbs = fm_resolve($destDir);
     if ($destAbs === null || !is_dir($destAbs)) {
@@ -965,10 +989,19 @@ function fm_trash_move(string $abs): array
     $moved = @rename($abs, $payload);
     if (!$moved && !is_link($abs)) {
         $copied = $isDir ? fm_copy_recursive($abs, $payload) : @copy($abs, $payload);
-        if ($copied && fm_remove_tree($abs)) {
+        if (!$copied) {
+            if (file_exists($payload)) { fm_remove_tree($payload); }
+        } elseif (fm_remove_tree($abs)) {
             $moved = true;
-        } elseif (file_exists($payload)) {
-            fm_remove_tree($payload);
+        } else {
+            // The copy is complete but part of the original could not be
+            // removed. Never throw the copy away now: it may be the only
+            // full version left. Keep it in the trash and say so.
+            $meta['partial'] = true;
+            write_json_file($slot . '/meta.json', $meta);
+            audit('file.trash', $meta['rel'] . ' (partial)');
+            return ['ok' => false, 'code' => 'trash_partial', 'trashed' => true, 'id' => $id,
+                'error' => 'A complete copy is in the trash, but some items could not be removed from the original folder (permission denied). Nothing was lost.'];
         }
     }
     if (!$moved) {

@@ -39,6 +39,7 @@ function scheduler_run(?int $now = null): array
         'history' => static fn() => ['recorded' => history_record(true)],
         'backups' => static fn() => backup_schedule_run_if_due($now),
         'alerts' => static fn() => alerts_evaluate($now),
+        'housekeeping' => static fn() => scheduler_housekeeping($now),
     ];
     $report = [];
     foreach ($jobs as $name => $job) {
@@ -52,8 +53,55 @@ function scheduler_run(?int $now = null): array
         }
         $report[$name]['duration_ms'] = (int) round((microtime(true) - $started) * 1000);
     }
-    write_json_file(scheduler_state_file(), ['last_run' => $now, 'report' => $report]);
+    $state = scheduler_state();
+    if (!empty($report['housekeeping']['ran'])) { $state['housekeeping_at'] = $now; }
+    write_json_file(scheduler_state_file(), array_merge($state, ['last_run' => $now, 'report' => $report]));
     return $report;
+}
+
+/** Days deleted files, archived sites and old mailboxes stay recoverable. */
+function trash_retention_days(): int
+{
+    global $config;
+    return max(1, min(3650, (int) ($config['trash_retention_days'] ?? 30)));
+}
+
+/**
+ * Once a day: drop finished background jobs, purge trash past its retention
+ * period (File Manager trash, root recovery trash, archived websites and
+ * mailboxes) and thin out safety backups taken before restores.
+ */
+function scheduler_housekeeping(int $now): array
+{
+    if ($now - (int) (scheduler_state()['housekeeping_at'] ?? 0) < 86400) {
+        return ['ok' => true, 'ran' => false];
+    }
+    require_once APP_ROOT . '/lib/mod_jobs.php';
+    require_once APP_ROOT . '/lib/files.php';
+    $days = trash_retention_days();
+    $result = ['ok' => true, 'ran' => true, 'jobs_pruned' => jobs_prune($now), 'trash_purged' => 0, 'pre_restore_pruned' => 0];
+    foreach (fm_trash_list() as $item) {
+        if ($now - (int) $item['deleted_at'] > $days * 86400 && !empty(fm_trash_purge((string) $item['id'])['ok'])) {
+            $result['trash_purged']++;
+        }
+    }
+    if (helper_available()) {
+        [$code, $out] = helper_cmd('file-trash-purge ' . $days, 600);
+        if ($code !== 0) { $result['ok'] = false; $result['error'] = 'Recovery trash purge failed: ' . trim($out); }
+    }
+    // Keep the two newest pre-restore safety backups per site, and any from the last 14 days.
+    $bySite = [];
+    foreach (backup_list() as $backup) {
+        if (($backup['kind'] ?? '') === 'pre-restore') { $bySite[$backup['site_id']][] = $backup; }
+    }
+    foreach ($bySite as $rows) {
+        foreach (array_slice($rows, 2) as $old) {
+            if ($now - (int) $old['mtime'] > 14 * 86400 && !empty(backup_delete($old['file'])['ok'])) {
+                $result['pre_restore_pruned']++;
+            }
+        }
+    }
+    return $result;
 }
 
 /** Health item when the timer stopped running on a real (helper-equipped) install. */

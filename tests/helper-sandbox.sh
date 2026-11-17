@@ -55,6 +55,13 @@ echo hi > "$T/panel/data/file-staging/0123456789abcdef0123456789abcdef"
 expect_ok   "install a staged upload"                 "${FS[@]}" install "$T/panel/data/file-staging/0123456789abcdef0123456789abcdef" "$PUB/up.txt" no
 [[ "$(cat "$PUB/up.txt")" == hi ]] && ok "uploaded content installed" || bad "uploaded content installed"
 expect_fail "the root itself cannot be trashed"       "${FS[@]}" trash "$T/sites"
+SITE_ID=0123456789abcdef0123456789abcdef
+mkdir -p "$T/sites/$SITE_ID/public"; [[ "$(id -u)" == 0 ]] && chown -R 65534:65534 "$T/sites/$SITE_ID"
+export NEBULA_SITES_ROOT="$T/sites"
+expect_fail "a website folder cannot be trashed"      "${FS[@]}" trash "$T/sites/$SITE_ID"
+expect_fail "a website public folder cannot be renamed" "${FS[@]}" rename "$T/sites/$SITE_ID/public" "$T/sites/$SITE_ID/www"
+expect_fail "a website public folder cannot be moved" "${FS[@]}" move "$T/sites/$SITE_ID/public" "$T/sites/site/public/x"
+expect_ok   "a website public folder can be copied"   "${FS[@]}" copy "$T/sites/$SITE_ID/public" "$T/sites/site/public/site-copy"
 
 # --- Compose policy ---------------------------------------------------------
 P=(python3 -I "$WORK/policy.py")

@@ -20,6 +20,9 @@ if ($abs === null) {
 if ($abs === fm_root()) {
     json_out(['ok' => false, 'error' => 'The File Manager root folder cannot be deleted.'], 400);
 }
+if (fm_path_locked($abs)) {
+    json_out(['ok' => false, 'error' => FM_LOCKED_MESSAGE], 400);
+}
 
 $exists = static fn(string $path): bool => file_exists($path) || is_link($path);
 
@@ -27,6 +30,9 @@ if (empty($body['permanent'])) {
     $res = fm_trash_move($abs);
     if (!empty($res['ok'])) {
         json_out($res);
+    }
+    if (($res['code'] ?? '') === 'trash_partial') {
+        json_out($res, 409);
     }
     // Root-owned entries cannot be moved by the web user; the helper's
     // recovery trash still keeps them recoverable by an administrator.

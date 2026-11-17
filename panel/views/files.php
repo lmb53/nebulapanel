@@ -88,11 +88,12 @@ foreach ($listing['dirs'] as $d) {
         'perms'    => $d['perms'],
         'owner'    => $d['owner'],
         'group'    => $d['group'],
-        'icon'     => 'folder',
+        'icon'     => !empty($d['locked']) ? 'folder-lock' : 'folder',
         'color'    => 'var(--purple-400)',
         'href'     => url('files', ['path' => $d['rel']]),
         'edit'     => '',
         'download' => '',
+        'locked'   => !empty($d['locked']),
     ];
 }
 foreach ($listing['files'] as $f) {
@@ -276,7 +277,8 @@ if ($rel !== '') {
                     data-color="<?= e($en['color']) ?>"
                     data-href="<?= e($en['href']) ?>"
                     data-edit="<?= e($en['edit']) ?>"
-                    data-download="<?= e($en['download']) ?>">
+                    data-download="<?= e($en['download']) ?>"
+                    data-locked="<?= !empty($en['locked']) ? '1' : '0' ?>">
                   <td class="c-check"><input type="checkbox" class="row-check" aria-label="Select <?= e($en['name']) ?>"></td>
                   <td class="c-name">
                     <div class="fm-name-cell">
@@ -300,8 +302,13 @@ if ($rel !== '') {
                         <?php if (fm_is_extractable($en['name'])): ?><button class="icon-btn" type="button" data-fm-extract="<?= e($en['rel']) ?>" data-name="<?= e($en['name']) ?>" title="Extract" aria-label="Extract <?= e($en['name']) ?>"><i data-lucide="package-open"></i></button><?php endif; ?>
                       <?php endif; ?>
                       <button class="icon-btn" type="button" data-fm-details title="Details" aria-label="Details for <?= e($en['name']) ?>"><i data-lucide="info"></i></button>
+                      <?php if (!empty($en['locked'])): ?>
+                      <span class="icon-btn fm-locked" title="Website folder — rename or remove the website on the Websites page" aria-label="<?= e($en['label']) ?> is a website folder and cannot be renamed or deleted here"><i data-lucide="lock"></i></span>
+                      <span class="icon-btn-spacer" aria-hidden="true"></span>
+                      <?php else: ?>
                       <button class="icon-btn" type="button" data-fm-rename="<?= e($en['rel']) ?>" data-name="<?= e($en['name']) ?>" title="Rename" aria-label="Rename <?= e($en['name']) ?>"><i data-lucide="text-cursor-input"></i></button>
                       <button class="icon-btn danger" type="button" data-fm-delete="<?= e($en['rel']) ?>" title="Delete" aria-label="Delete <?= e($en['name']) ?>"><i data-lucide="trash-2"></i></button>
+                      <?php endif; ?>
                     </div>
                   </td>
                 </tr>
@@ -883,6 +890,8 @@ document.addEventListener('DOMContentLoaded', () => {
       if (row) selectOnly(row);
       const isFile = row && row.dataset.isdir !== '1';
       ['open', 'rename', 'chmod', 'delete', 'details', 'copy', 'cut', 'compress'].forEach((act) => ctx.querySelector(`[data-ctx-act="${act}"]`)?.classList.toggle('hidden', !row));
+      const locked = row && row.dataset.locked === '1';
+      ['rename', 'delete', 'cut'].forEach((act) => ctx.querySelector(`[data-ctx-act="${act}"]`)?.classList.toggle('hidden', !row || locked));
       ctx.querySelector('[data-ctx-act="download"]').classList.toggle('hidden', !isFile);
       ctx.querySelector('[data-ctx-act="extract"]').classList.toggle('hidden', !(isFile && isArchive(row.dataset.name)));
       ctx.querySelector('[data-ctx-open-label]').textContent = isFile ? 'Edit' : 'Open';

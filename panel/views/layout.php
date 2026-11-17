@@ -109,6 +109,13 @@ function nav_link(string $route, string $icon, string $label, string $active): s
       <?php endif; ?>
       <button class="icon-btn" id="themeToggle" type="button" title="Toggle theme" aria-label="Toggle theme"><i data-lucide="moon"></i></button>
       <div class="topbar-menu">
+        <button class="icon-btn jobs-trigger" id="jobsTrigger" type="button" title="Jobs" aria-label="Jobs" aria-haspopup="true" aria-expanded="false" aria-controls="jobsMenu"><i data-lucide="list-checks"></i><span class="jobs-spinner" aria-hidden="true"></span></button>
+        <div class="dropdown-menu notification-menu hidden" id="jobsMenu">
+          <div class="dropdown-head"><div><strong>Jobs</strong><span id="jobsCount">Loading…</span></div></div>
+          <div class="notification-menu-list" id="jobsMenuList"><div class="fm-empty-hint">Loading jobs…</div></div>
+        </div>
+      </div>
+      <div class="topbar-menu">
         <button class="icon-btn" id="notificationTrigger" type="button" title="Notifications" aria-label="Notifications" aria-haspopup="true" aria-expanded="false" aria-controls="notificationMenu"><i data-lucide="bell"></i><span class="dot-badge hidden" id="notificationDot"></span></button>
         <div class="dropdown-menu notification-menu hidden" id="notificationMenu">
           <div class="dropdown-head"><div><strong>Notifications</strong><span id="notificationCount">Loading…</span></div><button class="btn btn-ghost btn-sm" type="button" id="notificationReadAll">Mark all as read</button></div>
