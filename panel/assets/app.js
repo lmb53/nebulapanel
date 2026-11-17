@@ -243,7 +243,7 @@
 
   // Public API for per-module view scripts (available by DOMContentLoaded).
   window.Nebula = { api, apiGet, apiPost, streamPost, followJob, toast, copyText, fmtBytes, fmtDate, cmTheme, registerCM, registerRefresh, refreshAll,
-    confirm: confirmDialog, prompt: promptDialog, runTask, updateSvcBadge, updateSvcEnabled, dialog, validateForm, setFieldError, clearFieldError, setBusy, colorFor, openEditor,
+    confirm: confirmDialog, prompt: promptDialog, runTask, bulkSelect: (table, actions) => bulkSelect(table, actions), updateSvcBadge, updateSvcEnabled, dialog, validateForm, setFieldError, clearFieldError, setBusy, colorFor, openEditor,
     fmtRelative: (value) => fmtRelative(value), cssVar: (name) => cssVar(name), withAlpha: (color, alpha) => withAlpha(color, alpha) };
 
   // ---- Toasts -------------------------------------------------------------
@@ -1483,6 +1483,76 @@
         });
       });
     });
+  }
+
+  // ---- Bulk selection -------------------------------------------------------
+  /**
+   * Nebula.bulkSelect(table, actions): rows carrying data-bulk-id get a
+   * checkbox, the header a select-all box, and a bar above the table offers
+   * the actions for the selection. actions: [{label, icon, danger, run(ids)}].
+   * Call the returned refresh() after re-rendering the rows.
+   */
+  function bulkSelect(table, actions) {
+    if (!table) return { refresh() {} };
+    const wrap = table.closest('.table-wrap') || table;
+    let bar = wrap.previousElementSibling?.classList.contains('bulk-bar') ? wrap.previousElementSibling : null;
+    if (!bar) {
+      bar = document.createElement('div'); bar.className = 'bulk-bar hidden'; bar.setAttribute('role', 'toolbar'); bar.setAttribute('aria-label', 'Selected items');
+      const count = document.createElement('span'); count.className = 'bulk-count';
+      bar.appendChild(count);
+      actions.forEach((action) => {
+        const btn = document.createElement('button'); btn.type = 'button'; btn.className = 'btn btn-sm ' + (action.danger ? 'btn-danger-solid' : 'btn-secondary');
+        btn.innerHTML = action.icon ? `<i data-lucide="${action.icon}"></i>` : '';
+        btn.append(document.createTextNode(action.label));
+        btn.addEventListener('click', async () => {
+          const ids = selected();
+          if (!ids.length) return;
+          setBusy(btn, true);
+          try { await action.run(ids); } finally { setBusy(btn, false); }
+        });
+        bar.appendChild(btn);
+      });
+      const clear = document.createElement('button'); clear.type = 'button'; clear.className = 'btn btn-ghost btn-sm'; clear.textContent = 'Clear selection';
+      clear.addEventListener('click', () => { boxes().forEach((b) => { b.checked = false; }); update(); });
+      bar.appendChild(clear);
+      wrap.parentNode.insertBefore(bar, wrap);
+    }
+    const boxes = () => Array.from(table.querySelectorAll('tbody input[data-bulk-box]'));
+    const selected = () => boxes().filter((b) => b.checked).map((b) => b.value);
+    let all = table.querySelector('thead input[data-bulk-all]');
+    function update() {
+      const n = selected().length, total = boxes().length;
+      bar.classList.toggle('hidden', n === 0);
+      bar.querySelector('.bulk-count').textContent = `${n} selected`;
+      if (all) { all.checked = n > 0 && n === total; all.indeterminate = n > 0 && n < total; }
+    }
+    function refresh() {
+      const headRow = table.tHead?.rows[0];
+      if (headRow && !all) {
+        const th = document.createElement('th'); th.className = 'c-check'; th.setAttribute('data-nosort', '');
+        all = document.createElement('input'); all.type = 'checkbox'; all.dataset.bulkAll = '1'; all.setAttribute('aria-label', 'Select all');
+        all.addEventListener('change', () => { boxes().forEach((b) => { b.checked = all.checked; }); update(); });
+        th.appendChild(all); headRow.insertBefore(th, headRow.firstChild);
+      }
+      Array.from(table.tBodies[0]?.rows || []).forEach((row) => {
+        if (row.querySelector('[data-bulk-box]')) return;
+        const td = document.createElement('td'); td.className = 'c-check';
+        if (row.dataset.bulkId) {
+          const box = document.createElement('input'); box.type = 'checkbox'; box.dataset.bulkBox = '1'; box.value = row.dataset.bulkId;
+          box.setAttribute('aria-label', 'Select ' + row.dataset.bulkId);
+          box.addEventListener('change', update);
+          td.appendChild(box);
+        } else if (row.querySelector('td[colspan]')) {
+          row.querySelector('td[colspan]').colSpan += 1;
+          return;
+        }
+        row.insertBefore(td, row.firstChild);
+      });
+      if (window.lucide) lucide.createIcons();
+      update();
+    }
+    refresh();
+    return { refresh, selected };
   }
 
   // ---- Top bar title ------------------------------------------------------

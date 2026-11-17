@@ -212,9 +212,9 @@ $totalMb = count($state['accounts']);
           <div class="empty-state"><div class="es-icon"><i data-lucide="inbox"></i></div><div style="font-weight:600">Add a mail domain to get started</div><div style="font-size:13px;margin-top:4px">Enter a domain above, then create mailboxes on it.</div></div>
         <?php else: ?>
           <h4 class="sec">Mailboxes on <?= e($selected) ?></h4>
-          <div class="table-wrap"><table class="data-table"><thead><tr><th>Address</th><th>Created</th><th></th></tr></thead><tbody>
+          <div class="table-wrap"><table class="data-table" id="mailboxTable"><thead><tr><th>Address</th><th>Created</th><th></th></tr></thead><tbody>
             <?php foreach ($mailboxes as $m): ?>
-              <tr>
+              <tr data-bulk-id="<?= e((string) $m['email']) ?>">
                 <td class="mono"><?= e((string) $m['email']) ?></td>
                 <td class="mono text-tertiary"><?= e(substr((string) ($m['created'] ?? ''), 0, 10)) ?></td>
                 <td style="text-align:right;white-space:nowrap">
@@ -431,8 +431,14 @@ document.addEventListener('DOMContentLoaded', () => {
     const res = await apiPost('mail', { action: 'account-add', email: user + '@' + domain, password: pass });
     if (res.ok) { toast(res.warning || 'Mailbox created', res.warning ? 'warning' : 'success'); reload(); } else toast(res.error || 'Failed', 'error');
   });
+  window.Nebula.bulkSelect(document.getElementById('mailboxTable'), [{ label: 'Delete selected', icon: 'trash-2', danger: true, run: async (emails) => {
+    if (!await window.Nebula.confirm({ title: `Delete ${emails.length} mailbox${emails.length === 1 ? '' : 'es'}?`, message: emails.join(', ') + '. Their mail folders are archived on the server.', danger: true })) return;
+    let failed = 0;
+    for (const email of emails) { const r = await apiPost('mail', { action: 'account-delete', email }); if (!r.ok) { failed += 1; toast(r.error || 'Could not delete ' + email, 'error'); } }
+    if (failed < emails.length) { toast(`Deleted ${emails.length - failed} mailbox${emails.length - failed === 1 ? '' : 'es'}`, 'success'); reload(); }
+  } }]);
   document.querySelectorAll('[data-account-delete]').forEach(b => b.addEventListener('click', async () => {
-    if (!await window.Nebula.confirm({ title: 'Delete mailbox ' + b.dataset.accountDelete + '?', message: 'Stored mail for this mailbox is removed.', danger: true })) return;
+    if (!await window.Nebula.confirm({ title: 'Delete mailbox ' + b.dataset.accountDelete + '?', message: 'Its mail folder is archived on the server and removed after the trash retention period.', danger: true })) return;
     const res = await apiPost('mail', { action: 'account-delete', email: b.dataset.accountDelete });
     if (res.ok) { toast('Mailbox deleted', 'success'); reload(); } else toast(res.error || 'Failed', 'error');
   }));
