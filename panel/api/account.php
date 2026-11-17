@@ -4,7 +4,8 @@
  * never to bearer tokens.
  *   GET  → {sessions, mfa}
  *   POST {action: password | revoke-session | revoke-other-sessions |
- *         mfa-setup | mfa-confirm | mfa-disable | mfa-recovery, ...}
+ *         mfa-setup | mfa-confirm | mfa-disable | mfa-recovery |
+ *         token-list | token-generate | token-revoke, ...}
  */
 require APP_ROOT . '/lib/mod_settings.php';
 require_once APP_ROOT . '/lib/mod_mfa.php';
@@ -55,6 +56,22 @@ switch ($action) {
         break;
     case 'mfa-recovery':
         $res = mfa_regenerate_recovery($uid, (string) ($b['password'] ?? ''), (string) ($b['code'] ?? ''));
+        break;
+    case 'token-list':
+        require_once APP_ROOT . '/lib/mod_api.php';
+        $res = ['ok' => true, 'tokens' => api_tokens_for($uid)];
+        break;
+    case 'token-generate':
+        require_once APP_ROOT . '/lib/mod_api.php';
+        $owner = api_current_owner();
+        $res = $owner === null ? ['ok' => false, 'error' => 'Your account was not found.'] : api_token_generate(
+            (string) ($b['label'] ?? ''), (string) ($b['role'] ?? $owner['role']),
+            is_array($b['scopes'] ?? null) ? $b['scopes'] : ['get:health'], (int) ($b['ttl_days'] ?? 30),
+            is_array($b['allowed_ips'] ?? null) ? $b['allowed_ips'] : [], $owner);
+        break;
+    case 'token-revoke':
+        require_once APP_ROOT . '/lib/mod_api.php';
+        $res = api_token_revoke((string) ($b['id'] ?? ''), $uid);
         break;
     default:
         $res = ['ok' => false, 'error' => 'Unknown action.'];

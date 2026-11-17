@@ -83,9 +83,66 @@ $mfa = mfa_status((int) ($_SESSION['uid'] ?? 0));
   </div>
 </div>
 
+<?php $myRole = current_role(); $tokenRoles = array_filter(['auditor' => 'Auditor (read-only)', 'operator' => 'Operator', 'admin' => 'Administrator'], static fn($r) => ['auditor' => 0, 'developer' => 1, 'operator' => 2, 'admin' => 3][$r] <= (['auditor' => 0, 'developer' => 1, 'operator' => 2, 'admin' => 3][$myRole] ?? 0), ARRAY_FILTER_USE_KEY); ?>
+<div class="card" id="tokens" style="margin-top:16px">
+  <div class="card-header"><div><h3>Your API tokens</h3><span class="muted">For scripts and monitoring; they act as you, never with more access than your role</span></div></div>
+  <form class="card-pad form-grid" id="tokForm" style="--cols:minmax(0,1.3fr) minmax(0,1fr) minmax(0,.7fr) minmax(0,1.3fr) auto;align-items:end" novalidate>
+    <div><label class="field-label" for="tokLabel">Name</label><input class="input" id="tokLabel" required maxlength="80" placeholder="uptime-monitor" autocomplete="off"></div>
+    <div><label class="field-label" for="tokRole">Access</label><select class="select" id="tokRole"><?php foreach ($tokenRoles as $value => $label): ?><option value="<?= e($value) ?>"><?= e($label) ?></option><?php endforeach; ?></select></div>
+    <div><label class="field-label" for="tokTtl">Days</label><input class="input mono" id="tokTtl" type="number" min="1" max="365" value="30" required></div>
+    <div><label class="field-label" for="tokScopes">Scopes</label><input class="input mono" id="tokScopes" value="get:health" required></div>
+    <button class="btn btn-primary" type="submit" id="tokCreate"><i data-lucide="key-round"></i>Create</button>
+  </form>
+  <div id="tokReveal" class="card-pad hidden" style="padding-top:0"><div class="notice notice-success" role="status"><i data-lucide="circle-check"></i><div style="flex:1;min-width:0"><strong>Copy the token now — it is shown only once.</strong>
+    <div class="flex gap-2" style="margin-top:8px"><input class="input mono" id="tokPlain" readonly aria-label="New token value"><button class="btn btn-secondary" type="button" id="tokCopy"><i data-lucide="copy"></i>Copy</button></div></div></div></div>
+  <div class="table-wrap"><table class="data-table"><thead><tr><th>Name</th><th>Access</th><th>Expires</th><th>Last used</th><th class="actions-col"><span class="sr-only">Actions</span></th></tr></thead><tbody id="tokRows"><tr class="empty-row"><td colspan="5">Loading…</td></tr></tbody></table></div>
+</div>
+
 <script nonce="<?= e(csp_nonce()) ?>">
 document.addEventListener('DOMContentLoaded', () => {
   const { apiPost, toast, validateForm, setBusy } = window.Nebula;
+  // ---- Personal API tokens ----
+  const tokRows = document.getElementById('tokRows');
+  const roleNames = { auditor: 'Auditor', developer: 'Developer', operator: 'Operator', admin: 'Administrator' };
+  const tcell = (text, cls) => { const td = document.createElement('td'); if (cls) td.className = cls; td.textContent = text; return td; };
+  const renderTokens = (tokens) => {
+    tokRows.replaceChildren();
+    if (!tokens.length) { const tr = document.createElement('tr'); tr.className = 'empty-row'; const td = tcell('You have no API tokens.'); td.colSpan = 5; tr.append(td); tokRows.append(tr); return; }
+    tokens.forEach((t) => {
+      const tr = document.createElement('tr');
+      const expired = t.expires_at && new Date(t.expires_at) < new Date();
+      const act = tcell('', 'actions-col');
+      const rv = document.createElement('button'); rv.type = 'button'; rv.className = 'btn btn-danger btn-sm'; rv.textContent = 'Revoke';
+      rv.addEventListener('click', async () => {
+        if (!await window.Nebula.confirm({ title: 'Revoke ' + t.label + '?', message: 'Anything using it stops working immediately.', danger: true, confirmLabel: 'Revoke' })) return;
+        const r = await apiPost('account', { action: 'token-revoke', id: t.id });
+        if (r.ok) { toast('Token revoked', 'success'); loadTokens(); } else toast(r.error || 'Could not revoke', 'error');
+      });
+      act.append(rv);
+      const name = tcell(t.label); name.style.fontWeight = '600';
+      tr.append(name, tcell((roleNames[t.role] || t.role) + ' · ' + (t.scopes || []).join(', '), 'mono text-tertiary'),
+        tcell(window.Nebula.fmtDate(t.expires_at) + (expired ? ' (expired)' : '')), tcell(t.last_used_at ? window.Nebula.fmtDate(t.last_used_at) : 'Never', 'text-tertiary'), act);
+      tokRows.append(tr);
+    });
+  };
+  const loadTokens = async () => { const r = await apiPost('account', { action: 'token-list' }); if (r.ok) renderTokens(r.tokens); };
+  loadTokens();
+  document.getElementById('tokForm').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    if (!validateForm(event.currentTarget)) return;
+    const btn = document.getElementById('tokCreate'); setBusy(btn, true);
+    const r = await apiPost('account', { action: 'token-generate', label: document.getElementById('tokLabel').value.trim(), role: document.getElementById('tokRole').value,
+      ttl_days: Number(document.getElementById('tokTtl').value), scopes: document.getElementById('tokScopes').value.split(',').map((x) => x.trim()).filter(Boolean) });
+    setBusy(btn, false);
+    if (!r.ok) { toast(r.error || 'Could not create the token', 'error'); return; }
+    document.getElementById('tokPlain').value = r.token; document.getElementById('tokReveal').classList.remove('hidden');
+    event.target.reset(); loadTokens(); toast('Token created', 'success');
+  });
+  document.getElementById('tokCopy').addEventListener('click', async () => {
+    const ok = await window.Nebula.copyText(document.getElementById('tokPlain').value);
+    toast(ok ? 'Token copied' : 'Copy failed — select it and copy manually', ok ? 'success' : 'error');
+  });
+
   const form = document.getElementById('accountPwForm');
   form.addEventListener('submit', async (event) => {
     event.preventDefault();

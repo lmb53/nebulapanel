@@ -99,6 +99,23 @@ api_tokens_save([[
 ]]);
 $check(!api_token_authenticate($restricted), 'bearer token source-IP restrictions are enforced');
 
+// Per-user tokens: never above the owner, dead once the owner is disabled.
+save_panel_users([
+    ['id' => 7, 'username' => 'ops', 'hash' => panel_password_hash('ops password long 1'), 'role' => 'operator', 'enabled' => true],
+    ['id' => 8, 'username' => 'boss', 'hash' => panel_password_hash('boss password long 1'), 'role' => 'admin', 'enabled' => true],
+]);
+$opsOwner = ['id' => 7, 'username' => 'ops', 'role' => 'operator'];
+$check(empty(api_token_generate('escalate', 'admin', ['get:health'], 30, [], $opsOwner)['ok']), 'a user cannot mint a token above their own role');
+$owned = api_token_generate('ops-monitor', 'operator', ['get:health'], 30, [], $opsOwner);
+$check(!empty($owned['ok']) && ($owned['record']['owner'] ?? '') === 'ops', 'tokens record their owner');
+$bossToken = api_token_generate('boss-bot', 'admin', ['get:health'], 30, [], ['id' => 8, 'username' => 'boss', 'role' => 'admin']);
+$check(empty(api_token_revoke((string) $bossToken['record']['id'], 7)['ok']), 'a user cannot revoke someone else\'s token');
+$users = panel_users(); $users[1]['role'] = 'auditor'; save_panel_users($users);
+$check(api_token_authenticate((string) $bossToken['token']) && current_role() === 'auditor', 'a demoted owner\'s token is demoted with them');
+$users = panel_users(); $users[0]['enabled'] = false; save_panel_users($users);
+$check(!api_token_authenticate((string) $owned['token']), 'a disabled owner\'s tokens stop working');
+$check(!empty(api_token_revoke((string) $owned['record']['id'], 7)['ok']), 'owners can revoke their own tokens');
+api_tokens_save([]);
 $check(backup_resolve('../not-a-backup') === null, 'backup filenames are strictly confined');
 
 $redacted = log_redact("Authorization: Bearer abc.def\npassword=hunter2\nhttps://u:p@example.test/repo");

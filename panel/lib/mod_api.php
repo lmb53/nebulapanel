@@ -27,11 +27,39 @@ function with_api_tokens_lock(callable $callback)
 
 function api_token_public(array $token): array
 {
-    return array_intersect_key($token, array_flip(['id', 'label', 'role', 'scopes', 'allowed_ips', 'created_at', 'expires_at', 'last_used_at']));
+    return array_intersect_key($token, array_flip(['id', 'label', 'role', 'scopes', 'allowed_ips', 'created_at', 'expires_at', 'last_used_at', 'owner_id', 'owner']));
 }
 
-function api_token_generate(string $label, string $role = 'auditor', array $scopes = ['get:health'], int $ttlDays = 30, array $allowedIps = []): array
+/** Role strength, so a token can never act above the person who owns it. */
+function api_role_rank(string $role): int
 {
+    return ['auditor' => 0, 'developer' => 1, 'operator' => 2, 'admin' => 3][$role] ?? 0;
+}
+
+/** The signed-in person as a token owner, or null for bearer/CLI contexts. */
+function api_current_owner(): ?array
+{
+    $uid = (int) ($_SESSION['uid'] ?? 0);
+    if ($uid <= 0) { return null; }
+    foreach (panel_users() as $user) {
+        if ((int) ($user['id'] ?? 0) === $uid) { return ['id' => $uid, 'username' => (string) $user['username'], 'role' => (string) ($user['role'] ?? 'auditor')]; }
+    }
+    return null;
+}
+
+/** Tokens owned by one person (newest first). */
+function api_tokens_for(int $ownerId): array
+{
+    $mine = array_values(array_filter(api_tokens_load(), static fn($t) => (int) ($t['owner_id'] ?? 0) === $ownerId));
+    return array_reverse(array_map('api_token_public', $mine));
+}
+
+function api_token_generate(string $label, string $role = 'auditor', array $scopes = ['get:health'], int $ttlDays = 30, array $allowedIps = [], ?array $owner = null): array
+{
+    $owner = $owner ?? api_current_owner();
+    if ($owner !== null && api_role_rank($role) > api_role_rank($owner['role'])) {
+        return ['ok' => false, 'error' => 'A token cannot have more access than your own role.'];
+    }
     $label = trim($label);
     if ($label === '' || strlen($label) > 80) { return ['ok' => false, 'error' => 'Label must be 1–80 characters.']; }
     if (!isset(panel_roles()[$role]) || (panel_roles()[$role]['assignable'] ?? true) === false) { return ['ok' => false, 'error' => 'Invalid token role.']; }
@@ -62,7 +90,7 @@ function api_token_generate(string $label, string $role = 'auditor', array $scop
         'created_at' => date('c'),
         'expires_at' => date('c', time() + $ttlDays * 86400),
         'last_used_at' => null,
-    ];
+    ] + ($owner !== null ? ['owner_id' => (int) $owner['id'], 'owner' => (string) $owner['username']] : []);
     $saved = with_api_tokens_lock(static function () use ($record): array {
         $tokens = api_tokens_load();
         $tokens[] = $record;
@@ -73,12 +101,13 @@ function api_token_generate(string $label, string $role = 'auditor', array $scop
     return ['ok' => true, 'token' => $plain, 'record' => api_token_public($record)];
 }
 
-function api_token_revoke(string $id): array
+function api_token_revoke(string $id, ?int $ownerId = null): array
 {
     if (!preg_match('/^[a-f0-9]{16}$/', $id)) { return ['ok' => false, 'error' => 'Invalid token.']; }
-    $result = with_api_tokens_lock(static function () use ($id): array {
+    $result = with_api_tokens_lock(static function () use ($id, $ownerId): array {
         $tokens = api_tokens_load();
-        $next = array_values(array_filter($tokens, fn($token) => ($token['id'] ?? '') !== $id));
+        $next = array_values(array_filter($tokens, fn($token) => ($token['id'] ?? '') !== $id
+            || ($ownerId !== null && (int) ($token['owner_id'] ?? 0) !== $ownerId)));
         if (count($next) === count($tokens)) { return ['ok' => false, 'error' => 'Token not found.']; }
         return api_tokens_save($next) ? ['ok' => true] : ['ok' => false, 'error' => 'Could not revoke token.'];
     });
@@ -118,9 +147,18 @@ function api_token_authenticate(string $plain): bool
     }
     if (empty($matched['ok'])) { return false; }
     $token = $matched['record'];
-    $apiAuthLabel = (string) ($token['label'] ?? 'token');
+    $role = isset(panel_roles()[(string) ($token['role'] ?? '')]) ? (string) $token['role'] : 'auditor';
+    // A person's tokens stop working when they are disabled or deleted, and
+    // never act above their current role (a demoted admin's token is demoted too).
+    if (isset($token['owner_id'])) {
+        $owner = null;
+        foreach (panel_users() as $user) { if ((int) ($user['id'] ?? 0) === (int) $token['owner_id']) { $owner = $user; break; } }
+        if ($owner === null || empty($owner['enabled'])) { return false; }
+        if (api_role_rank((string) ($owner['role'] ?? 'auditor')) < api_role_rank($role)) { $role = (string) ($owner['role'] ?? 'auditor'); }
+    }
+    $apiAuthLabel = (string) ($token['label'] ?? 'token') . (isset($token['owner']) ? ' (' . $token['owner'] . ')' : '');
     $apiAuthId = (string) ($token['id'] ?? '');
-    $apiAuthRole = isset(panel_roles()[(string) ($token['role'] ?? '')]) ? (string) $token['role'] : 'auditor';
+    $apiAuthRole = $role;
     $apiAuthScopes = is_array($token['scopes'] ?? null) ? $token['scopes'] : [];
     return true;
 }
