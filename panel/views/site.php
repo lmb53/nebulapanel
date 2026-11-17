@@ -135,6 +135,20 @@ $tab = static fn(string $id, string $icon, string $label, bool $active = false, 
 
   <!-- Domain & DNS -->
   <section data-tab-panel id="site-domain" class="hidden">
+    <?php $ss = site_settings($site); ?>
+    <div class="card" style="margin-bottom:16px">
+      <div class="card-header"><div><h3>Names &amp; redirect</h3><span class="muted">Which host names this site answers to, and which one is canonical</span></div></div>
+      <form class="card-pad form-grid" id="siteNamesForm" style="--cols:repeat(auto-fit,minmax(220px,1fr));align-items:end" novalidate>
+        <label class="modal-option"><input type="checkbox" id="snWww"<?= $ss['www'] ? ' checked' : '' ?>><span>Also serve <span class="mono">www.<?= e($domain) ?></span></span></label>
+        <div><label class="field-label" for="snRedirect">Canonical name</label><select class="select" id="snRedirect">
+          <option value="none"<?= $ss['redirect'] === 'none' ? ' selected' : '' ?>>No redirect</option>
+          <option value="to-apex"<?= $ss['redirect'] === 'to-apex' ? ' selected' : '' ?>>Redirect www → <?= e($domain) ?></option>
+          <option value="to-www"<?= $ss['redirect'] === 'to-www' ? ' selected' : '' ?>>Redirect <?= e($domain) ?> → www</option>
+        </select></div>
+        <div><button class="btn btn-primary" type="submit"><i data-lucide="save"></i>Save names</button></div>
+      </form>
+      <div class="card-pad field-help" style="padding-top:0">The www name needs its own DNS record (a CNAME to <?= e($domain) ?> works). After turning it on, issue the certificate again so HTTPS covers it.</div>
+    </div>
     <div class="grid grid-2">
       <div class="card">
         <div class="card-header"><h3>Public DNS</h3><?php if ($pointsHere === true): ?><span class="badge badge-emerald"><span class="bdot"></span>Points to this server</span><?php elseif ($pointsHere === false): ?><span class="badge badge-orange"><span class="bdot"></span>Not pointing here</span><?php endif; ?></div>
@@ -196,9 +210,22 @@ $tab = static fn(string $id, string $icon, string $label, bool $active = false, 
             </div>
             <button class="btn btn-primary" type="submit" id="sitePhpSave"><i data-lucide="save"></i>Switch version</button>
           </form>
-          <div class="field-help" style="margin-top:10px">The site’s private PHP-FPM pool moves to the chosen version; ini settings and extensions are per version on the PHP page.</div>
+          <div class="field-help" style="margin-top:10px">The site’s private PHP-FPM pool moves to the chosen version; extensions are per version on the PHP page.</div>
         <?php endif; ?>
       </div>
+    </div>
+    <?php $ss = site_settings($site); ?>
+    <div class="card" style="margin-top:16px">
+      <div class="card-header"><div><h3>Limits for this website</h3><span class="muted">Only this site’s PHP pool and web server block change</span></div></div>
+      <form class="card-pad form-grid" id="siteLimitsForm" style="--cols:repeat(auto-fit,minmax(170px,1fr))" novalidate>
+        <div><label class="field-label" for="slMemory">Memory limit (MB)</label><input class="input mono" id="slMemory" type="number" min="32" max="16384" value="<?= (int) $ss['memory_limit'] ?>"></div>
+        <div><label class="field-label" for="slUpload">Largest upload (MB)</label><input class="input mono" id="slUpload" type="number" min="1" max="10240" value="<?= (int) $ss['upload_mb'] ?>"></div>
+        <div><label class="field-label" for="slExec">Max execution time (s)</label><input class="input mono" id="slExec" type="number" min="5" max="3600" value="<?= (int) $ss['max_execution_time'] ?>"></div>
+        <div><label class="field-label" for="slVars">Max input variables</label><input class="input mono" id="slVars" type="number" min="100" max="100000" value="<?= (int) $ss['max_input_vars'] ?>"></div>
+        <div><label class="field-label" for="slChildren">PHP workers</label><input class="input mono" id="slChildren" type="number" min="1" max="50" value="<?= (int) $ss['max_children'] ?>"><div class="field-help">Requests this site can run at once.</div></div>
+        <div><label class="field-label" for="slDisplay">Show PHP errors in pages</label><select class="select" id="slDisplay"><option value="0"<?= $ss['display_errors'] ? '' : ' selected' ?>>No (log only)</option><option value="1"<?= $ss['display_errors'] ? ' selected' : '' ?>>Yes (development)</option></select></div>
+        <div style="align-self:end"><button class="btn btn-primary" type="submit" id="slSave"><i data-lucide="save"></i>Apply limits</button></div>
+      </form>
     </div>
   </section>
 
@@ -260,6 +287,24 @@ document.addEventListener('DOMContentLoaded', () => {
   document.querySelector('[data-site-renew]')?.addEventListener('click', async (event) => {
     const res = await runTask({ title: 'Renewing certificate', endpoint: 'ssl', body: { action: 'renew', name: event.currentTarget.dataset.siteRenew }, successMessage: 'Renewed' });
     if (res.ok) { toast('Certificate renewed', 'success'); reloadTo('ssl'); }
+  });
+  const saveSettings = async (settings, tab, button) => {
+    setBusy(button, true);
+    const res = await apiPost('sites', { action: 'settings', domain, settings });
+    setBusy(button, false);
+    if (res.ok) { toast(res.warning || 'Settings applied', res.warning ? 'warning' : 'success'); setTimeout(() => reloadTo(tab), res.warning ? 2500 : 500); }
+    else toast(res.error || 'Could not apply the settings', 'error');
+  };
+  document.getElementById('siteLimitsForm')?.addEventListener('submit', (event) => {
+    event.preventDefault();
+    const v = (id) => Number(document.getElementById(id).value);
+    saveSettings({ memory_limit: v('slMemory'), upload_mb: v('slUpload'), max_execution_time: v('slExec'), max_input_vars: v('slVars'),
+      max_children: v('slChildren'), display_errors: document.getElementById('slDisplay').value === '1' }, 'php', document.getElementById('slSave'));
+  });
+  document.getElementById('snWww')?.addEventListener('change', (event) => { if (!event.target.checked) document.getElementById('snRedirect').value = 'none'; });
+  document.getElementById('siteNamesForm')?.addEventListener('submit', (event) => {
+    event.preventDefault();
+    saveSettings({ www: document.getElementById('snWww').checked, redirect: document.getElementById('snRedirect').value }, 'domain', event.submitter);
   });
   document.getElementById('sitePhpForm')?.addEventListener('submit', async (event) => {
     event.preventDefault();

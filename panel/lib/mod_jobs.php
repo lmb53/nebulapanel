@@ -147,6 +147,28 @@ function job_start(string $endpoint, array $body): array
     return ['ok' => true, 'job' => job_public(job_load($id) ?? $job)];
 }
 
+/**
+ * Start a job on behalf of the system (a deploy webhook), not a signed-in
+ * person. Only allowlisted endpoint/action pairs may run this way.
+ */
+function job_start_system(string $endpoint, array $body, string $actor): array
+{
+    $allowed = ['git' => ['pull']];
+    if (!in_array((string) ($body['action'] ?? ''), $allowed[$endpoint] ?? [], true)) {
+        return ['ok' => false, 'error' => 'That action cannot be started automatically.'];
+    }
+    $id = gmdate('YmdHis') . '-' . bin2hex(random_bytes(6));
+    $job = ['id' => $id, 'endpoint' => $endpoint, 'title' => job_title($endpoint, $body) . ' (webhook)', 'action' => (string) $body['action'],
+        'uid' => 0, 'username' => substr($actor, 0, 120), 'role' => 'admin', 'ip' => client_ip(), 'token' => '', 'scopes' => null, 'system' => true,
+        'status' => 'queued', 'created_at' => time(), 'started_at' => null, 'finished_at' => null, 'pid' => null, 'result' => null];
+    if (!job_save($job) || @file_put_contents(job_path($id, '.body'), json_encode($body), LOCK_EX) === false) {
+        return ['ok' => false, 'error' => 'Could not record the job.'];
+    }
+    @touch(job_path($id, '.log'));
+    if (!job_spawn($id)) { return ['ok' => false, 'error' => 'Could not start the background worker.']; }
+    return ['ok' => true, 'job' => job_public($job)];
+}
+
 /** Launch the detached worker (its own session, so it outlives this request). */
 function job_spawn(string $id): bool
 {
@@ -175,7 +197,8 @@ function job_public(array $job): array
 /** True when the caller may follow this job (its owner, or an administrator). */
 function job_visible(array $job): bool
 {
-    return current_role() === 'admin' || ((int) ($job['uid'] ?? -1) === (int) ($_SESSION['uid'] ?? -2) && (int) ($_SESSION['uid'] ?? 0) > 0);
+    // System jobs (webhook deploys) are visible to administrators only.
+    return current_role() === 'admin' || (empty($job['system']) && (int) ($job['uid'] ?? -1) === (int) ($_SESSION['uid'] ?? -2) && (int) ($_SESSION['uid'] ?? 0) > 0);
 }
 
 /** Mark a job whose worker died without recording a result. */

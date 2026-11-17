@@ -26,6 +26,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         case 'pull':
             $res = git_pull($domain, $emit);
             break;
+        case 'deploy-key':
+            $res = git_deploy_key($domain);
+            break;
+        case 'hook-rotate':
+            $res = git_hook_rotate($domain);
+            break;
+        case 'hook-disable':
+            $res = git_hook_disable($domain);
+            break;
         case 'disconnect':
             $res = git_disconnect($domain, (bool) ($body['remove'] ?? false));
             break;

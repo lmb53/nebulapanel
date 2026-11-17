@@ -14,11 +14,12 @@ function git_available(): bool
     return has_cmd('git');
 }
 
-/** Accept only credential-free HTTPS repository URLs. */
+/** Credential-free HTTPS URLs, or SSH URLs (git@host:owner/repo.git) used with the site's deploy key. */
 function git_url_ok(string $url): bool
 {
     if ($url === '' || strlen($url) > 512) { return false; }
     if (strpbrk($url, "\n\r \t") !== false) { return false; }
+    if (preg_match('#^(ssh://)?git@[A-Za-z0-9.-]+(:[0-9]{1,5})?[:/][A-Za-z0-9._~/-]+(\.git)?$#', $url)) { return true; }
     $parts = parse_url($url);
     return is_array($parts)
         && strtolower((string) ($parts['scheme'] ?? '')) === 'https'
@@ -104,6 +105,7 @@ function git_status(string $domain): array
     }
     $docroot = (string) $site['docroot'];
     $meta = git_get_meta($domain);
+    unset($meta['hook_hash']); // never sent to the browser
     [$code, $raw] = helper_cmd('site-git-status ' . escapeshellarg((string) $site['id']), 30);
     if ($code !== 0) {
         return ['ok' => false, 'error' => trim($raw) ?: 'Could not inspect repository.'];
@@ -142,7 +144,7 @@ function git_status(string $domain): array
 function git_connect(string $domain, string $url, string $branch, ?callable $onOutput = null): array
 {
     if (!git_available()) { return ['ok' => false, 'error' => 'Git is not installed on the server.']; }
-    if (!git_url_ok($url)) { return ['ok' => false, 'error' => 'Use a credential-free HTTPS repository URL. Embedded credentials and SSH URLs are not accepted.']; }
+    if (!git_url_ok($url)) { return ['ok' => false, 'error' => 'Use a credential-free HTTPS URL, or an SSH URL (git@github.com:owner/repo.git) with the deploy key shown below. Embedded credentials are not accepted.']; }
     if (!git_branch_ok($branch)) { return ['ok' => false, 'error' => 'Invalid branch name.']; }
     $site = git_site_record($domain);
     if ($site === null) {
@@ -220,4 +222,83 @@ function git_record_sync(string $domain, string $url, string $branch): bool
         'last_commit' => trim($hash),
         'last_sync' => date('c'),
     ]);
+}
+
+/** The site's SSH deploy key (created on first use): add it to the repository as a read-only deploy key. */
+function git_deploy_key(string $domain): array
+{
+    $site = git_site_record($domain);
+    if ($site === null) { return ['ok' => false, 'error' => 'Website not found.']; }
+    [$code, $out] = helper_cmd('site-git-key ' . escapeshellarg((string) $site['id']), 60);
+    $key = trim($out);
+    if ($code !== 0 || !preg_match('#^ssh-ed25519 [A-Za-z0-9+/=]+ #', $key)) {
+        return ['ok' => false, 'error' => $key !== '' ? $key : 'Could not create the deploy key.'];
+    }
+    return ['ok' => true, 'public_key' => $key];
+}
+
+/**
+ * Create (or replace) the push-to-deploy webhook secret. Only its hash is
+ * stored; the URL with the secret is shown once.
+ */
+function git_hook_rotate(string $domain): array
+{
+    $site = git_site_record($domain);
+    if ($site === null) { return ['ok' => false, 'error' => 'Website not found.']; }
+    $meta = git_get_meta($domain);
+    if (empty($meta['branch'])) { return ['ok' => false, 'error' => 'Connect a repository first.']; }
+    $token = bin2hex(random_bytes(24));
+    $meta['hook_hash'] = hash('sha256', $token);
+    $meta['hook_created'] = date('c');
+    if (!git_set_meta($domain, $meta)) { return ['ok' => false, 'error' => 'Could not save the webhook.']; }
+    audit('git.hook.rotate', $domain);
+    return ['ok' => true, 'url' => git_hook_url((string) $site['id'], $token)];
+}
+
+function git_hook_disable(string $domain): array
+{
+    $meta = git_get_meta($domain);
+    unset($meta['hook_hash'], $meta['hook_created']);
+    if (!git_set_meta($domain, $meta)) { return ['ok' => false, 'error' => 'Could not save the webhook.']; }
+    audit('git.hook.disable', $domain);
+    return ['ok' => true];
+}
+
+function git_hook_url(string $siteId, string $token): string
+{
+    global $config;
+    $remote = (string) ($_SERVER['REMOTE_ADDR'] ?? '');
+    $trusted = in_array($remote, (array) ($config['trusted_proxies'] ?? []), true);
+    $host = $trusted && !empty($_SERVER['HTTP_X_FORWARDED_HOST']) ? (string) $_SERVER['HTTP_X_FORWARDED_HOST'] : (string) ($_SERVER['HTTP_HOST'] ?? 'localhost');
+    $host = preg_replace('/[^A-Za-z0-9.:\[\]-]/', '', $host) ?: 'localhost';
+    return 'https://' . $host . url('deploy-hook', ['site' => $siteId, 'token' => $token]);
+}
+
+/**
+ * Public push-to-deploy endpoint (no session): verify the site's secret and
+ * start a background pull. Answers quickly; the deploy shows up under Jobs.
+ */
+function git_hook_receive(string $siteId, string $token): array
+{
+    if (!preg_match('/^[a-f0-9]{32}$/', $siteId) || !preg_match('/^[a-f0-9]{48}$/', $token)) {
+        return ['ok' => false, 'status' => 404, 'error' => 'Not found'];
+    }
+    $site = null;
+    foreach (sites_stored() as $candidate) {
+        if (($candidate['id'] ?? '') === $siteId) { $site = $candidate; break; }
+    }
+    $hash = (string) ($site['git']['hook_hash'] ?? '');
+    if ($site === null || $hash === '' || !hash_equals($hash, hash('sha256', $token))) {
+        usleep(200000);
+        return ['ok' => false, 'status' => 404, 'error' => 'Not found'];
+    }
+    // A handful of deploy starts per site per throttle window (login_window).
+    if (reserve_login_attempt('deploy-hook', $siteId, false) > 0) {
+        return ['ok' => false, 'status' => 429, 'error' => 'Too many deploys; try again shortly.'];
+    }
+    require_once APP_ROOT . '/lib/mod_jobs.php';
+    $started = job_start_system('git', ['action' => 'pull', 'domain' => (string) $site['domain']], 'webhook:' . $site['domain']);
+    if (empty($started['ok'])) { return ['ok' => false, 'status' => 500, 'error' => $started['error'] ?? 'Could not start the deploy.']; }
+    audit('git.hook.received', (string) $site['domain']);
+    return ['ok' => true, 'status' => 202, 'job' => $started['job']['id']];
 }

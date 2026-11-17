@@ -32,6 +32,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             (string) ($body['email'] ?? ''),
             $emit
         );
+    } elseif ($action === 'settings') {
+        require_capability('websites.manage');
+        $res = site_save_settings((string) ($body['domain'] ?? ''), (array) ($body['settings'] ?? []));
     } elseif ($action === 'trash-purge') {
         require_capability('websites.manage');
         $res = sites_trash_purge((string) ($body['name'] ?? ''));

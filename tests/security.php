@@ -49,7 +49,8 @@ $check(sv_domain_ok('app.example.com') && !sv_domain_ok('bad..example.com') && !
 
 $check(git_url_ok('https://github.com/example/project.git'), 'credential-free HTTPS Git URL is accepted');
 $check(!git_url_ok('https://user:token@example.com/project.git'), 'Git URL userinfo is rejected');
-$check(!git_url_ok('git@example.com:project/repo.git'), 'SSH Git URL is rejected pending deploy-key support');
+$check(git_url_ok('git@github.com:owner/repo.git') && !git_url_ok('ssh://root@host/x.git') && !git_url_ok('git@host:repo; id') && !git_url_ok('ext::sh -c id'),
+    'SSH Git URLs are limited to git@host deploy-key form');
 $check(strpos(git_redact_url('https://user:secret@example.com/repo.git'), 'secret') === false, 'legacy Git URL credentials are redacted');
 
 $danger = compose_save('danger', "services:\n  x:\n    image: alpine:3\n    privileged: true\n", true);

@@ -123,6 +123,21 @@ switch ($route) {
         render('login-2fa', ['error' => $error], false);
         return;
 
+    case 'deploy-hook':
+        // Push-to-deploy webhook from a Git host: authenticated by the site's
+        // secret in the URL, never by a session. POST only.
+        if ($method !== 'POST') {
+            http_response_code(405);
+            header('Allow: POST');
+            exit('POST required');
+        }
+        require_once APP_ROOT . '/lib/mod_api.php';
+        require_once APP_ROOT . '/lib/mod_sites.php';
+        require_once APP_ROOT . '/lib/mod_git.php';
+        $hook = git_hook_receive((string) ($_GET['site'] ?? ''), (string) ($_GET['token'] ?? ''));
+        json_out(array_diff_key($hook, ['status' => true]), (int) $hook['status']);
+        return;
+
     case 'logout':
         if ($method !== 'POST') {
             http_response_code(405);

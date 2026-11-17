@@ -123,6 +123,13 @@ if ((string) ($job['token'] ?? '') !== '') {
     $apiAuthRole = isset(panel_roles()[(string) ($token['role'] ?? '')]) ? (string) $token['role'] : 'auditor';
     $apiAuthScopes = is_array($token['scopes'] ?? null) ? $token['scopes'] : [];
     $_SESSION = [];
+} elseif (!empty($job['system'])) {
+    // Started by a deploy webhook: only the allowlisted git pull may run.
+    if ($endpoint !== 'git' || ($body['action'] ?? '') !== 'pull' || array_diff(array_keys($body), ['action', 'domain'])) {
+        job_log_event(['type' => 'result', 'result' => ['ok' => false, 'error' => 'This system job is not allowed.']]);
+        exit(1);
+    }
+    $_SESSION = ['uid' => 0, 'username' => (string) ($job['username'] ?? 'webhook'), 'role' => 'admin'];
 } else {
     $user = null;
     foreach (panel_users() as $candidate) {

@@ -259,7 +259,16 @@ $apacheStatus = service_status('apache2');
     <div class="drawer-header"><div><strong id="wsGitTitle">Git deployment</strong><div class="muted mono" id="wsGitDomain" style="font-size:11px"></div></div><button class="icon-btn" data-close-git><i data-lucide="x"></i></button></div>
     <div class="drawer-body"><div class="form-stack">
       <div id="wsGitStatus" class="muted" style="font-size:13px">Loading…</div>
-      <div><label class="field-label" for="wsGitUrl">Repository URL</label><input class="input mono" id="wsGitUrl" placeholder="https://github.com/user/repo.git" autocomplete="off"><div class="field-help">Public repositories work as-is. For a private repo embed a token: <span class="mono">https://user:token@host/repo.git</span></div></div>
+      <div><label class="field-label" for="wsGitUrl">Repository URL</label><input class="input mono" id="wsGitUrl" placeholder="https://github.com/user/repo.git or git@github.com:user/repo.git" autocomplete="off"><div class="field-help">Public repositories work with their HTTPS URL. For a private repository use its SSH URL and add this site’s deploy key to the repository (read-only).</div></div>
+      <details class="git-extra" id="wsGitKeyBox"><summary>Deploy key for private repositories</summary>
+        <div class="field-help">Add this public key to the repository as a read-only deploy key (GitHub: Settings → Deploy keys; GitLab: Settings → Repository → Deploy keys).</div>
+        <div class="cmd-line"><code id="wsGitKey" class="mono" style="word-break:break-all">Open to create the key…</code><button class="btn btn-secondary btn-sm" type="button" id="wsGitKeyCopy"><i data-lucide="copy"></i>Copy</button></div>
+      </details>
+      <details class="git-extra" id="wsGitHookBox"><summary>Deploy on push (webhook)</summary>
+        <div class="field-help" id="wsGitHookState">Create a webhook URL and add it to the repository (GitHub: Settings → Webhooks, content type JSON, push events). Every push to the branch then deploys automatically; deploys appear under Jobs.</div>
+        <div class="cmd-line hidden" id="wsGitHookLine"><code id="wsGitHookUrl" class="mono" style="word-break:break-all"></code><button class="btn btn-secondary btn-sm" type="button" id="wsGitHookCopy"><i data-lucide="copy"></i>Copy</button></div>
+        <div class="flex gap-2"><button class="btn btn-secondary btn-sm" type="button" id="wsGitHookCreate"><i data-lucide="webhook"></i>Create webhook URL</button><button class="btn btn-ghost btn-sm" type="button" id="wsGitHookOff">Turn off</button></div>
+      </details>
       <div><label class="field-label" for="wsGitBranch">Branch</label><input class="input mono" id="wsGitBranch" value="main" autocomplete="off"></div>
       <div class="notice notice-warning" style="font-size:12px"><i data-lucide="alert-triangle"></i><div>Connecting or pulling force-updates tracked files in the document root to match the repository. Uncommitted local changes there are discarded.</div></div>
       <pre class="mono hidden" id="wsGitOut" style="margin:0;padding:12px;font-size:12px;line-height:1.5;white-space:pre-wrap;max-height:28vh;overflow:auto;background:var(--bg-surface-2);border-radius:8px"></pre>
@@ -284,8 +293,37 @@ $apacheStatus = service_status('apache2');
       try { renderStatus(await apiGet('git&domain=' + encodeURIComponent(d))); }
       catch (e) { $('wsGitStatus').textContent = 'Could not load git status.'; }
     }
+    // Deploy key: created on first view.
+    $('wsGitKeyBox')?.addEventListener('toggle', async (event) => {
+      if (!event.target.open || !domain) return;
+      const res = await apiPost('git', { action: 'deploy-key', domain });
+      $('wsGitKey').textContent = res.ok ? res.public_key : (res.error || 'Could not create the key');
+    });
+    $('wsGitKeyCopy')?.addEventListener('click', () => window.Nebula.copyText($('wsGitKey').textContent).then((ok) => toast(ok ? 'Deploy key copied' : 'Copy failed', ok ? 'success' : 'error')));
+    $('wsGitHookCreate')?.addEventListener('click', async () => {
+      if ($('wsGitHookCreate').dataset.exists === '1' && !await window.Nebula.confirm({ title: 'Replace the webhook URL?', message: 'The current URL stops working; update it in the repository settings.', confirmLabel: 'Replace', warning: true })) return;
+      const res = await apiPost('git', { action: 'hook-rotate', domain });
+      if (!res.ok) { toast(res.error || 'Failed', 'error'); return; }
+      $('wsGitHookUrl').textContent = res.url; $('wsGitHookLine').classList.remove('hidden');
+      $('wsGitHookState').textContent = 'Copy this URL now — it is shown only once. Pushes then deploy automatically.';
+      $('wsGitHookCreate').dataset.exists = '1';
+    });
+    $('wsGitHookCopy')?.addEventListener('click', () => window.Nebula.copyText($('wsGitHookUrl').textContent).then((ok) => toast(ok ? 'Webhook URL copied' : 'Copy failed', ok ? 'success' : 'error')));
+    $('wsGitHookOff')?.addEventListener('click', async () => {
+      const res = await apiPost('git', { action: 'hook-disable', domain });
+      toast(res.ok ? 'Webhook turned off' : (res.error || 'Failed'), res.ok ? 'success' : 'error');
+      if (res.ok) { $('wsGitHookLine').classList.add('hidden'); $('wsGitHookState').textContent = 'Off. Create a new URL to deploy on push again.'; $('wsGitHookCreate').dataset.exists = '0'; }
+    });
+
     function renderStatus(r) {
       const s = $('wsGitStatus');
+      const hook = !!(r && r.meta && r.meta.hook_created);
+      if ($('wsGitHookCreate')) {
+        $('wsGitHookCreate').dataset.exists = hook ? '1' : '0';
+        $('wsGitHookCreate').lastChild.textContent = hook ? 'Replace webhook URL' : 'Create webhook URL';
+        $('wsGitHookState').textContent = hook ? 'On since ' + window.Nebula.fmtDate(r.meta.hook_created) + '. The URL was shown when it was created; replace it to see a new one.' : $('wsGitHookState').textContent;
+        $('wsGitHookLine').classList.add('hidden');
+      }
       if (!r || r.available === false) { s.textContent = 'Git is not installed on the server.'; }
       else if (r.connected) {
         s.innerHTML = `Connected to <span class="mono">${esc(r.remote)}</span> · branch <strong>${esc(r.branch)}</strong>`

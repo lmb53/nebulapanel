@@ -308,6 +308,23 @@ $found = $a->api('file-search&path=site&q=' . rawurlencode('größe'));
 $check(($found['ok'] ?? false) === true && count((array) ($found['results'] ?? [])) === 1, 'subfolder search finds files by name, case-insensitively');
 $check(($a->api('search')['ok'] ?? false) === true, 'the command palette search endpoint answers');
 
+// 14. Push-to-deploy webhook: secret checked, no session needed, starts a job.
+$hookSite = str_repeat('c', 32);
+$hookToken = str_repeat('ab', 24);
+file_put_contents($app . '/data/sites.json', json_encode([['id' => $hookSite, 'domain' => 'hook.example.com', 'docroot' => $fmRoot . '/' . $hookSite . '/public',
+    'git' => ['url' => 'https://example.com/r.git', 'branch' => 'main', 'hook_hash' => hash('sha256', $hookToken)]]]));
+$anon = $browser();
+[$status, $out] = $anon->request('POST', 'deploy-hook&site=' . $hookSite . '&token=' . $hookToken, '{}', ['Content-Type: application/json']);
+$hookRes = json_decode($out, true) ?: [];
+$check($status === 202 && preg_match('/^[0-9]{14}-[a-f0-9]{12}$/', (string) ($hookRes['job'] ?? '')) === 1, 'a valid deploy webhook starts a background deploy');
+[$status] = $anon->request('POST', 'deploy-hook&site=' . $hookSite . '&token=' . str_repeat('cd', 24), '{}', ['Content-Type: application/json']);
+$check($status === 404, 'a wrong webhook secret is refused');
+[$status] = $anon->request('GET', 'deploy-hook&site=' . $hookSite . '&token=' . $hookToken);
+$check($status === 405, 'the webhook only accepts POST');
+$jobs = $a->api('jobs');
+$check(in_array((string) ($hookRes['job'] ?? ''), array_column((array) ($jobs['jobs'] ?? []), 'id'), true), 'administrators see webhook deploys under Jobs');
+@unlink($app . '/data/sites.json');
+
 // 12. Long actions run as background jobs that survive the request.
 $res = $a->api('jobs', ['action' => 'start', 'endpoint' => 'backups', 'body' => ['action' => 'schedule', 'enabled' => false, 'frequency' => 'weekly', 'hour' => 4, 'weekday' => 2, 'keep' => 5]]);
 $jobId = (string) ($res['job']['id'] ?? '');

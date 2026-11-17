@@ -996,3 +996,7 @@ a.service-row{color:inherit}a.service-row:hover{background:var(--bg-surface-hove
 .access-badge{gap:4px;margin:0 4px 4px 0}
 .access-revoke{border:0;background:none;color:inherit;opacity:.6;cursor:pointer;padding:0 2px;font-size:13px;line-height:1}
 .access-revoke:hover,.access-revoke:focus-visible{opacity:1;color:var(--red-400)}
+.git-extra{border:1px solid var(--border-subtle);border-radius:var(--radius-md);padding:10px 12px}
+.git-extra>summary{cursor:pointer;font-weight:600;font-size:13px}
+.git-extra[open]>summary{margin-bottom:8px}
+.git-extra .field-help{margin-bottom:8px}

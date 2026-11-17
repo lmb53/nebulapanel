@@ -185,7 +185,7 @@ $check(strpos($helperSource, '  db-query)') === false && strpos($helperSource, '
 $check(strpos($helperSource, 'u:www-data:rX') !== false,
     'new website document roots do not grant Nginx read access');
 $check(strpos($helperSource, 'server_name $DOMAIN;') !== false, 'site vhost still adds an implicit hostname');
-$check(strpos($helperSource, '-d "www.$DOMAIN"') === false, 'SSL issuance still requests an implicit www hostname');
+$check(strpos($helperSource, '[[ "$WITH_WWW" == www ]] && NAMES+=(-d "www.$DOMAIN")') !== false, 'SSL issuance requests www without the site opting in');
 $check(strpos($helperSource, "tr -dc 'a-zA-Z0-9' </dev/urandom | head") === false, 'phpMyAdmin secret generation still has the pipefail/SIGPIPE bug');
 $check(strpos($helperSource, 'FM_ROOT_FILE=/etc/nebula-panel/fm-root') !== false, 'privileged File Manager confinement is missing');
 $check(strpos($helperSource, 'PANEL_ROOT_FILE=/etc/nebula-panel/panel-root') !== false && strpos($helperSource, 'panel-update)') !== false, 'confined privileged panel updater is missing');

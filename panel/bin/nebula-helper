@@ -984,6 +984,21 @@ site_paths() {
   SITE_STATE="$SITES_STATE/$id"
 }
 
+# Repository URLs: credential-free HTTPS, or SSH (git@host:path) used with
+# the site's own deploy key.
+git_url_check() {
+  [[ "$1" =~ ^https://[A-Za-z0-9._-]+(:[0-9]+)?/[A-Za-z0-9._~/-]+(\.git)?$ \
+     || "$1" =~ ^(ssh://)?git@[A-Za-z0-9.-]+(:[0-9]{1,5})?[:/][A-Za-z0-9._~/-]+(\.git)?$ ]] \
+    || die "use a credential-free HTTPS URL, or an SSH URL such as git@github.com:owner/repo.git"
+}
+
+# SSH options for Git as the site user: only the site's deploy key, trust a
+# host's key the first time it is seen (kept per site).
+git_ssh_command() {
+  printf 'ssh -i %s -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=%s -o BatchMode=yes' \
+    "$SITE_BASE/.ssh/nebula_deploy" "$SITE_BASE/.ssh/known_hosts"
+}
+
 site_state_check() {
   local id="$1" expected_domain="${2:-}"
   site_paths "$id"
@@ -2289,14 +2304,23 @@ EOF
     exec 8>"/run/lock/nebula-site-${SITE_ID}.lock"
     flock -w 30 8 || die "another operation is running for this site"
     site_state_check "$SITE_ID"
-    [[ "$URL" =~ ^https://[A-Za-z0-9._-]+(:[0-9]+)?/[A-Za-z0-9._~/-]+(\.git)?$ ]] \
-      || die "only credential-free HTTPS repository URLs are allowed"
+    git_url_check "$URL"
     [[ "$BRANCH" =~ ^[A-Za-z0-9._/-]+$ && "$BRANCH" != *".."* && "$BRANCH" != -* ]] || die "invalid branch"
     runuser -u "$SITE_USER" -- git -C "$SITE_PUBLIC" init -q
     runuser -u "$SITE_USER" -- git -C "$SITE_PUBLIC" remote remove origin >/dev/null 2>&1 || true
     runuser -u "$SITE_USER" -- git -C "$SITE_PUBLIC" remote add origin "$URL"
-    runuser -u "$SITE_USER" -- env GIT_TERMINAL_PROMPT=0 git -C "$SITE_PUBLIC" fetch --depth 1 origin "$BRANCH"
+    runuser -u "$SITE_USER" -- env GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND="$(git_ssh_command)" git -C "$SITE_PUBLIC" fetch --depth 1 origin "$BRANCH"
     runuser -u "$SITE_USER" -- git -C "$SITE_PUBLIC" checkout -f -B "$BRANCH" "origin/$BRANCH"
+    ;;
+
+  # site-git-key <site-id> — create (once) and print the site's SSH deploy key.
+  site-git-key)
+    SITE_ID="${1:-}"; site_state_check "$SITE_ID"
+    KEY="$SITE_BASE/.ssh/nebula_deploy"
+    [[ ! -L "$SITE_BASE/.ssh" && ! -L "$KEY" && ! -L "$KEY.pub" ]] || die "the site's .ssh folder must not contain symlinks"
+    runuser -u "$SITE_USER" -- sh -c 'umask 077; mkdir -p "$1" && [ -f "$2" ] || ssh-keygen -q -t ed25519 -N "" -C "$3" -f "$2"' _ "$SITE_BASE/.ssh" "$KEY" "nebula-deploy@$(hostname)" \
+      || die "could not create the deploy key"
+    runuser -u "$SITE_USER" -- cat -- "$KEY.pub"
     ;;
 
   site-git-pull)
@@ -2307,7 +2331,7 @@ EOF
     site_state_check "$SITE_ID"
     [[ "$BRANCH" =~ ^[A-Za-z0-9._/-]+$ && "$BRANCH" != *".."* && "$BRANCH" != -* ]] || die "invalid branch"
     [[ -d "$SITE_PUBLIC/.git" && ! -L "$SITE_PUBLIC/.git" ]] || die "repository is not connected"
-    runuser -u "$SITE_USER" -- env GIT_TERMINAL_PROMPT=0 git -C "$SITE_PUBLIC" fetch --depth 1 origin "$BRANCH"
+    runuser -u "$SITE_USER" -- env GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND="$(git_ssh_command)" git -C "$SITE_PUBLIC" fetch --depth 1 origin "$BRANCH"
     runuser -u "$SITE_USER" -- git -C "$SITE_PUBLIC" reset --hard "origin/$BRANCH"
     ;;
 
@@ -2355,6 +2379,89 @@ EOF
     echo "deleted $DOMAIN"
     ;;
 
+  # site-settings <site-id> <domain> <www:yes|no> <redirect:none|to-www|to-apex>
+  #               <memory_limit> <upload_max_mb> <max_execution_time> <max_input_vars>
+  #               <display_errors:on|off> <pm.max_children>
+  # Edits the site's own vhost (server names, canonical redirect, request
+  # size) and PHP-FPM pool (limits, worker count); rolled back if Nginx or
+  # PHP-FPM rejects the result.
+  site-settings)
+    SITE_ID="${1:-}"; DOMAIN="${2:-}"; WWW="${3:-}"; REDIRECT="${4:-}"; MEM="${5:-}"; UPLOAD="${6:-}"
+    EXEC_TIME="${7:-}"; INPUT_VARS="${8:-}"; DISPLAY="${9:-}"; CHILDREN="${10:-}"
+    valid_site_id "$SITE_ID"; valid_domain "$DOMAIN"
+    [[ "$WWW" == yes || "$WWW" == no ]] || die "invalid www setting"
+    [[ "$REDIRECT" == none || "$REDIRECT" == to-www || "$REDIRECT" == to-apex ]] || die "invalid redirect"
+    [[ "$WWW" == yes || "$REDIRECT" == none ]] || die "a www redirect needs the www name enabled"
+    [[ "$MEM" =~ ^[0-9]{2,5}M$ && "${MEM%M}" -ge 32 && "${MEM%M}" -le 16384 ]] || die "memory_limit must be 32M-16384M"
+    [[ "$UPLOAD" =~ ^[0-9]{1,5}$ && "$UPLOAD" -ge 1 && "$UPLOAD" -le 10240 ]] || die "upload size must be 1-10240 MB"
+    [[ "$EXEC_TIME" =~ ^[0-9]{1,4}$ && "$EXEC_TIME" -ge 5 && "$EXEC_TIME" -le 3600 ]] || die "max_execution_time must be 5-3600"
+    [[ "$INPUT_VARS" =~ ^[0-9]{3,6}$ && "$INPUT_VARS" -le 100000 ]] || die "max_input_vars must be 100-100000"
+    [[ "$DISPLAY" == on || "$DISPLAY" == off ]] || die "invalid display_errors"
+    [[ "$CHILDREN" =~ ^[0-9]{1,2}$ && "$CHILDREN" -ge 1 && "$CHILDREN" -le 50 ]] || die "pm.max_children must be 1-50"
+    exec 8>"/run/lock/nebula-site-${SITE_ID}.lock"
+    flock -w 30 8 || die "another operation is running for this site"
+    site_state_check "$SITE_ID" "$DOMAIN"
+    CONF="$NGINX_AV/$DOMAIN"
+    [[ -f "$CONF" && ! -L "$CONF" ]] || die "website config not found"
+    POOL="$(ls /etc/php/*/fpm/pool.d/nebula-site-"${SITE_ID}".conf 2>/dev/null | head -n 1)"
+    [[ -n "$POOL" && -f "$POOL" ]] || die "managed site pool not found"
+    PHPVER="$(awk -F/ '{print $4}' <<<"$POOL")"; valid_php "$PHPVER"
+    WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
+    cp -a "$CONF" "$WORK/vhost.orig"; cp -a "$POOL" "$WORK/pool.orig"
+    NAMES="$DOMAIN"; [[ "$WWW" == yes ]] && NAMES="$DOMAIN www.$DOMAIN"
+    BODY=$(( UPLOAD + 8 ))
+    # Vhost: server names on every block that serves this domain, the
+    # request-size limit, and a marked redirect block after server_name.
+    awk -v names="$NAMES" -v domain="$DOMAIN" -v redirect="$REDIRECT" -v body="${BODY}m" '
+      /# NEBULA_REDIRECT_BEGIN/ {skip=1; next}
+      skip && /# NEBULA_REDIRECT_END/ {skip=0; next}
+      skip {next}
+      /^[[:space:]]*client_max_body_size[[:space:]]/ {next}
+      /^[[:space:]]*server_name[[:space:]]/ {
+        n = split($0, parts, /[[:space:];]+/); mine = 0
+        for (i = 1; i <= n; i++) if (parts[i] == domain || parts[i] == "www." domain) mine = 1
+        if (!mine) { print; next }
+        match($0, /^[[:space:]]*/); indent = substr($0, 1, RLENGTH)
+        print indent "server_name " names ";"
+        print indent "client_max_body_size " body ";"
+        if (redirect == "to-apex") {
+          print indent "# NEBULA_REDIRECT_BEGIN"
+          print indent "if ($host = www." domain ") { return 301 $scheme://" domain "$request_uri; }"
+          print indent "# NEBULA_REDIRECT_END"
+        } else if (redirect == "to-www") {
+          print indent "# NEBULA_REDIRECT_BEGIN"
+          print indent "if ($host = " domain ") { return 301 $scheme://www." domain "$request_uri; }"
+          print indent "# NEBULA_REDIRECT_END"
+        }
+        next
+      }
+      {print}
+    ' "$WORK/vhost.orig" > "$WORK/vhost.new"
+    # Pool: worker count plus a marked block of limits.
+    {
+      sed -e '/^; NEBULA_SITE_SETTINGS_BEGIN/,/^; NEBULA_SITE_SETTINGS_END/d' \
+          -e "s/^pm\.max_children = .*/pm.max_children = ${CHILDREN}/" "$WORK/pool.orig"
+      echo "; NEBULA_SITE_SETTINGS_BEGIN (managed by Nebula Panel)"
+      echo "php_admin_value[memory_limit] = ${MEM}"
+      echo "php_admin_value[upload_max_filesize] = ${UPLOAD}M"
+      echo "php_admin_value[post_max_size] = $(( UPLOAD + 8 ))M"
+      echo "php_admin_value[max_execution_time] = ${EXEC_TIME}"
+      echo "php_admin_value[max_input_vars] = ${INPUT_VARS}"
+      echo "php_admin_flag[display_errors] = ${DISPLAY}"
+      echo "; NEBULA_SITE_SETTINGS_END"
+    } > "$WORK/pool.new"
+    install -m 0644 -o root -g root "$WORK/vhost.new" "$CONF"
+    install -m 0644 -o root -g root "$WORK/pool.new" "$POOL"
+    if ! nginx -t >/dev/null 2>&1 || ! "/usr/sbin/php-fpm${PHPVER}" -t >/dev/null 2>&1; then
+      install -m 0644 -o root -g root "$WORK/vhost.orig" "$CONF"
+      install -m 0644 -o root -g root "$WORK/pool.orig" "$POOL"
+      die "Nginx or PHP-FPM rejected the settings; the previous configuration was kept"
+    fi
+    systemctl reload nginx
+    schedule_php_service reload "$PHPVER"
+    echo "settings applied to $DOMAIN"
+    ;;
+
   # site-trash-list -> name<TAB>domain<TAB>deleted-epoch<TAB>bytes, one per archived site.
   site-trash-list)
     [[ -d "$SITES_TRASH" ]] || exit 0
@@ -2383,14 +2490,16 @@ EOF
 
   # site-ssl <domain> [email]
   site-ssl)
-    DOMAIN="${1:-}"; EMAIL="${2:-}"
+    DOMAIN="${1:-}"; EMAIL="${2:-}"; WITH_WWW="${3:-}"
     valid_domain "$DOMAIN"; valid_email "$EMAIL"
+    [[ -z "$WITH_WWW" || "$WITH_WWW" == www ]] || die "invalid option"
     command -v certbot >/dev/null || die "certbot not installed"
     install_cert_deploy_hook
+    NAMES=(-d "$DOMAIN"); [[ "$WITH_WWW" == www ]] && NAMES+=(-d "www.$DOMAIN")
     if [[ -n "$EMAIL" ]]; then
-      certbot --nginx -d "$DOMAIN" --non-interactive --agree-tos -m "$EMAIL" --redirect
+      certbot --nginx "${NAMES[@]}" --cert-name "$DOMAIN" --expand --non-interactive --agree-tos -m "$EMAIL" --redirect
     else
-      certbot --nginx -d "$DOMAIN" --non-interactive --agree-tos --register-unsafely-without-email --redirect
+      certbot --nginx "${NAMES[@]}" --cert-name "$DOMAIN" --expand --non-interactive --agree-tos --register-unsafely-without-email --redirect
     fi
     echo "ssl issued for $DOMAIN"
     ;;

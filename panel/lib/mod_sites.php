@@ -345,10 +345,11 @@ function site_ssl_locked(string $domain, string $email, ?callable $onOutput): ar
     if ($email !== '' && !filter_var($email, FILTER_VALIDATE_EMAIL)) {
         return ['ok' => false, 'error' => 'Invalid email.'];
     }
-    $args = 'site-ssl ' . escapeshellarg($domain);
-    if ($email !== '') {
-        $args .= ' ' . escapeshellarg($email);
+    $withWww = false;
+    foreach (sites_stored() as $stored) {
+        if (($stored['domain'] ?? '') === $domain) { $withWww = !empty(site_settings($stored)['www']); break; }
     }
+    $args = 'site-ssl ' . escapeshellarg($domain) . ' ' . escapeshellarg($email) . ($withWww ? ' www' : '');
     [$c, $o] = $onOutput
         ? helper_cmd_stream($args, $onOutput, 300)
         : helper_cmd($args, 300);
@@ -426,4 +427,60 @@ function sites_trash_purge(string $name): array
     if ($code !== 0) { return ['ok' => false, 'error' => trim($out) ?: 'Could not remove the archived website.']; }
     audit('site.trash.purge', $name);
     return ['ok' => true];
+}
+
+/** Per-site settings with their defaults (what a new site's vhost/pool use). */
+function site_settings_defaults(): array
+{
+    return ['www' => false, 'redirect' => 'none', 'memory_limit' => 256, 'upload_mb' => 64,
+        'max_execution_time' => 60, 'max_input_vars' => 1000, 'display_errors' => false, 'max_children' => 5];
+}
+
+function site_settings(array $site): array
+{
+    return array_merge(site_settings_defaults(), array_intersect_key((array) ($site['settings'] ?? []), site_settings_defaults()));
+}
+
+/** Validate and apply per-site settings (vhost names/redirect, PHP limits, pool size). */
+function site_save_settings(string $domain, array $input): array
+{
+    return with_sites_lock(static function () use ($domain, $input): array {
+        $domain = strtolower(rtrim(trim($domain), '.'));
+        $sites = sites_list();
+        $index = null;
+        foreach ($sites as $i => $site) { if (($site['domain'] ?? '') === $domain) { $index = $i; break; } }
+        if ($index === null || !preg_match('/^[a-f0-9]{32}$/', (string) ($sites[$index]['id'] ?? ''))) {
+            return ['ok' => false, 'error' => 'Website not found.'];
+        }
+        $current = site_settings($sites[$index]);
+        $next = [
+            'www' => (bool) ($input['www'] ?? $current['www']),
+            'redirect' => (string) ($input['redirect'] ?? $current['redirect']),
+            'memory_limit' => (int) ($input['memory_limit'] ?? $current['memory_limit']),
+            'upload_mb' => (int) ($input['upload_mb'] ?? $current['upload_mb']),
+            'max_execution_time' => (int) ($input['max_execution_time'] ?? $current['max_execution_time']),
+            'max_input_vars' => (int) ($input['max_input_vars'] ?? $current['max_input_vars']),
+            'display_errors' => (bool) ($input['display_errors'] ?? $current['display_errors']),
+            'max_children' => (int) ($input['max_children'] ?? $current['max_children']),
+        ];
+        if (!in_array($next['redirect'], ['none', 'to-www', 'to-apex'], true)) { return ['ok' => false, 'error' => 'Invalid redirect choice.']; }
+        if (!$next['www'] && $next['redirect'] !== 'none') { return ['ok' => false, 'error' => 'Turn on the www name before redirecting to or from it.']; }
+        $limits = ['memory_limit' => [32, 16384, 'Memory limit'], 'upload_mb' => [1, 10240, 'Upload size'], 'max_execution_time' => [5, 3600, 'Execution time'],
+            'max_input_vars' => [100, 100000, 'Input variables'], 'max_children' => [1, 50, 'PHP workers']];
+        foreach ($limits as $key => [$min, $max, $label]) {
+            if ($next[$key] < $min || $next[$key] > $max) { return ['ok' => false, 'error' => "$label must be between $min and $max."]; }
+        }
+        $site = $sites[$index];
+        [$code, $out] = helper_cmd('site-settings ' . implode(' ', array_map('escapeshellarg', [
+            (string) $site['id'], $domain, $next['www'] ? 'yes' : 'no', $next['redirect'], $next['memory_limit'] . 'M', (string) $next['upload_mb'],
+            (string) $next['max_execution_time'], (string) $next['max_input_vars'], $next['display_errors'] ? 'on' : 'off', (string) $next['max_children'],
+        ])), 120);
+        if ($code !== 0) { return ['ok' => false, 'error' => trim($out) ?: 'Could not apply the settings.']; }
+        $sites[$index]['settings'] = $next;
+        sites_save($sites);
+        audit('site.settings', $domain);
+        $warning = $next['www'] && !$current['www'] && !empty($site['ssl'])
+            ? 'Issue the certificate again (SSL tab) so it also covers www.' . $domain . '.' : null;
+        return ['ok' => true, 'settings' => $next] + ($warning ? ['warning' => $warning] : []);
+    });
 }
