@@ -371,11 +371,18 @@ function mail_apply(): array
     $state = mail_state();
     $domains = implode("\n", array_map('strval', array_keys($state['domains'])));
     $accounts = [];
+    $replies = [];
     foreach ($state['accounts'] as $a) {
         $email = (string) ($a['email'] ?? '');
         $hash  = (string) ($a['hash'] ?? '');
         if ($email !== '' && $hash !== '') {
-            $accounts[] = $email . "\t" . $hash;
+            $accounts[] = $email . "\t" . $hash . "\t" . max(0, (int) ($a['quota_mb'] ?? 0));
+        }
+        $reply = $a['autoreply'] ?? null;
+        if ($email !== '' && is_array($reply) && !empty($reply['enabled'])
+            && (empty($reply['until']) || strtotime((string) $reply['until'] . ' 23:59:59') >= time())) {
+            $replies[] = $email . "\t" . base64_encode((string) ($reply['subject'] ?? '')) . "\t"
+                . base64_encode((string) ($reply['body'] ?? '')) . "\t" . max(1, min(30, (int) ($reply['days'] ?? 1)));
         }
     }
     $aliases = [];
@@ -389,7 +396,8 @@ function mail_apply(): array
     $args = 'mail-apply '
         . escapeshellarg(base64_encode($domains)) . ' '
         . escapeshellarg(base64_encode(implode("\n", $accounts))) . ' '
-        . escapeshellarg(base64_encode(implode("\n", $aliases)));
+        . escapeshellarg(base64_encode(implode("\n", $aliases))) . ' '
+        . escapeshellarg(base64_encode(implode("\n", $replies)));
     [$code, $out] = helper_cmd($args, 120);
     return $code === 0 ? ['ok' => true] : ['ok' => false, 'error' => sudo_error($out, $code)];
 }
@@ -552,14 +560,112 @@ function mail_account_delete(string $email): array
     return ['ok' => true];
 }
 
+/** Set a mailbox's storage quota in megabytes (0 = unlimited). */
+function mail_account_quota(string $email, int $megabytes): array
+{
+    $email = strtolower(trim($email));
+    if ($megabytes < 0 || $megabytes > 10485760) { return ['ok' => false, 'error' => 'Quota must be between 0 (unlimited) and 10 TB.']; }
+    return mail_account_mutate($email, static function (array &$account) use ($megabytes): void {
+        if ($megabytes === 0) { unset($account['quota_mb']); } else { $account['quota_mb'] = $megabytes; }
+    }, 'mail.account.quota', $email . ' ' . ($megabytes ?: 'unlimited'));
+}
+
+/** Turn a mailbox's autoresponder on or off. */
+function mail_account_autoreply(string $email, bool $enabled, string $subject, string $body, int $days = 1, string $until = ''): array
+{
+    $email = strtolower(trim($email));
+    $subject = trim(preg_replace('/[\r\n]+/', ' ', $subject) ?? '');
+    $body = str_replace("\r", '', $body);
+    if ($enabled) {
+        if ($subject === '' || mb_strlen($subject) > 200) { return ['ok' => false, 'error' => 'Enter a subject of up to 200 characters.']; }
+        if (trim($body) === '' || strlen($body) > 8000) { return ['ok' => false, 'error' => 'Enter a message of up to 8,000 characters.']; }
+        if ($until !== '' && (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $until) || strtotime($until) === false)) { return ['ok' => false, 'error' => 'Enter the end date as YYYY-MM-DD.']; }
+    }
+    $days = max(1, min(30, $days));
+    return mail_account_mutate($email, static function (array &$account) use ($enabled, $subject, $body, $days, $until): void {
+        $account['autoreply'] = ['enabled' => $enabled, 'subject' => $subject, 'body' => $body, 'days' => $days, 'until' => $until];
+    }, 'mail.account.autoreply', $email . ($enabled ? ' on' : ' off'));
+}
+
+/** Apply $mutator to one account and commit. */
+function mail_account_mutate(string $email, callable $mutator, string $auditAction, string $auditDetail): array
+{
+    $state = mail_state();
+    $previous = $state;
+    $found = false;
+    foreach ($state['accounts'] as &$account) {
+        if (strcasecmp((string) ($account['email'] ?? ''), $email) === 0) {
+            $mutator($account);
+            $found = true;
+            break;
+        }
+    }
+    unset($account);
+    if (!$found) { return ['ok' => false, 'error' => 'Mailbox not found.']; }
+    $committed = mail_commit_state($previous, $state, 'the mailbox');
+    if (empty($committed['ok'])) { return $committed; }
+    audit($auditAction, $auditDetail);
+    return ['ok' => true];
+}
+
+/** Whether Dovecot's Sieve plugin (needed for autoresponders) is installed. */
+function mail_sieve_available(): bool
+{
+    return is_file('/usr/lib/dovecot/modules/lib90_sieve_plugin.so');
+}
+
+/** The outbound queue: [{id, sender, recipients, size, arrival, reason, deferred}]. */
+function mail_queue(): array
+{
+    [$code, $out] = helper_cmd('mail-queue list', 60);
+    if ($code !== 0) { return ['ok' => false, 'error' => sudo_error($out, $code), 'messages' => []]; }
+    $messages = [];
+    foreach (preg_split('/\r?\n/', trim($out)) as $line) {
+        $j = json_decode($line, true);
+        if (!is_array($j)) { continue; }
+        $reasons = array_filter(array_map(static fn($r) => (string) ($r['delay_reason'] ?? ''), (array) ($j['recipients'] ?? [])));
+        $messages[] = [
+            'id' => (string) ($j['queue_id'] ?? ''),
+            'queue' => (string) ($j['queue_name'] ?? ''),
+            'sender' => (string) ($j['sender'] ?? ''),
+            'recipients' => array_map(static fn($r) => (string) ($r['address'] ?? ''), (array) ($j['recipients'] ?? [])),
+            'size' => (int) ($j['message_size'] ?? 0),
+            'arrival' => (int) ($j['arrival_time'] ?? 0),
+            'reason' => substr(implode('; ', array_unique($reasons)), 0, 500),
+        ];
+    }
+    return ['ok' => true, 'messages' => $messages];
+}
+
+function mail_queue_action(string $action, string $id = ''): array
+{
+    if (!in_array($action, ['flush', 'delete', 'delete-deferred'], true)) { return ['ok' => false, 'error' => 'Unknown queue action.']; }
+    if ($action === 'delete' && !preg_match('/^[0-9A-Za-z]{6,32}$/', $id)) { return ['ok' => false, 'error' => 'Invalid queue id.']; }
+    [$code, $out] = helper_cmd('mail-queue ' . escapeshellarg($action) . ($action === 'delete' ? ' ' . escapeshellarg($id) : ''), 120);
+    audit('mail.queue.' . $action, $id);
+    return $code === 0 ? ['ok' => true] : ['ok' => false, 'error' => sudo_error($out, $code)];
+}
+
+function mail_sieve_install(?callable $onOutput = null): array
+{
+    $args = 'mail-sieve-install';
+    [$code, $out] = $onOutput ? helper_cmd_stream($args, $onOutput, 900) : helper_cmd($args, 900);
+    audit('mail.sieve.install', 'exit ' . $code);
+    if ($code !== 0) { return ['ok' => false, 'error' => trim($out) ?: 'Could not install the Sieve plugin.']; }
+    return mail_apply();
+}
+
 // --- Aliases ----------------------------------------------------------------
 
 function mail_alias_add(string $from, string $to): array
 {
     $from = strtolower(trim($from));
     $to   = strtolower(trim($to));
-    if (!mail_valid_email($from)) {
-        return ['ok' => false, 'error' => 'Enter a valid alias address.'];
+    // "@example.com" (or "*@example.com") is a catch-all for that domain.
+    if (str_starts_with($from, '*@')) { $from = substr($from, 1); }
+    $catchAll = str_starts_with($from, '@') && mail_valid_domain(substr($from, 1));
+    if (!$catchAll && !mail_valid_email($from)) {
+        return ['ok' => false, 'error' => 'Enter a valid alias address, or @domain for a catch-all.'];
     }
     if (!mail_valid_email($to)) {
         return ['ok' => false, 'error' => 'Enter a valid destination address.'];
@@ -568,6 +674,13 @@ function mail_alias_add(string $from, string $to): array
     $state = mail_state();
     if (!isset($state['domains'][$domain])) {
         return ['ok' => false, 'error' => 'Add the alias domain before creating aliases on it.'];
+    }
+    if ($catchAll) {
+        foreach ($state['aliases'] as $a) {
+            if (strcasecmp((string) ($a['from'] ?? ''), $from) === 0) {
+                return ['ok' => false, 'error' => 'This domain already has a catch-all address; delete it first.'];
+            }
+        }
     }
     foreach ($state['aliases'] as $a) {
         if (strcasecmp((string) ($a['from'] ?? ''), $from) === 0 && strcasecmp((string) ($a['to'] ?? ''), $to) === 0) {
@@ -649,6 +762,14 @@ function mail_dns_records(string $domain): array
         ['type' => 'TXT', 'name' => '_dmarc', 'value' => 'v=DMARC1; p=quarantine; rua=mailto:postmaster@' . $domain . '; adkim=s; aspf=s', 'ttl' => 3600, 'priority' => null,
          'note' => 'DMARC — policy for mail that fails SPF/DKIM.'],
     ];
+    // RFC 6186 service records: mail clients find the servers and ports
+    // from the address alone (Thunderbird, Apple Mail, K-9, …).
+    $host = mail_hostname() ?: $mailHost;
+    foreach ([['_submissions._tcp', 465, 'secure SMTP submission'], ['_submission._tcp', 587, 'SMTP submission (STARTTLS)'],
+              ['_imaps._tcp', 993, 'IMAP over TLS'], ['_pop3s._tcp', 995, 'POP3 over TLS']] as [$service, $port, $what]) {
+        $records[] = ['type' => 'SRV', 'name' => $service, 'value' => '0 1 ' . $port . ' ' . $host, 'ttl' => 3600, 'priority' => null,
+            'note' => 'Autodiscovery — tells mail apps where ' . $what . ' is.'];
+    }
     $dkim = mail_dkim($domain);
     if (!empty($dkim['ok']) && $dkim['value'] !== '') {
         $records[] = ['type' => 'TXT', 'name' => $dkim['selector'] . '._domainkey', 'value' => $dkim['value'], 'ttl' => 3600, 'priority' => null,

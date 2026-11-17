@@ -202,6 +202,9 @@ $totalMb = count($state['accounts']);
         </div>
         <div class="card" style="margin-top:14px"><div class="card-header"><h3>Mailbox storage</h3><span class="muted">on-disk maildirs</span></div>
           <div class="table-wrap"><table class="data-table"><thead><tr><th>Mailbox</th><th>Messages</th><th>Unread</th><th style="text-align:right">Size</th></tr></thead><tbody id="stMailboxes"></tbody></table></div></div>
+        <div class="card" style="margin-top:14px"><div class="card-header"><div><h3>Outgoing queue</h3><span class="muted" id="mqSummary">Mail waiting to be delivered</span></div>
+          <div class="flex gap-2"><button class="btn btn-secondary btn-sm" type="button" id="mqRefresh"><i data-lucide="refresh-cw"></i>Refresh</button><button class="btn btn-secondary btn-sm" type="button" id="mqFlush"><i data-lucide="send"></i>Retry all now</button><button class="btn btn-danger btn-sm" type="button" id="mqDropDeferred"><i data-lucide="trash-2"></i>Delete deferred</button></div></div>
+          <div class="table-wrap"><table class="data-table"><thead><tr><th>Queued</th><th>From</th><th>To</th><th class="num">Size</th><th>Why it is waiting</th><th class="actions-col"><span class="sr-only">Actions</span></th></tr></thead><tbody id="mqBody"><tr class="empty-row"><td colspan="6">Open this tab to load the queue.</td></tr></tbody></table></div></div>
         <div class="card" style="margin-top:14px"><div class="card-header"><h3>Delivery problems</h3><span class="muted">bounced · deferred · rejected</span></div>
           <div class="table-wrap"><table class="data-table"><thead><tr><th>When</th><th>Type</th><th>Address</th><th>Reason</th></tr></thead><tbody id="stProblems"></tbody></table></div></div>
       </div>
@@ -212,23 +215,28 @@ $totalMb = count($state['accounts']);
           <div class="empty-state"><div class="es-icon"><i data-lucide="inbox"></i></div><div style="font-weight:600">Add a mail domain to get started</div><div style="font-size:13px;margin-top:4px">Enter a domain above, then create mailboxes on it.</div></div>
         <?php else: ?>
           <h4 class="sec">Mailboxes on <?= e($selected) ?></h4>
-          <div class="table-wrap"><table class="data-table" id="mailboxTable"><thead><tr><th>Address</th><th>Created</th><th></th></tr></thead><tbody>
-            <?php foreach ($mailboxes as $m): ?>
+          <?php if (!mail_sieve_available()): ?><div class="notice notice-info" style="margin-bottom:12px"><i data-lucide="info"></i><div>Autoresponders need Dovecot’s Sieve plugin. <button class="btn btn-secondary btn-sm" type="button" id="mbSieveInstall">Install it</button></div></div><?php endif; ?>
+          <div class="table-wrap"><table class="data-table" id="mailboxTable"><thead><tr><th>Address</th><th>Quota</th><th>Autoresponder</th><th>Created</th><th></th></tr></thead><tbody>
+            <?php foreach ($mailboxes as $m): $reply = (array) ($m['autoreply'] ?? []); $replyOn = !empty($reply['enabled']) && (empty($reply['until']) || strtotime($reply['until'] . ' 23:59:59') >= time()); ?>
               <tr data-bulk-id="<?= e((string) $m['email']) ?>">
                 <td class="mono"><?= e((string) $m['email']) ?></td>
+                <td class="mono text-tertiary" data-sort-value="<?= (int) ($m['quota_mb'] ?? 0) ?>"><?= !empty($m['quota_mb']) ? e(human_bytes((int) $m['quota_mb'] * 1048576, 0)) : 'Unlimited' ?></td>
+                <td><?= $replyOn ? '<span class="badge badge-emerald">On' . (!empty($reply['until']) ? ' until ' . e(fmt_datetime($reply['until'], false)) : '') . '</span>' : '<span class="text-tertiary">Off</span>' ?></td>
                 <td class="mono text-tertiary"><?= e(substr((string) ($m['created'] ?? ''), 0, 10)) ?></td>
                 <td style="text-align:right;white-space:nowrap">
                   <div class="flex items-center" style="justify-content:flex-end;gap:2px">
+                    <button class="icon-btn" type="button" data-account-quota="<?= e((string) $m['email']) ?>" data-quota="<?= (int) ($m['quota_mb'] ?? 0) ?>" title="Set storage quota"><i data-lucide="hard-drive"></i></button>
+                    <button class="icon-btn" type="button" data-account-reply="<?= e(js_json(['email' => (string) $m['email']] + $reply)) ?>" title="Autoresponder"><i data-lucide="reply"></i></button>
                     <button class="icon-btn" data-account-passwd="<?= e((string) $m['email']) ?>" title="Change password"><i data-lucide="key-round"></i></button>
                     <button class="icon-btn" style="color:var(--red-400)" data-account-delete="<?= e((string) $m['email']) ?>" title="Delete mailbox"><i data-lucide="trash-2"></i></button>
                   </div>
                 </td>
               </tr>
             <?php endforeach; ?>
-            <?php if (!$mailboxes): ?><tr><td colspan="3" class="text-tertiary" style="text-align:center;padding:24px">No mailboxes yet — add one below.</td></tr><?php endif; ?>
+            <?php if (!$mailboxes): ?><tr><td colspan="5" class="text-tertiary" style="text-align:center;padding:24px">No mailboxes yet — add one below.</td></tr><?php endif; ?>
           </tbody><tfoot><tr>
             <td><div class="flex items-center gap-1"><input class="input mono" id="mbUser" placeholder="user" style="max-width:130px"><span class="mono muted">@<?= e($selected) ?></span></div></td>
-            <td><input class="input" id="mbPass" type="password" placeholder="Password (min 8)"></td>
+            <td colspan="3"><input class="input" id="mbPass" type="password" placeholder="Password (min 12)" autocomplete="new-password"></td>
             <td style="text-align:right"><button class="btn btn-primary btn-sm" id="mbAdd"><i data-lucide="plus"></i>Add mailbox</button></td>
           </tr></tfoot></table></div>
         <?php endif; ?>
@@ -250,7 +258,7 @@ $totalMb = count($state['accounts']);
             <?php endforeach; ?>
             <?php if (!$aliases): ?><tr><td colspan="3" class="text-tertiary" style="text-align:center;padding:24px">No aliases yet — add one below.</td></tr><?php endif; ?>
           </tbody><tfoot><tr>
-            <td><div class="flex items-center gap-1"><input class="input mono" id="alUser" placeholder="info" style="max-width:130px"><span class="mono muted">@<?= e($selected) ?></span></div></td>
+            <td><div class="flex items-center gap-1"><input class="input mono" id="alUser" placeholder="info, or * for catch-all" style="max-width:170px" title="Use * to catch mail for every address on this domain that has no mailbox or alias"><span class="mono muted">@<?= e($selected) ?></span></div></td>
             <td><input class="input mono" id="alDest" placeholder="destination@example.com"></td>
             <td style="text-align:right"><button class="btn btn-primary btn-sm" id="alAdd"><i data-lucide="plus"></i>Add alias</button></td>
           </tr></tfoot></table></div>
@@ -322,6 +330,15 @@ $totalMb = count($state['accounts']);
 <?php endif; /* installed */ ?>
 </div>
 
+<div class="drawer-overlay hidden" id="mbReplyDrawer"><div class="drawer"><div class="drawer-header"><div><strong id="mbReplyTitle">Autoresponder</strong><div class="muted">Replies automatically to incoming mail, once per sender per period</div></div><button class="icon-btn" type="button" data-close-reply aria-label="Close" title="Close"><i data-lucide="x"></i></button></div>
+  <div class="drawer-body"><div class="form-stack">
+    <label class="modal-option"><input type="checkbox" id="mbReplyOn"><span>Send automatic replies</span></label>
+    <div><label class="field-label" for="mbReplySubject">Subject</label><input class="input" id="mbReplySubject" maxlength="200"></div>
+    <div><label class="field-label" for="mbReplyBody">Message</label><textarea class="input" id="mbReplyBody" rows="8" maxlength="8000"></textarea></div>
+    <div class="grid grid-2"><div><label class="field-label" for="mbReplyDays">Reply to the same sender at most every (days)</label><input class="input mono" id="mbReplyDays" type="number" min="1" max="30" value="1"></div>
+    <div><label class="field-label" for="mbReplyUntil">Until <span class="text-tertiary">(optional)</span></label><input class="input" id="mbReplyUntil" type="date"></div></div>
+  </div></div>
+  <div class="drawer-footer"><button class="btn btn-secondary" type="button" data-close-reply>Cancel</button><button class="btn btn-primary" type="button" id="mbReplySave"><i data-lucide="save"></i>Save</button></div></div></div>
 <script nonce="<?= e(csp_nonce()) ?>">
 document.addEventListener('DOMContentLoaded', () => {
   const { apiPost, streamPost, toast, copyText } = window.Nebula;
@@ -449,12 +466,72 @@ document.addEventListener('DOMContentLoaded', () => {
     if (res.ok) { toast('Password changed', 'success'); } else toast(res.error || 'Failed', 'error');
   }));
 
+  // Quotas and autoresponders
+  document.querySelectorAll('[data-account-quota]').forEach((b) => b.addEventListener('click', async () => {
+    const value = await window.Nebula.prompt({ title: 'Storage quota for ' + b.dataset.accountQuota, label: 'Megabytes (0 = unlimited)', value: b.dataset.quota || '0', mono: true,
+      validate: (v) => /^\d{1,8}$/.test(v) ? '' : 'Enter a whole number of megabytes.', confirmLabel: 'Set quota' });
+    if (value === null) return;
+    const res = await apiPost('mail', { action: 'account-quota', email: b.dataset.accountQuota, quota_mb: Number(value) });
+    if (res.ok) { toast('Quota updated', 'success'); reload(); } else toast(res.error || 'Failed', 'error');
+  }));
+  const replyDrawer = document.getElementById('mbReplyDrawer');
+  let replyEmail = '';
+  document.querySelectorAll('[data-account-reply]').forEach((b) => b.addEventListener('click', () => {
+    const r = JSON.parse(b.dataset.accountReply);
+    replyEmail = r.email;
+    document.getElementById('mbReplyTitle').textContent = 'Autoresponder for ' + r.email;
+    document.getElementById('mbReplyOn').checked = !!r.enabled;
+    document.getElementById('mbReplySubject').value = r.subject || 'Out of office';
+    document.getElementById('mbReplyBody').value = r.body || 'Thank you for your message. I am away and will reply when I am back.';
+    document.getElementById('mbReplyDays').value = r.days || 1;
+    document.getElementById('mbReplyUntil').value = r.until || '';
+    replyDrawer.classList.remove('hidden');
+  }));
+  document.querySelectorAll('[data-close-reply]').forEach((b) => b.addEventListener('click', () => replyDrawer.classList.add('hidden')));
+  document.getElementById('mbReplySave')?.addEventListener('click', async () => {
+    const res = await apiPost('mail', { action: 'account-autoreply', email: replyEmail, enabled: document.getElementById('mbReplyOn').checked,
+      subject: document.getElementById('mbReplySubject').value, body: document.getElementById('mbReplyBody').value,
+      days: Number(document.getElementById('mbReplyDays').value), until: document.getElementById('mbReplyUntil').value });
+    if (res.ok) { toast('Autoresponder saved', 'success'); replyDrawer.classList.add('hidden'); reload(); } else toast(res.error || 'Failed', 'error');
+  });
+  document.getElementById('mbSieveInstall')?.addEventListener('click', async () => {
+    const res = await window.Nebula.runTask({ title: 'Installing the Sieve plugin', endpoint: 'mail', body: { action: 'sieve-install' }, successMessage: 'Autoresponders are available' });
+    if (res.ok) reload();
+  });
+
+  // Outgoing queue
+  async function loadQueue() {
+    const res = await apiPost('mail', { action: 'queue' });
+    const body = document.getElementById('mqBody'); if (!body) return;
+    body.innerHTML = '';
+    if (!res.ok) { body.innerHTML = '<tr class="empty-row"><td colspan="6"></td></tr>'; body.querySelector('td').textContent = res.error || 'Could not read the queue.'; return; }
+    const msgs = res.messages || [];
+    document.getElementById('mqSummary').textContent = msgs.length ? `${msgs.length} message${msgs.length === 1 ? '' : 's'} waiting` : 'Nothing waiting — all mail was delivered';
+    if (!msgs.length) { body.innerHTML = '<tr class="empty-row"><td colspan="6">The queue is empty.</td></tr>'; return; }
+    msgs.forEach((m) => {
+      const tr = document.createElement('tr');
+      const td = (text, cls) => { const c = document.createElement('td'); if (cls) c.className = cls; c.textContent = text; return c; };
+      const when = td(window.Nebula.fmtDate(m.arrival)); when.dataset.sortValue = m.arrival;
+      const del = document.createElement('td'); del.className = 'actions-col';
+      const btn = document.createElement('button'); btn.type = 'button'; btn.className = 'icon-btn danger'; btn.title = 'Delete this message'; btn.innerHTML = '<i data-lucide="trash-2"></i>';
+      btn.addEventListener('click', async () => { if (!await window.Nebula.confirm({ title: 'Delete queued message ' + m.id + '?', message: 'It will not be delivered.', danger: true })) return; const r = await apiPost('mail', { action: 'queue-delete', id: m.id }); if (r.ok) loadQueue(); else toast(r.error || 'Failed', 'error'); });
+      del.appendChild(btn);
+      tr.append(when, td(m.sender || '(bounce)', 'mono'), td(m.recipients.join(', '), 'mono'), td(window.Nebula.fmtBytes(m.size), 'num mono text-tertiary'), td(m.reason || m.queue, 'text-tertiary'), del);
+      body.appendChild(tr);
+    });
+    if (window.lucide) lucide.createIcons();
+  }
+  document.getElementById('mqRefresh')?.addEventListener('click', loadQueue);
+  document.querySelector('[data-tab-target="mail-stats"]')?.addEventListener('click', loadQueue);
+  document.getElementById('mqFlush')?.addEventListener('click', async () => { const r = await apiPost('mail', { action: 'queue-flush' }); toast(r.ok ? 'Retrying delivery of every queued message' : (r.error || 'Failed'), r.ok ? 'success' : 'error'); setTimeout(loadQueue, 1500); });
+  document.getElementById('mqDropDeferred')?.addEventListener('click', async () => { if (!await window.Nebula.confirm({ title: 'Delete all deferred mail?', message: 'Messages that could not be delivered yet are discarded.', danger: true })) return; const r = await apiPost('mail', { action: 'queue-delete-deferred' }); toast(r.ok ? 'Deferred mail deleted' : (r.error || 'Failed'), r.ok ? 'success' : 'error'); loadQueue(); });
+
   // Aliases
   document.getElementById('alAdd')?.addEventListener('click', async () => {
     const user = document.getElementById('alUser').value.trim();
     const dest = document.getElementById('alDest').value.trim();
     if (!user || !dest) { toast('Enter an alias and destination', 'error'); return; }
-    const res = await apiPost('mail', { action: 'alias-add', from: user + '@' + domain, to: dest });
+    const res = await apiPost('mail', { action: 'alias-add', from: (user === '*' ? '' : user) + '@' + domain, to: dest });
     if (res.ok) { toast(res.warning || 'Alias added', res.warning ? 'warning' : 'success'); reload(); } else toast(res.error || 'Failed', 'error');
   });
   document.querySelectorAll('[data-alias-delete-from]').forEach(b => b.addEventListener('click', async () => {

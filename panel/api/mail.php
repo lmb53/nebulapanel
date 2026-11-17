@@ -62,6 +62,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         case 'account-delete':
             $res = mail_account_delete((string) ($body['email'] ?? ''));
             break;
+        case 'account-quota':
+            $res = mail_account_quota((string) ($body['email'] ?? ''), (int) ($body['quota_mb'] ?? 0));
+            break;
+        case 'account-autoreply':
+            $res = mail_account_autoreply((string) ($body['email'] ?? ''), !empty($body['enabled']), (string) ($body['subject'] ?? ''),
+                (string) ($body['body'] ?? ''), (int) ($body['days'] ?? 1), (string) ($body['until'] ?? ''));
+            break;
+        case 'queue':
+            $res = mail_queue();
+            break;
+        case 'queue-flush':
+        case 'queue-delete':
+        case 'queue-delete-deferred':
+            $res = mail_queue_action(substr($action, 6), (string) ($body['id'] ?? ''));
+            break;
+        case 'sieve-install':
+            $res = mail_sieve_install($emit);
+            break;
         case 'alias-add':
             $res = mail_alias_add((string) ($body['from'] ?? ''), (string) ($body['to'] ?? ''));
             break;
@@ -88,7 +106,9 @@ json_out([
     'ok'        => true,
     'status'    => mail_status(),
     'domains'   => $state['domains'],
-    'accounts'  => array_map(fn($a) => ['email' => $a['email'] ?? '', 'created' => $a['created'] ?? ''], $state['accounts']),
+    'accounts'  => array_map(fn($a) => ['email' => $a['email'] ?? '', 'created' => $a['created'] ?? '', 'quota_mb' => (int) ($a['quota_mb'] ?? 0),
+        'autoreply' => array_intersect_key((array) ($a['autoreply'] ?? []), array_flip(['enabled', 'subject', 'body', 'days', 'until']))], $state['accounts']),
+    'sieve'     => mail_sieve_available(),
     'aliases'   => array_map(fn($a) => ['from' => $a['from'] ?? '', 'to' => $a['to'] ?? ''], $state['aliases']),
     'webmail'   => [
         'installed' => mail_webmail_installed(),
