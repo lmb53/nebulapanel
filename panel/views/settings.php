@@ -67,7 +67,7 @@ $healthCritical = (int) ($config['health_critical_percent'] ?? 90);
       <div>
         <label class="field-label" for="alEmails">Email recipients</label>
         <input class="input" id="alEmails" type="text" autocomplete="off" placeholder="ops@example.com, you@example.com" value="<?= e(implode(', ', $alerts['emails'])) ?>" aria-describedby="alEmailsHelp">
-        <div class="field-help" id="alEmailsHelp">Comma-separated, up to <?= ALERT_MAX_RECIPIENTS ?>. Sent through this server’s mail system<?= $hasSendmail ? '' : ' — <strong>no local mail server is installed</strong>, so use a webhook or set up Email first' ?>.</div>
+        <div class="field-help" id="alEmailsHelp">Comma-separated, up to <?= ALERT_MAX_RECIPIENTS ?>. <?= $alerts['smtp']['host'] !== '' ? 'Sent through ' . e($alerts['smtp']['host']) : 'Sent through this server’s mail system' . ($hasSendmail ? '' : ' — <strong>no local mail server is installed</strong>, so use a webhook, an SMTP server below, or set up Email first') ?>.</div>
       </div>
       <fieldset class="check-group">
         <legend class="field-label">Alert me about</legend>
@@ -82,7 +82,25 @@ $healthCritical = (int) ($config['health_critical_percent'] ?? 90);
       <button class="btn btn-secondary btn-sm" type="button" id="alAddHook" style="margin-top:8px"><i data-lucide="plus"></i>Add webhook</button>
       <div class="field-help" style="margin-top:6px">Slack and Discord: paste the channel’s incoming-webhook URL. ntfy: the topic URL, e.g. <span class="mono">https://ntfy.sh/my-server-alerts</span>. Generic JSON posts <span class="mono">{level, subject, text, events}</span>.</div>
     </div>
-    <div class="form-grid" style="--cols:minmax(0,240px) 1fr;align-items:end">
+    <details class="git-extra"<?= $alerts['smtp']['host'] !== '' ? ' open' : '' ?>><summary>Send email through an SMTP server <span class="text-tertiary">(optional — instead of this server’s own mail system)</span></summary>
+      <div class="form-grid" style="--cols:repeat(auto-fit,minmax(200px,1fr));margin-top:10px">
+        <div><label class="field-label" for="alSmtpHost">SMTP server</label><input class="input mono" id="alSmtpHost" value="<?= e($alerts['smtp']['host']) ?>" placeholder="smtp.example.com" autocomplete="off"></div>
+        <div><label class="field-label" for="alSmtpPort">Port</label><input class="input mono" id="alSmtpPort" type="number" min="1" max="65535" value="<?= (int) $alerts['smtp']['port'] ?>"></div>
+        <div><label class="field-label" for="alSmtpSecurity">Security</label><select class="select" id="alSmtpSecurity">
+          <?php foreach (['starttls' => 'STARTTLS (port 587)', 'tls' => 'TLS (port 465)', 'none' => 'None (local relay only)'] as $value => $label): ?><option value="<?= e($value) ?>"<?= $alerts['smtp']['security'] === $value ? ' selected' : '' ?>><?= e($label) ?></option><?php endforeach; ?>
+        </select></div>
+        <div><label class="field-label" for="alSmtpFrom">From address</label><input class="input" id="alSmtpFrom" type="email" value="<?= e($alerts['smtp']['from']) ?>" placeholder="alerts@example.com" autocomplete="off"></div>
+        <div><label class="field-label" for="alSmtpUser">Username</label><input class="input" id="alSmtpUser" value="<?= e($alerts['smtp']['username']) ?>" autocomplete="off"></div>
+        <div><label class="field-label" for="alSmtpPass">Password</label><input class="input" id="alSmtpPass" type="password" placeholder="<?= $alerts['smtp']['password'] !== '' ? '•••••••• (saved — leave blank to keep)' : '' ?>" autocomplete="new-password"></div>
+      </div>
+      <div class="field-help">Clear the server name to go back to the local mail system. The certificate is verified; passwords are only sent over TLS.</div>
+    </details>
+    <div class="form-grid" style="--cols:minmax(0,200px) minmax(0,200px) 1fr;align-items:end">
+      <div>
+        <label class="field-label" for="alDelay">Wait before alerting (minutes)</label>
+        <input class="input mono" id="alDelay" type="number" min="0" max="120" value="<?= (int) $alerts['delay_minutes'] ?>" aria-describedby="alDelayHelp">
+        <div class="field-help" id="alDelayHelp">A problem must last this long. 0 = immediately.</div>
+      </div>
       <div>
         <label class="field-label" for="alRemind">Remind every (hours)</label>
         <input class="input mono" id="alRemind" type="number" min="0" max="168" value="<?= (int) $alerts['remind_hours'] ?>" aria-describedby="alRemindHelp">
@@ -147,6 +165,9 @@ document.addEventListener('DOMContentLoaded', () => {
     webhooks: Array.from(hooks.querySelectorAll('[data-al-hook]')).map((row) => ({ type: row.querySelector('select').value, url: row.querySelector('input').value.trim() })).filter((h) => h.url),
     events: Object.fromEntries(Array.from(document.querySelectorAll('[data-al-event]')).map((cb) => [cb.dataset.alEvent, cb.checked])),
     remind_hours: Number(document.getElementById('alRemind').value || 0),
+    delay_minutes: Number(document.getElementById('alDelay').value || 0),
+    smtp: { host: document.getElementById('alSmtpHost').value.trim(), port: Number(document.getElementById('alSmtpPort').value || 587), security: document.getElementById('alSmtpSecurity').value,
+      from: document.getElementById('alSmtpFrom').value.trim(), username: document.getElementById('alSmtpUser').value.trim(), password: document.getElementById('alSmtpPass').value },
     notify_resolved: document.getElementById('alResolved').checked,
   });
   document.getElementById('alertsForm').addEventListener('submit', async (event) => {

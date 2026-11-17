@@ -657,7 +657,7 @@ $check(count(history_series('7d', $now)['points']) === 1 && history_series('7d',
 // ---- Alerts: notify on change, not on every check ---------------------------
 require_once APP_ROOT . '/lib/mod_alerts.php';
 write_json_file(alerts_file(), ['enabled' => true, 'emails' => [], 'webhooks' => [['type' => 'generic', 'url' => 'http://127.0.0.1:9/']],
-    'events' => ['resources' => true, 'services' => true, 'backups' => true, 'ssl' => true, 'panel' => true, 'updates' => false], 'remind_hours' => 24, 'notify_resolved' => true]);
+    'events' => ['resources' => true, 'services' => true, 'backups' => true, 'ssl' => true, 'panel' => true, 'updates' => false], 'remind_hours' => 24, 'notify_resolved' => true, 'delay_minutes' => 0]);
 $disk = ['level' => 'warning', 'key' => 'disk', 'title' => 'Disk space running low', 'detail' => '85%'];
 $updates = ['level' => 'warning', 'key' => 'updates', 'title' => '25 updates', 'detail' => ''];
 $r1 = alerts_evaluate($now, ['items' => [$disk, $updates]]);
@@ -670,6 +670,17 @@ $check($r2['sent'] === 0, 'an unchanged problem alerted again');
 $check($r3['sent'] === 1 && $r4['sent'] === 1, 'escalation or the daily reminder did not alert');
 $check($r5['sent'] === 1 && $r5['active'] === 0, 'recovery did not alert');
 $check(empty($r1['ok']) && str_contains((string) ($r1['error'] ?? ''), 'Generic JSON'), 'a failed webhook delivery is not reported');
+@unlink(alerts_state_file());
+$cfg = json_decode((string) file_get_contents(alerts_file()), true); $cfg['delay_minutes'] = 10; write_json_file(alerts_file(), $cfg);
+$d1 = alerts_evaluate($now, ['items' => [$disk]]);
+$d2 = alerts_evaluate($now + 300, ['items' => []]);
+$d3 = alerts_evaluate($now + 600, ['items' => [$disk]]);
+$d4 = alerts_evaluate($now + 900, ['items' => [$disk]]);
+$d5 = alerts_evaluate($now + 1200, ['items' => [$disk]]);
+$check($d1['sent'] === 0 && $d2['sent'] === 0 && $d3['sent'] === 0 && $d4['sent'] === 0 && $d5['sent'] === 1, 'a short-lived problem paged, or a persistent one was not reported after the delay');
+$check(empty(alerts_save(['enabled' => false, 'smtp' => ['host' => 'smtp.example.com', 'port' => 587, 'security' => 'none', 'username' => 'u', 'password' => 'p', 'from' => 'a@example.com']])['ok']),
+    'an SMTP password can be sent to a remote server without TLS');
+$check(empty(alerts_save(['enabled' => false, 'smtp' => ['host' => 'smtp.example.com', 'port' => 587, 'security' => 'starttls', 'from' => "a@example.com\r\nBcc: x@evil"]])['ok']), 'SMTP sender header injection is accepted');
 $text = alerts_text([['type' => 'problem', 'level' => 'critical', 'title' => 'A', 'detail' => 'x'], ['type' => 'resolved', 'level' => 'ok', 'title' => 'Resolved: B', 'detail' => '']]);
 $check($text['level'] === 'critical' && str_contains($text['subject'], '1 problem') && str_contains($text['body'], '[RESOLVED]'), 'alert text summarises the batch wrongly');
 foreach ([alerts_file(), alerts_state_file()] as $f) { @unlink($f); }

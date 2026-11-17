@@ -374,7 +374,39 @@ function mem_info(): ?array
     }
     $total = $info['MemTotal'];
     $avail = $info['MemAvailable'] ?? ($info['MemFree'] ?? 0);
-    return ['total' => $total, 'available' => $avail, 'used' => $total - $avail];
+    return ['total' => $total, 'available' => $avail, 'used' => $total - $avail,
+        'swap_total' => (int) ($info['SwapTotal'] ?? 0), 'swap_used' => max(0, (int) ($info['SwapTotal'] ?? 0) - (int) ($info['SwapFree'] ?? 0))];
+}
+
+/**
+ * Space and inode use of every real filesystem (no tmpfs, overlays, snaps),
+ * keyed by mount point: [total, used, free, pct, inodes_pct].
+ */
+function mount_usage(): array
+{
+    $skip = '-x tmpfs -x devtmpfs -x overlay -x squashfs -x efivarfs -x ramfs -x nsfs -x fuse.lxcfs -x iso9660';
+    [$code, $out] = run_cmd('df -P -B1 ' . $skip . ' 2>/dev/null', 10);
+    if ($code !== 0 && trim((string) $out) === '') { return []; }
+    $readOnly = [];
+    foreach ((array) @file('/proc/mounts', FILE_IGNORE_NEW_LINES) as $line) {
+        $m = explode(' ', (string) $line);
+        if (isset($m[3]) && in_array('ro', explode(',', $m[3]), true)) { $readOnly[stripcslashes($m[1])] = true; }
+    }
+    $mounts = [];
+    foreach (array_slice(preg_split('/\r?\n/', trim((string) $out)), 1) as $line) {
+        $f = preg_split('/\s+/', trim($line), 6);
+        if (count($f) < 6 || !ctype_digit($f[1]) || (int) $f[1] === 0 || isset($readOnly[$f[5]])) { continue; }
+        if (preg_match('#^/(proc|sys|dev|run|snap)(/|$)|^/boot/efi$#', $f[5])) { continue; }
+        $mounts[$f[5]] = ['total' => (int) $f[1], 'used' => (int) $f[2], 'free' => (int) $f[3],
+            'pct' => round((int) $f[2] / max(1, (int) $f[2] + (int) $f[3]) * 100, 1), 'inodes_pct' => null];
+    }
+    [, $out] = run_cmd('df -P -i ' . $skip . ' 2>/dev/null', 10);
+    foreach (array_slice(preg_split('/\r?\n/', trim((string) $out)), 1) as $line) {
+        $f = preg_split('/\s+/', trim($line), 6);
+        if (count($f) < 6 || !isset($mounts[$f[5]]) || !ctype_digit($f[1]) || (int) $f[1] === 0) { continue; }
+        $mounts[$f[5]]['inodes_pct'] = round((int) $f[2] / max(1, (int) $f[1]) * 100, 1);
+    }
+    return $mounts;
 }
 
 /** Disk info for a mount point in bytes: [total, used, free]. */

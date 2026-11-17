@@ -16,9 +16,9 @@ const ALERT_MAX_WEBHOOKS = 5;
 function alert_categories(): array
 {
     return [
-        'resources' => ['label' => 'Disk, memory and load', 'keys' => ['disk', 'memory', 'load'], 'default' => true],
+        'resources' => ['label' => 'Disk, memory and load', 'keys' => ['disk', 'inodes', 'memory', 'swap', 'load'], 'default' => true],
         'services' => ['label' => 'Failed services', 'keys' => ['services'], 'default' => true],
-        'backups' => ['label' => 'Backups old or failing', 'keys' => ['backups', 'backup_failed'], 'default' => true],
+        'backups' => ['label' => 'Backups old or failing', 'keys' => ['backups', 'backup_failed', 'offsite_failed'], 'default' => true],
         'ssl' => ['label' => 'SSL certificates expiring', 'keys' => ['ssl'], 'default' => true],
         'panel' => ['label' => 'Panel problems (helper, scheduler, storage)', 'keys' => ['helper', 'scheduler', 'data_dir'], 'default' => true],
         'updates' => ['label' => 'Updates and reboot required', 'keys' => ['updates', 'reboot'], 'default' => false],
@@ -48,7 +48,31 @@ function alerts_config(): array
         'events' => $events,
         'notify_resolved' => (bool) ($saved['notify_resolved'] ?? true),
         'remind_hours' => max(0, min(168, (int) ($saved['remind_hours'] ?? 24))),
+        'delay_minutes' => max(0, min(120, (int) ($saved['delay_minutes'] ?? 10))),
+        'smtp' => alert_smtp_normalize((array) ($saved['smtp'] ?? [])),
     ];
+}
+
+/** SMTP relay settings (password stays sealed here; opened only when sending). */
+function alert_smtp_normalize(array $smtp): array
+{
+    return [
+        'host' => (string) ($smtp['host'] ?? ''),
+        'port' => (int) ($smtp['port'] ?? 587),
+        'security' => in_array($smtp['security'] ?? '', ['starttls', 'tls', 'none'], true) ? (string) $smtp['security'] : 'starttls',
+        'username' => (string) ($smtp['username'] ?? ''),
+        'password' => (string) ($smtp['password'] ?? ''),
+        'from' => (string) ($smtp['from'] ?? ''),
+    ];
+}
+
+/** Alert settings for the browser: the SMTP password is never sent back. */
+function alerts_public(): array
+{
+    $config = alerts_config();
+    $config['smtp']['has_password'] = $config['smtp']['password'] !== '';
+    unset($config['smtp']['password']);
+    return $config;
 }
 
 function alerts_state(): array
@@ -92,10 +116,37 @@ function alerts_save(array $input): array
     if ($enabled && !$emails && !$webhooks) {
         return ['ok' => false, 'error' => 'Add an email address or a webhook before turning alerts on.'];
     }
+    $current = alerts_config();
+    $smtpIn = (array) ($input['smtp'] ?? []);
+    $smtp = $current['smtp'];
+    if ($smtpIn) {
+        $host = strtolower(trim((string) ($smtpIn['host'] ?? '')));
+        if ($host !== '' && !preg_match('/^(?=.{1,253}$)[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$/', $host)) {
+            return ['ok' => false, 'error' => 'The SMTP server must be a host name such as smtp.example.com.'];
+        }
+        $port = (int) ($smtpIn['port'] ?? 587);
+        if ($port < 1 || $port > 65535) { return ['ok' => false, 'error' => 'Invalid SMTP port.']; }
+        $security = (string) ($smtpIn['security'] ?? 'starttls');
+        if (!in_array($security, ['starttls', 'tls', 'none'], true)) { return ['ok' => false, 'error' => 'Invalid SMTP security setting.']; }
+        $username = trim((string) ($smtpIn['username'] ?? ''));
+        $from = trim((string) ($smtpIn['from'] ?? ''));
+        if ($host !== '' && ($from === '' || !filter_var($from, FILTER_VALIDATE_EMAIL) || preg_match('/[\r\n]/', $from))) {
+            return ['ok' => false, 'error' => 'Enter the sender address the SMTP server allows (From).'];
+        }
+        if (preg_match('/[\r\n\x00]/', $username . (string) ($smtpIn['password'] ?? ''))) { return ['ok' => false, 'error' => 'SMTP credentials must be a single line.'];}
+        if ($security === 'none' && $username !== '' && !in_array($host, ['localhost', '127.0.0.1'], true)) {
+            return ['ok' => false, 'error' => 'Use STARTTLS or TLS when signing in to a remote SMTP server, so the password is not sent in clear text.'];
+        }
+        $password = (string) ($smtpIn['password'] ?? '');
+        $smtp = ['host' => $host, 'port' => $port, 'security' => $security, 'username' => $username,
+            'password' => $host === '' ? '' : ($password !== '' ? secret_seal($password) : $current['smtp']['password']), 'from' => $from];
+    }
     $config = [
         'enabled' => $enabled, 'emails' => $emails, 'webhooks' => $webhooks, 'events' => $events,
         'notify_resolved' => (bool) ($input['notify_resolved'] ?? true),
         'remind_hours' => max(0, min(168, (int) ($input['remind_hours'] ?? 24))),
+        'delay_minutes' => max(0, min(120, (int) ($input['delay_minutes'] ?? $current['delay_minutes']))),
+        'smtp' => $smtp,
     ];
     if (!write_json_file(alerts_file(), $config)) { return ['ok' => false, 'error' => 'Could not save the alert settings.']; }
     audit('alerts.settings', ($enabled ? 'enabled' : 'disabled') . ', ' . count($emails) . ' email, ' . count($webhooks) . ' webhook');
@@ -140,9 +191,19 @@ function alerts_evaluate(?int $now = null, ?array $health = null): array
 
     $state = alerts_state();
     $active = is_array($state['active']) ? $state['active'] : [];
+    // A new problem must persist for delay_minutes before anyone is woken up,
+    // so a short load spike or a service restart does not page.
+    $pending = is_array($state['pending'] ?? null) ? $state['pending'] : [];
+    foreach (array_keys($pending) as $id) { if (!isset($current[$id])) { unset($pending[$id]); } }
     $events = [];
     foreach ($current as $id => $item) {
         $previous = $active[$id] ?? null;
+        if (!$previous && $config['delay_minutes'] > 0) {
+            $first = (int) ($pending[$id] ?? $now);
+            $pending[$id] = $first;
+            if ($now - $first < $config['delay_minutes'] * 60) { continue; }
+        }
+        unset($pending[$id]);
         $remind = $config['remind_hours'] > 0 && $previous && $now - (int) ($previous['notified_at'] ?? 0) >= $config['remind_hours'] * 3600;
         if (!$previous) {
             $events[] = ['type' => 'problem'] + $item;
@@ -163,6 +224,7 @@ function alerts_evaluate(?int $now = null, ?array $health = null): array
         unset($active[$id]);
     }
     $state['active'] = $active;
+    $state['pending'] = $pending;
     $results = [];
     if ($events) {
         $results = alerts_send($events, $config);
@@ -232,7 +294,7 @@ function alerts_send(array $events, array $config): array
     $text = alerts_text($events);
     $results = [];
     foreach ($config['emails'] as $email) {
-        $results[] = ['channel' => 'email ' . $email] + alert_send_email($email, $text);
+        $results[] = ['channel' => 'email ' . $email] + alert_send_email($email, $text, $config['smtp']);
     }
     foreach ($config['webhooks'] as $hook) {
         $label = (alert_webhook_types()[$hook['type']] ?? 'webhook') . ' ' . (parse_url((string) $hook['url'], PHP_URL_HOST) ?: 'webhook');
@@ -241,8 +303,10 @@ function alerts_send(array $events, array $config): array
     return $results;
 }
 
-function alert_send_email(string $to, array $text): array
+function alert_send_email(string $to, array $text, ?array $smtp = null): array
 {
+    $smtp = $smtp ?? alerts_config()['smtp'];
+    if ($smtp['host'] !== '') { return alert_smtp_send($smtp, $to, $text); }
     if (!function_exists('mail')) { return ['ok' => false, 'error' => 'PHP mail() is unavailable.']; }
     $sendmail = (string) ini_get('sendmail_path');
     $binary = $sendmail !== '' ? strtok($sendmail, ' ') : '/usr/sbin/sendmail';
@@ -358,5 +422,68 @@ function alert_http_post(string $url, string $body, array $headers, int $timeout
     if ($code < 200 || $code >= 300) {
         return ['ok' => false, 'error' => 'HTTP ' . $code . ($response ? ': ' . substr(trim(strip_tags((string) $response)), 0, 160) : '')];
     }
+    return ['ok' => true];
+}
+
+
+/**
+ * Minimal SMTP client for alert email through an external relay (SendGrid,
+ * Mailgun, SES, Gmail, the provider's smarthost...). Verifies the server
+ * certificate; AUTH PLAIN/LOGIN only after TLS.
+ */
+function alert_smtp_send(array $smtp, string $to, array $text, int $timeout = 20): array
+{
+    $secure = $smtp['security'];
+    $target = ($secure === 'tls' ? 'tls://' : 'tcp://') . $smtp['host'] . ':' . (int) $smtp['port'];
+    $context = stream_context_create(['ssl' => ['verify_peer' => true, 'verify_peer_name' => true, 'peer_name' => $smtp['host'], 'SNI_enabled' => true]]);
+    $fp = @stream_socket_client($target, $errno, $errstr, $timeout, STREAM_CLIENT_CONNECT, $context);
+    if (!$fp) { return ['ok' => false, 'error' => 'Could not connect to ' . $smtp['host'] . ':' . $smtp['port'] . ' — ' . ($errstr ?: 'connection failed')]; }
+    stream_set_timeout($fp, $timeout);
+    $read = static function () use ($fp): array {
+        $lines = '';
+        while (($line = fgets($fp, 2048)) !== false) {
+            $lines .= $line;
+            if (strlen($line) < 4 || $line[3] !== '-') { break; }
+        }
+        return [(int) substr($lines, 0, 3), trim($lines)];
+    };
+    $cmd = static function (string $line, array $expect) use ($fp, $read): ?string {
+        fwrite($fp, $line . "\r\n");
+        [$code, $reply] = $read();
+        return in_array($code, $expect, true) ? null : ($reply !== '' ? $reply : 'no reply');
+    };
+    $fail = static function (string $error) use ($fp): array { @fwrite($fp, "QUIT\r\n"); fclose($fp); return ['ok' => false, 'error' => 'SMTP: ' . $error]; };
+    [$code, $reply] = $read();
+    if ($code !== 220) { return $fail($reply ?: 'no greeting'); }
+    $helo = preg_match('/^[A-Za-z0-9.-]+$/', alerts_hostname()) ? alerts_hostname() : 'localhost';
+    if (($e = $cmd('EHLO ' . $helo, [250])) !== null) { return $fail($e); }
+    if ($secure === 'starttls') {
+        if (($e = $cmd('STARTTLS', [220])) !== null) { return $fail('the server does not offer STARTTLS (' . $e . ')'); }
+        if (!@stream_socket_enable_crypto($fp, true, STREAM_CRYPTO_METHOD_TLSv1_2_CLIENT | (defined('STREAM_CRYPTO_METHOD_TLSv1_3_CLIENT') ? STREAM_CRYPTO_METHOD_TLSv1_3_CLIENT : 0))) {
+            return $fail('TLS negotiation failed (certificate not trusted?)');
+        }
+        if (($e = $cmd('EHLO ' . $helo, [250])) !== null) { return $fail($e); }
+    }
+    if ($smtp['username'] !== '') {
+        $password = secret_open($smtp['password']);
+        if (($e = $cmd('AUTH PLAIN ' . base64_encode("\0" . $smtp['username'] . "\0" . $password), [235])) !== null) {
+            if (($e2 = $cmd('AUTH LOGIN', [334])) !== null || ($e2 = $cmd(base64_encode($smtp['username']), [334])) !== null || ($e2 = $cmd(base64_encode($password), [235])) !== null) {
+                return $fail('sign-in failed — check the username and password (' . ($e2 !== 'no reply' ? $e2 : $e) . ')');
+            }
+        }
+    }
+    if (($e = $cmd('MAIL FROM:<' . $smtp['from'] . '>', [250])) !== null) { return $fail($e); }
+    if (($e = $cmd('RCPT TO:<' . $to . '>', [250, 251])) !== null) { return $fail($e); }
+    if (($e = $cmd('DATA', [354])) !== null) { return $fail($e); }
+    $body = $text['body'] . "\n\n-- \nSent by Nebula Panel on " . $text['host'] . ' at ' . date('Y-m-d H:i T') . ".\nChange alert settings under Settings → Alerts.\n";
+    $message = 'From: Nebula Panel <' . $smtp['from'] . ">\r\nTo: <" . $to . ">\r\nSubject: =?UTF-8?B?" . base64_encode($text['subject']) . "?=\r\n"
+        . 'Date: ' . date('r') . "\r\nMessage-ID: <" . bin2hex(random_bytes(12)) . '@' . $text['host'] . ">\r\nMIME-Version: 1.0\r\n"
+        . "Content-Type: text/plain; charset=UTF-8\r\nContent-Transfer-Encoding: base64\r\nX-Nebula-Alert: " . $text['level'] . "\r\n\r\n"
+        . chunk_split(base64_encode($body), 76, "\r\n");
+    fwrite($fp, $message . ".\r\n");
+    [$code, $reply] = $read();
+    if ($code !== 250) { return $fail($reply ?: 'message rejected'); }
+    @fwrite($fp, "QUIT\r\n");
+    fclose($fp);
     return ['ok' => true];
 }

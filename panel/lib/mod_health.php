@@ -16,14 +16,22 @@ function health_summary(): array
         $items[] = compact('level', 'title', 'detail', 'route', 'icon', 'key');
     };
 
-    $disk = disk_info('/');
-    if ($disk) {
-        $pct = round($disk['used'] / max(1, $disk['total']) * 100, 1);
-        if ($pct >= $critical) {
-            $add('critical', 'Disk space critically low', $pct . '% used on / (' . human_bytes($disk['free']) . ' free)', 'files', 'hard-drive', 'disk');
-        } elseif ($pct >= $warn) {
-            $add('warning', 'Disk space running low', $pct . '% used on / (' . human_bytes($disk['free']) . ' free)', 'files', 'hard-drive', 'disk');
-        }
+    // Every real filesystem: space and inodes (a full /var or a mail volume
+    // stops services as surely as a full /).
+    $mounts = cache_remember('health-mounts', 60, static fn(): array => mount_usage());
+    if (!$mounts && ($disk = disk_info('/'))) {
+        $mounts = ['/' => ['total' => $disk['total'], 'used' => $disk['used'], 'free' => $disk['free'], 'pct' => round($disk['used'] / max(1, $disk['total']) * 100, 1), 'inodes_pct' => null]];
+    }
+    $spaceItems = []; $inodeItems = [];
+    foreach ($mounts as $mount => $use) {
+        if ($use['pct'] >= $warn) { $spaceItems[] = [$use['pct'] >= $critical ? 'critical' : 'warning', $use['pct'] . '% used on ' . $mount . ' (' . human_bytes($use['free']) . ' free)', $use['pct']]; }
+        if ($use['inodes_pct'] !== null && $use['inodes_pct'] >= $warn) { $inodeItems[] = [$use['inodes_pct'] >= $critical ? 'critical' : 'warning', $use['inodes_pct'] . '% of file entries used on ' . $mount, $use['inodes_pct']]; }
+    }
+    foreach ([[$spaceItems, 'Disk space', 'disk'], [$inodeItems, 'File entries (inodes)', 'inodes']] as [$found, $label, $key]) {
+        if (!$found) { continue; }
+        usort($found, static fn($a, $b) => $b[2] <=> $a[2]);
+        $level = $found[0][0];
+        $add($level, $label . ($level === 'critical' ? ' critically low' : ' running low'), implode('; ', array_column($found, 1)), 'files', 'hard-drive', $key);
     }
 
     $mem = mem_info();
@@ -33,6 +41,12 @@ function health_summary(): array
             $add('critical', 'Memory pressure is critical', $pct . '% of RAM is in use', 'dashboard', 'memory-stick', 'memory');
         } elseif ($pct >= $warn) {
             $add('warning', 'Memory pressure is elevated', $pct . '% of RAM is in use', 'dashboard', 'memory-stick', 'memory');
+        }
+        if ($mem['swap_total'] > 0) {
+            $swapPct = round($mem['swap_used'] / $mem['swap_total'] * 100, 1);
+            if ($swapPct >= $warn) {
+                $add($swapPct >= $critical ? 'critical' : 'warning', 'Swap is ' . ($swapPct >= $critical ? 'nearly full' : 'heavily used'), $swapPct . '% of ' . human_bytes($mem['swap_total']) . ' swap in use — the server is short of memory', 'dashboard', 'memory-stick', 'swap');
+            }
         }
     }
 
