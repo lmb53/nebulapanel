@@ -211,6 +211,9 @@ $check(empty(offsite_save(['enabled' => true, 'endpoint' => 'https://s3.example.
 $check(empty(offsite_test()['ok']) && empty(offsite_fetch('../../etc-20260101-000000.tar.gz')['ok']), 'off-site operations run unconfigured or with unsafe names');
 $check(empty(backup_restore('system-20260101-000000.tar.gz', true, [])['ok']), 'a server configuration backup can be restored into a website');
 @unlink(offsite_file());
+$check(strpos($helperSource, 'auto-updates)') !== false && strpos($helperSource, 'APT::Periodic::Unattended-Upgrade "1"') !== false, 'automatic security updates are missing');
+$check(str_contains((string) file_get_contents(APP_ROOT . '/lib/mod_updates.php'), '--force-confold') && str_contains($helperSource, 'Dpkg::Options::=--force-confold'), 'package upgrades can stop at a configuration-file prompt');
+$check(empty(upd_upgrade(null, 'dist-upgrade; id')['ok']) && empty(upd_auto_set(true, '25:00')['ok']), 'upgrade mode or reboot time is not validated');
 $check(strpos($helperSource, 'snappymail-install)') === false, 'SnappyMail installer is still present (Roundcube is the only supported webmail)');
 $check(strpos($helperSource, 'compose-install)') !== false, 'Docker Compose installer helper action is missing');
 $check(strpos($helperSource, 'docker-query)') !== false && strpos($helperSource, 'compose-run)') !== false,

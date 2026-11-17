@@ -267,6 +267,9 @@ function helper_action_is_read_only(string $args): bool
     if ($action === 'db-action') {
         return in_array(trim((string) ($parts[1] ?? ''), "'"), ['list', 'version', 'schema-users', 'users'], true);
     }
+    if ($action === 'auto-updates') {
+        return trim((string) ($parts[1] ?? ''), "'") === 'status';
+    }
     if ($action === 'compose-run') {
         return (bool) preg_match("/^'?(plugin|standalone)'? '?(logs|validate)'?/", (string) ($parts[1] ?? '') . ' ' . (string) ($parts[2] ?? ''));
     }
