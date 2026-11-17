@@ -1893,7 +1893,7 @@ case "$CMD" in
     esac
     TARGET=""
     if [[ "$NEW_NAME" != "." ]]; then TARGET="$(fm_confined_new_path "$DEST_DIR/$NEW_NAME")"; fi
-    OWNER="$(stat -c %U "$DEST_DIR")"; GROUP="$(stat -c %G "$DEST_DIR")"
+    OWNER="$(stat -c %U "$DEST_DIR")"
     [[ "$OWNER" != root && "$OWNER" != UNKNOWN ]] || die "extracting into a root-owned folder is not allowed; open a website folder first"
     # Everything that reads the archive runs as the destination owner, so a
     # path swapped for a symlink can only reach files that owner can read.
@@ -2005,8 +2005,9 @@ case "$CMD" in
 
   # List installed PHP-FPM versions (one per line, e.g. 8.1).
   php-versions)
-    ls /run/php/ 2>/dev/null | grep -oE 'php[0-9.]+-fpm\.sock' \
-      | sed -E 's/php([0-9.]+)-fpm\.sock/\1/' | sort -uV
+    for SOCK in /run/php/php*-fpm.sock; do
+      if [[ -S "$SOCK" && "$SOCK" =~ php([0-9]+\.[0-9]+)-fpm\.sock$ ]]; then echo "${BASH_REMATCH[1]}"; fi
+    done | sort -uV
     ;;
 
   # site-create <site-id> <domain> <phpversion>

@@ -359,7 +359,6 @@ resolve_source() {
 }
 
 resolve_source
-SRC_NAME="$(basename "$PANEL_SRC")"
 ok "Panel source: $PANEL_SRC"
 
 # Decide the deployed directory below the public HTML root:

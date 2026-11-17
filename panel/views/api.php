@@ -46,11 +46,65 @@ $activeCount = count(array_filter($tokens, fn($t) => !$isExpired($t)));
   </tbody></table></div>
 </div>
 <script nonce="<?= e(csp_nonce()) ?>">
-document.addEventListener('DOMContentLoaded',()=>{const{apiPost,toast}=window.Nebula;
-document.getElementById('apiForm').onsubmit=async(event)=>{event.preventDefault();if(!window.Nebula.validateForm(event.currentTarget))return;const label=document.getElementById('apiLabel').value.trim();const role=document.getElementById('apiRole').value,ttl_days=Number(document.getElementById('apiTtl').value),scopes=document.getElementById('apiScopes').value.split(',').map(x=>x.trim()).filter(Boolean),allowed_ips=document.getElementById('apiIps').value.split(',').map(x=>x.trim()).filter(Boolean);const btn=document.getElementById('apiGenerate');if(btn.disabled)return;window.Nebula.setBusy(btn,true);const r=await apiPost('tokens',{action:'generate',label,role,scopes,ttl_days,allowed_ips});window.Nebula.setBusy(btn,false);if(!r.ok)return toast(r.error||'Could not generate the token','error');document.getElementById('apiPlain').value=r.token;document.getElementById('apiReveal').classList.remove('hidden');addRow(r.record||{label,role,scopes,allowed_ips});toast('Token created','success');};
-// Show the new token in the list straight away; a reload would hide the one-time value above.
-function addRow(t){document.getElementById('apiNoTokens')?.remove();const roleLabels={auditor:'Auditor',operator:'Operator',developer:'Developer',admin:'Administrator'};const tr=document.createElement('tr');const cell=(text,cls)=>{const td=document.createElement('td');if(cls)td.className=cls;if(text!==undefined)td.textContent=text;return td;};const name=cell();const nm=document.createElement('div');nm.style.fontWeight='600';nm.textContent=t.label;const ow=document.createElement('div');ow.className='text-tertiary';ow.style.fontSize='12px';ow.textContent=t.owner?'Owner: '+t.owner:'';name.append(nm,ow);const roleTd=cell();const badge=document.createElement('span');badge.className='badge badge-blue';badge.textContent=roleLabels[t.role]||t.role;const sc=document.createElement('span');sc.className='mono text-tertiary';sc.style.fontSize='12px';sc.textContent=' '+(t.scopes||[]).join(', ');roleTd.append(badge,sc);if((t.allowed_ips||[]).length){const ips=document.createElement('div');ips.className='mono text-tertiary';ips.style.cssText='font-size:12px;margin-top:3px';ips.textContent=t.allowed_ips.join(', ');roleTd.appendChild(ips);}const act=cell(undefined,'actions-col');if(t.id){const rv=document.createElement('button');rv.type='button';rv.className='btn btn-danger btn-sm';rv.dataset.apiRevoke=t.id;rv.textContent='Revoke';bindRevoke(rv);act.appendChild(rv);}tr.append(name,roleTd,cell(window.Nebula.fmtDate(t.expires_at)),cell('Never','text-tertiary'),act);document.getElementById('apiTokenRows').prepend(tr);}
-document.getElementById('apiCopy').onclick=async()=>{const ok=await window.Nebula.copyText(document.getElementById('apiPlain').value);toast(ok?'Token copied':'Copy failed — select the value and copy it manually',ok?'success':'error');};
-function bindRevoke(b){b.onclick=async()=>{if(!await window.Nebula.confirm({title:'Revoke this token?',message:'Automation using it will stop working immediately.',danger:true,confirmLabel:'Revoke'}))return;const r=await apiPost('tokens',{action:'revoke',id:b.dataset.apiRevoke});if(r.ok)location.reload();else toast(r.error||'Could not revoke the token','error');};}
-document.querySelectorAll('[data-api-revoke]').forEach(bindRevoke);});
+document.addEventListener('DOMContentLoaded', () => {
+  const { apiPost, toast } = window.Nebula;
+  const $ = (id) => document.getElementById(id);
+  const list = (id) => $(id).value.split(',').map((x) => x.trim()).filter(Boolean);
+  const roleLabels = { auditor: 'Auditor', operator: 'Operator', developer: 'Developer', admin: 'Administrator' };
+
+  function bindRevoke(button) {
+    button.addEventListener('click', async () => {
+      if (!await window.Nebula.confirm({ title: 'Revoke this token?', message: 'Automation using it will stop working immediately.', danger: true, confirmLabel: 'Revoke' })) return;
+      const res = await apiPost('tokens', { action: 'revoke', id: button.dataset.apiRevoke });
+      if (res.ok) location.reload(); else toast(res.error || 'Could not revoke the token', 'error');
+    });
+  }
+
+  // Show the new token in the list straight away; a reload would hide the one-time value above.
+  function addRow(t) {
+    $('apiNoTokens')?.remove();
+    const cell = (text, cls) => { const td = document.createElement('td'); if (cls) td.className = cls; if (text !== undefined) td.textContent = text; return td; };
+    const name = cell();
+    const label = document.createElement('div'); label.style.fontWeight = '600'; label.textContent = t.label;
+    const owner = document.createElement('div'); owner.className = 'text-tertiary'; owner.style.fontSize = '12px'; owner.textContent = t.owner ? 'Owner: ' + t.owner : '';
+    name.append(label, owner);
+    const role = cell();
+    const badge = document.createElement('span'); badge.className = 'badge badge-blue'; badge.textContent = roleLabels[t.role] || t.role;
+    const scopes = document.createElement('span'); scopes.className = 'mono text-tertiary'; scopes.style.fontSize = '12px'; scopes.textContent = ' ' + (t.scopes || []).join(', ');
+    role.append(badge, scopes);
+    if ((t.allowed_ips || []).length) {
+      const ips = document.createElement('div'); ips.className = 'mono text-tertiary'; ips.style.cssText = 'font-size:12px;margin-top:3px'; ips.textContent = t.allowed_ips.join(', ');
+      role.append(ips);
+    }
+    const actions = cell(undefined, 'actions-col');
+    if (t.id) {
+      const revoke = document.createElement('button'); revoke.type = 'button'; revoke.className = 'btn btn-danger btn-sm'; revoke.dataset.apiRevoke = t.id; revoke.textContent = 'Revoke';
+      bindRevoke(revoke); actions.append(revoke);
+    }
+    const tr = document.createElement('tr');
+    tr.append(name, role, cell(window.Nebula.fmtDate(t.expires_at)), cell('Never', 'text-tertiary'), actions);
+    $('apiTokenRows').prepend(tr);
+  }
+
+  $('apiForm').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    if (!window.Nebula.validateForm(event.currentTarget)) return;
+    const button = $('apiGenerate');
+    if (button.disabled) return;
+    const body = { action: 'generate', label: $('apiLabel').value.trim(), role: $('apiRole').value, ttl_days: Number($('apiTtl').value), scopes: list('apiScopes'), allowed_ips: list('apiIps') };
+    window.Nebula.setBusy(button, true);
+    const res = await apiPost('tokens', body);
+    window.Nebula.setBusy(button, false);
+    if (!res.ok) { toast(res.error || 'Could not generate the token', 'error'); return; }
+    $('apiPlain').value = res.token;
+    $('apiReveal').classList.remove('hidden');
+    addRow(res.record || body);
+    toast('Token created', 'success');
+  });
+  $('apiCopy').addEventListener('click', async () => {
+    const ok = await window.Nebula.copyText($('apiPlain').value);
+    toast(ok ? 'Token copied' : 'Copy failed — select the value and copy it manually', ok ? 'success' : 'error');
+  });
+  document.querySelectorAll('[data-api-revoke]').forEach(bindRevoke);
+});
 </script>

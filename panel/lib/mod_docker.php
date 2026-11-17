@@ -106,86 +106,114 @@ function dk_parse_ports(string $raw): array
     return array_values($out);
 }
 
+/** Docker's `--format '{{json .}}'` output: one JSON object per line. */
+function dk_json_lines(string $out): array
+{
+    $rows = [];
+    foreach (preg_split('/\r?\n/', trim($out)) as $line) {
+        $row = $line === '' ? null : json_decode($line, true);
+        if (is_array($row)) { $rows[] = $row; }
+    }
+    return $rows;
+}
+
 /** List images. */
 function dk_images(): array
 {
     [$code, $out] = dk_query('images');
-    if ($code !== 0) {
-        return ['ok' => false, 'error' => sudo_error($out, $code), 'images' => []];
-    }
-    $images = [];
-    foreach (preg_split('/\r?\n/', trim($out)) as $line) {
-        if ($line === '') {
-            continue;
-        }
-        $j = json_decode($line, true);
-        if (!is_array($j)) {
-            continue;
-        }
-        $images[] = [
-            'id'   => $j['ID'] ?? '',
-            'repo' => $j['Repository'] ?? '',
-            'tag'  => $j['Tag'] ?? '',
-            'size' => $j['Size'] ?? '',
-        ];
-    }
+    if ($code !== 0) { return ['ok' => false, 'error' => sudo_error($out, $code), 'images' => []]; }
+    $images = array_map(static fn(array $j): array => [
+        'id' => $j['ID'] ?? '', 'repo' => $j['Repository'] ?? '', 'tag' => $j['Tag'] ?? '', 'size' => $j['Size'] ?? '',
+    ], dk_json_lines($out));
     return ['ok' => true, 'images' => $images];
 }
 
 function dk_volumes(): array
 {
-    [$code,$out]=dk_query('volumes');
-    if($code!==0)return ['ok'=>false,'error'=>sudo_error($out,$code),'volumes'=>[]];$items=[];
-    foreach(preg_split('/\r?\n/',trim($out)) as $line){$j=json_decode($line,true);if(!is_array($j))continue;$items[]=['name'=>$j['Name']??'','driver'=>$j['Driver']??'','mountpoint'=>$j['Mountpoint']??''];}
-    return ['ok'=>true,'volumes'=>$items];
+    [$code, $out] = dk_query('volumes');
+    if ($code !== 0) { return ['ok' => false, 'error' => sudo_error($out, $code), 'volumes' => []]; }
+    $items = array_map(static fn(array $j): array => [
+        'name' => $j['Name'] ?? '', 'driver' => $j['Driver'] ?? '', 'mountpoint' => $j['Mountpoint'] ?? '',
+    ], dk_json_lines($out));
+    return ['ok' => true, 'volumes' => $items];
 }
 
 function dk_networks(): array
 {
-    [$code,$out]=dk_query('networks');
-    if($code!==0)return ['ok'=>false,'error'=>sudo_error($out,$code),'networks'=>[]];$items=[];
-    foreach(preg_split('/\r?\n/',trim($out)) as $line){$j=json_decode($line,true);if(!is_array($j))continue;$items[]=['id'=>$j['ID']??'','name'=>$j['Name']??'','driver'=>$j['Driver']??'','scope'=>$j['Scope']??''];}
-    return ['ok'=>true,'networks'=>$items];
+    [$code, $out] = dk_query('networks');
+    if ($code !== 0) { return ['ok' => false, 'error' => sudo_error($out, $code), 'networks' => []]; }
+    $items = array_map(static fn(array $j): array => [
+        'id' => $j['ID'] ?? '', 'name' => $j['Name'] ?? '', 'driver' => $j['Driver'] ?? '', 'scope' => $j['Scope'] ?? '',
+    ], dk_json_lines($out));
+    return ['ok' => true, 'networks' => $items];
 }
 
 function dk_version(): string
 {
-    [$code,$out]=dk_query('version');return $code===0?trim($out):'';
+    [$code, $out] = dk_query('version');
+    return $code === 0 ? trim($out) : '';
 }
 
+/**
+ * Run a container from a pinned image. Ports bind to loopback unless an
+ * address is given (only loopback is accepted); mounts are named volumes.
+ */
 function dk_container_create(array $input): array
 {
-    $name=trim((string)($input['name']??''));$image=trim((string)($input['image']??''));$restart=(string)($input['restart']??'unless-stopped');
-    if(!preg_match('/^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/',$name))return ['ok'=>false,'error'=>'Invalid container name.'];
-    if(!dk_pinned_image_ok($image))return ['ok'=>false,'error'=>'Use an image with an explicit non-latest tag or digest.'];
-    if(!in_array($restart,['no','always','unless-stopped','on-failure'],true))return ['ok'=>false,'error'=>'Invalid restart policy.'];
+    $name = trim((string) ($input['name'] ?? ''));
+    $image = trim((string) ($input['image'] ?? ''));
+    $restart = (string) ($input['restart'] ?? 'unless-stopped');
+    if (!preg_match('/^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/', $name)) { return ['ok' => false, 'error' => 'Invalid container name.']; }
+    if (!dk_pinned_image_ok($image)) { return ['ok' => false, 'error' => 'Use an image with an explicit non-latest tag or digest.']; }
+    if (!in_array($restart, ['no', 'always', 'unless-stopped', 'on-failure'], true)) { return ['ok' => false, 'error' => 'Invalid restart policy.']; }
     $ports = [];
     $envs = [];
     $volumes = [];
-    foreach(preg_split('/[\s,]+/',trim((string)($input['ports']??'')),-1,PREG_SPLIT_NO_EMPTY) as $port){
-        if(!preg_match('/^(?:(127\.0\.0\.1|\[::1\]):)?(\d{1,5}):(\d{1,5})(?:\/(tcp|udp))?$/',$port,$match)
-            || (int)$match[2]<1 || (int)$match[2]>65535 || (int)$match[3]<1 || (int)$match[3]>65535)
-            return ['ok'=>false,'error'=>'Invalid port mapping: '.$port];
-        $ports[]=(($match[1]??'')!==''?$match[1]:'127.0.0.1').':'.$match[2].':'.$match[3].(!empty($match[4])?'/'.$match[4]:'');
+    foreach (preg_split('/[\s,]+/', trim((string) ($input['ports'] ?? '')), -1, PREG_SPLIT_NO_EMPTY) as $port) {
+        if (!preg_match('/^(?:(127\.0\.0\.1|\[::1\]):)?(\d{1,5}):(\d{1,5})(?:\/(tcp|udp))?$/', $port, $match)
+            || (int) $match[2] < 1 || (int) $match[2] > 65535 || (int) $match[3] < 1 || (int) $match[3] > 65535) {
+            return ['ok' => false, 'error' => 'Invalid port mapping: ' . $port];
+        }
+        $ports[] = (($match[1] ?? '') !== '' ? $match[1] : '127.0.0.1') . ':' . $match[2] . ':' . $match[3] . (!empty($match[4]) ? '/' . $match[4] : '');
     }
-    foreach(preg_split('/\r?\n/',trim((string)($input['env']??'')),-1,PREG_SPLIT_NO_EMPTY) as $env){if(!preg_match('/^[A-Za-z_][A-Za-z0-9_]*=.{0,1024}$/',$env))return ['ok'=>false,'error'=>'Invalid environment entry.'];$envs[]=$env;}
-    foreach(preg_split('/\r?\n/',trim((string)($input['volumes']??'')),-1,PREG_SPLIT_NO_EMPTY) as $volume){if(!preg_match('#^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}:/[A-Za-z0-9_./-]+(?::ro|:rw)?$#',$volume))return ['ok'=>false,'error'=>'Only named-volume mounts are allowed.'];$volumes[]=$volume;}
-    $cmd='docker-run '.escapeshellarg($name).' '.escapeshellarg($image).' '.escapeshellarg($restart)
-        .' '.escapeshellarg(base64_encode(implode("\n",$ports)))
-        .' '.escapeshellarg(base64_encode(implode("\n",$envs)))
-        .' '.escapeshellarg(base64_encode(implode("\n",$volumes)));
-    [$code,$out]=helper_cmd($cmd,180);audit('docker.create',$name.' from '.$image.' (exit '.$code.')');return $code===0?['ok'=>true,'id'=>trim($out)]:['ok'=>false,'error'=>sudo_error($out,$code)];
+    foreach (preg_split('/\r?\n/', trim((string) ($input['env'] ?? '')), -1, PREG_SPLIT_NO_EMPTY) as $env) {
+        if (!preg_match('/^[A-Za-z_][A-Za-z0-9_]*=.{0,1024}$/', $env)) { return ['ok' => false, 'error' => 'Invalid environment entry.']; }
+        $envs[] = $env;
+    }
+    // Named volumes only: a host path would hand the container the server's files.
+    foreach (preg_split('/\r?\n/', trim((string) ($input['volumes'] ?? '')), -1, PREG_SPLIT_NO_EMPTY) as $volume) {
+        if (!preg_match('#^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}:/[A-Za-z0-9_./-]+(?::ro|:rw)?$#', $volume)) { return ['ok' => false, 'error' => 'Only named-volume mounts are allowed.']; }
+        $volumes[] = $volume;
+    }
+    $cmd = 'docker-run ' . escapeshellarg($name) . ' ' . escapeshellarg($image) . ' ' . escapeshellarg($restart)
+        . ' ' . escapeshellarg(base64_encode(implode("\n", $ports)))
+        . ' ' . escapeshellarg(base64_encode(implode("\n", $envs)))
+        . ' ' . escapeshellarg(base64_encode(implode("\n", $volumes)));
+    [$code, $out] = helper_cmd($cmd, 180);
+    audit('docker.create', $name . ' from ' . $image . ' (exit ' . $code . ')');
+    return $code === 0 ? ['ok' => true, 'id' => trim($out)] : ['ok' => false, 'error' => sudo_error($out, $code)];
 }
 
 function dk_image_pull(string $image): array
 {
-    if(!dk_pinned_image_ok($image))return ['ok'=>false,'error'=>'Use an image with an explicit non-latest tag or digest.'];[$code,$out]=helper_cmd('docker-pull '.escapeshellarg($image),300);audit('docker.pull',$image.' (exit '.$code.')');return $code===0?['ok'=>true]:['ok'=>false,'error'=>sudo_error($out,$code)];
+    if (!dk_pinned_image_ok($image)) { return ['ok' => false, 'error' => 'Use an image with an explicit non-latest tag or digest.']; }
+    [$code, $out] = helper_cmd('docker-pull ' . escapeshellarg($image), 300);
+    audit('docker.pull', $image . ' (exit ' . $code . ')');
+    return $code === 0 ? ['ok' => true] : ['ok' => false, 'error' => sudo_error($out, $code)];
 }
-function dk_named_resource(string $kind,string $op,string $name): array
+
+/** Create or remove a named volume or network. */
+function dk_named_resource(string $kind, string $op, string $name): array
 {
-    if(!in_array($kind,['volume','network'],true)||!in_array($op,['create','rm'],true)||!preg_match('/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/',$name))return ['ok'=>false,'error'=>'Invalid Docker resource.'];
-    if($kind==='network'&&$op==='rm'&&in_array($name,['bridge','host','none'],true))return ['ok'=>false,'error'=>'Built-in networks cannot be removed.'];
-    [$code,$out]=helper_cmd('docker-resource '.escapeshellarg($kind).' '.escapeshellarg($op).' '.escapeshellarg($name));audit('docker.'.$kind.'.'.$op,$name.' (exit '.$code.')');return $code===0?['ok'=>true]:['ok'=>false,'error'=>sudo_error($out,$code)];
+    if (!in_array($kind, ['volume', 'network'], true) || !in_array($op, ['create', 'rm'], true) || !preg_match('/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/', $name)) {
+        return ['ok' => false, 'error' => 'Invalid Docker resource.'];
+    }
+    if ($kind === 'network' && $op === 'rm' && in_array($name, ['bridge', 'host', 'none'], true)) {
+        return ['ok' => false, 'error' => 'Built-in networks cannot be removed.'];
+    }
+    [$code, $out] = helper_cmd('docker-resource ' . escapeshellarg($kind) . ' ' . escapeshellarg($op) . ' ' . escapeshellarg($name));
+    audit('docker.' . $kind . '.' . $op, $name . ' (exit ' . $code . ')');
+    return $code === 0 ? ['ok' => true] : ['ok' => false, 'error' => sudo_error($out, $code)];
 }
 
 /** Perform a container action: start|stop|restart|remove. */

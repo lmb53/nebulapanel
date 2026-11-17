@@ -14,14 +14,14 @@ jobs:
       - name: PHP syntax
         run: find panel tests -name '*.php' -print0 | xargs -0 -n1 php -l
       - name: JavaScript syntax
-        run: for f in panel/assets/app.js panel/assets/vendor/lucide-subset.js tools/build-icons.js; do node --check "$f"; done
+        run: for f in panel/assets/app.js panel/assets/passkeys.js panel/assets/vendor/lucide-subset.js tools/build-icons.js; do node --check "$f"; done
       - name: Icon subset is current
         run: node tools/build-icons.js && git diff --exit-code panel/assets/vendor/lucide-subset.js
-      - name: Shell syntax
-        run: bash -n install.sh panel/bin/nebula-helper
+      - name: Shell syntax and lint
+        run: bash -n install.sh panel/bin/nebula-helper && shellcheck -S warning install.sh panel/bin/nebula-helper tests/*.sh
       - name: Smoke and security regressions
         run: php tests/smoke.php && php tests/security.php && php tests/robustness.php && bash tests/helper-contracts.sh && bash tests/helper-sandbox.sh
       - name: End-to-end session lifecycle
-        run: php tests/session-lifecycle.php
+        run: php tests/session-lifecycle.php && php tests/session-api.php
       - name: End-to-end HTTP flows
         run: php tests/http-flows.php
