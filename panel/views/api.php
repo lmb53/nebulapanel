@@ -45,7 +45,7 @@ $activeCount = count(array_filter($tokens, fn($t) => !$isExpired($t)));
   <?php if (!$tokens): ?><tr class="empty-row" id="apiNoTokens"><td colspan="5">No API tokens yet.</td></tr><?php endif; ?>
   </tbody></table></div>
 </div>
-<script>
+<script nonce="<?= e(csp_nonce()) ?>">
 document.addEventListener('DOMContentLoaded',()=>{const{apiPost,toast}=window.Nebula;
 document.getElementById('apiForm').onsubmit=async(event)=>{event.preventDefault();if(!window.Nebula.validateForm(event.currentTarget))return;const label=document.getElementById('apiLabel').value.trim();const role=document.getElementById('apiRole').value,ttl_days=Number(document.getElementById('apiTtl').value),scopes=document.getElementById('apiScopes').value.split(',').map(x=>x.trim()).filter(Boolean),allowed_ips=document.getElementById('apiIps').value.split(',').map(x=>x.trim()).filter(Boolean);const btn=document.getElementById('apiGenerate');if(btn.disabled)return;window.Nebula.setBusy(btn,true);const r=await apiPost('tokens',{action:'generate',label,role,scopes,ttl_days,allowed_ips});window.Nebula.setBusy(btn,false);if(!r.ok)return toast(r.error||'Could not generate the token','error');document.getElementById('apiPlain').value=r.token;document.getElementById('apiReveal').classList.remove('hidden');addRow(r.record||{label,role,scopes,allowed_ips});toast('Token created','success');};
 // Show the new token in the list straight away; a reload would hide the one-time value above.

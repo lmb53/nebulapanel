@@ -31,10 +31,15 @@
     toast('Your session has expired. Reload the page to sign in again. Unsaved editor drafts are kept in this tab.', 'error');
   }
 
-  async function apiGet(endpoint) {
+  // Background polls (live metrics, auto-refreshing lists) pass
+  // {background: true}: the server then does not count them as activity, so
+  // an unattended tab still reaches the idle timeout.
+  async function apiGet(endpoint, opts = {}) {
     let r;
+    const headers = { Accept: 'application/json' };
+    if (opts.background) headers['X-Nebula-Background'] = '1';
     try {
-      r = await fetch(api(endpoint), { headers: { Accept: 'application/json' } });
+      r = await fetch(api(endpoint), { headers });
     } catch (e) {
       throw new Error('Network request failed — check your connection to the server.');
     }
@@ -618,7 +623,7 @@
   async function pollMetrics() {
     if (metricsBusy || document.hidden || sessionLost) return;
     metricsBusy = true;
-    try { applyMetrics(await apiGet('metrics')); } catch (e) { /* silent: the top bar keeps its last values */ }
+    try { applyMetrics(await apiGet('metrics', { background: true })); } catch (e) { /* silent: the top bar keeps its last values */ }
     finally { metricsBusy = false; }
   }
   function startMetricsPolling(page) {

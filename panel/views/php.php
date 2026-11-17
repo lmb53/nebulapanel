@@ -73,7 +73,7 @@ $formatBytes = static function (int $bytes): string {
   <div class="card-header"><h3>Installation output</h3></div>
   <pre class="mono log-pre" id="phpOutput"></pre>
 </div>
-<script>
+<script nonce="<?= e(csp_nonce()) ?>">
 document.addEventListener('DOMContentLoaded', () => {
   const { streamPost, toast } = window.Nebula;
   const toggleInstall = () => { const card = document.getElementById('phpInstallCard'); card?.classList.toggle('hidden'); document.getElementById('phpInstallToggle')?.setAttribute('aria-expanded', card?.classList.contains('hidden') ? 'false' : 'true'); if (card && !card.classList.contains('hidden')) document.getElementById('phpInstallVersion')?.focus(); };
@@ -270,10 +270,10 @@ document.addEventListener('DOMContentLoaded', () => {
 <link rel="stylesheet" href="<?= e(asset('vendor/codemirror-material-darker-5.65.16.min.css')) ?>">
 <script src="<?= e(asset('vendor/codemirror-5.65.16.min.js')) ?>"></script>
 <script src="<?= e(asset('vendor/codemirror-properties-5.65.16.min.js')) ?>"></script>
-<script>
+<script nonce="<?= e(csp_nonce()) ?>">
 document.addEventListener('DOMContentLoaded', () => {
   const { apiPost, streamPost, toast } = window.Nebula;
-  const version = <?= json_encode($sel) ?>;
+  const version = <?= js_json($sel) ?>;
   const outputCard = document.getElementById('phpOutputCard');
   const output = document.getElementById('phpOutput');
   let iniEditor = null;

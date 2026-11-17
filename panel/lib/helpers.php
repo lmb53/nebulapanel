@@ -69,7 +69,7 @@ function csp_nonce(): string
 function theme_boot_script(): string
 {
     // A saved choice wins; otherwise follow the operating system preference.
-    return '<script>(function(){try{var t=localStorage.getItem("nebula-theme");'
+    return '<script nonce="' . e(csp_nonce()) . '">(function(){try{var t=localStorage.getItem("nebula-theme");'
         . 'if(t==="light"||(!t&&window.matchMedia&&matchMedia("(prefers-color-scheme: light)").matches))'
         . '{document.documentElement.classList.add("light");}}catch(e){}})();</script>';
 }
@@ -97,6 +97,50 @@ function domain_name_ok(string $domain, bool $requireDot = true, bool $allowWild
         }
     }
     return true;
+}
+
+/**
+ * Key for sealing secrets at rest (TOTP seeds). It lives in
+ * /etc/nebula-panel, outside data/, so a copy of the data directory (a
+ * backup, a misplaced download) does not carry usable second factors.
+ */
+function panel_secret_key(): ?string
+{
+    static $key = false;
+    if ($key === false) {
+        $file = defined('PANEL_KEY_FILE') ? PANEL_KEY_FILE : '/etc/nebula-panel/panel.key';
+        $raw = trim((string) @file_get_contents($file));
+        $key = preg_match('/^[a-f0-9]{64}$/', $raw) ? hex2bin($raw) : null;
+    }
+    return $key;
+}
+
+/** Encrypt a short secret for storage; returns it unchanged when no key is installed. */
+function secret_seal(string $plain): string
+{
+    $key = panel_secret_key();
+    if ($key === null || $plain === '' || !function_exists('sodium_crypto_secretbox')) {
+        return $plain;
+    }
+    $nonce = random_bytes(SODIUM_CRYPTO_SECRETBOX_NONCEBYTES);
+    return 'enc:v1:' . base64_encode($nonce . sodium_crypto_secretbox($plain, $nonce, $key));
+}
+
+/** Decrypt a value written by secret_seal(); plaintext values pass through. */
+function secret_open(string $value): string
+{
+    if (!str_starts_with($value, 'enc:v1:')) {
+        return $value;
+    }
+    $key = panel_secret_key();
+    $raw = base64_decode(substr($value, 7), true);
+    if ($key === null || $raw === false || !function_exists('sodium_crypto_secretbox_open')
+        || strlen($raw) <= SODIUM_CRYPTO_SECRETBOX_NONCEBYTES) {
+        return '';
+    }
+    $plain = sodium_crypto_secretbox_open(substr($raw, SODIUM_CRYPTO_SECRETBOX_NONCEBYTES),
+        substr($raw, 0, SODIUM_CRYPTO_SECRETBOX_NONCEBYTES), $key);
+    return $plain === false ? '' : $plain;
 }
 
 /** Send a JSON response and stop. */
@@ -361,9 +405,21 @@ function render(string $view, array $data = [], bool $withLayout = true): void
     } else {
         require $viewFile;
     }
-    $html = (string) ob_get_clean();
-    $nonce = e(csp_nonce());
-    echo preg_replace('/<script(?![^>]*\bnonce=)/i', '<script nonce="' . $nonce . '"', $html) ?? $html;
+    // Inline scripts carry the nonce explicitly in the templates. Never add it
+    // to the rendered output wholesale: that would also bless any <script>
+    // that reached the page through data.
+    echo (string) ob_get_clean();
+}
+
+/**
+ * JSON for embedding inside an inline <script>. Escapes <, >, &, ' and " so
+ * data such as a file name containing "</script>" or "<script" cannot end
+ * the script element or be mistaken for markup.
+ */
+function js_json($value): string
+{
+    return (string) json_encode($value, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT
+        | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
 }
 
 /** Safe attachment header for arbitrary filesystem names. */
@@ -596,17 +652,24 @@ function redact_secrets(string $value): string
     return $value;
 }
 
-/** Client address, honoring forwarding headers only from configured proxies. */
+/**
+ * Client address, honoring X-Forwarded-For only from configured proxies.
+ * Each proxy appends the address it received the request from, so walk the
+ * list from the right and take the first hop that is not one of our own
+ * proxies; the leftmost entries are whatever the client chose to send.
+ */
 function client_ip(): string
 {
     global $config;
     $remote = (string) ($_SERVER['REMOTE_ADDR'] ?? '-');
-    if (in_array($remote, (array) ($config['trusted_proxies'] ?? []), true)) {
-        $forwarded = explode(',', (string) ($_SERVER['HTTP_X_FORWARDED_FOR'] ?? ''));
-        $candidate = trim($forwarded[0] ?? '');
-        if (filter_var($candidate, FILTER_VALIDATE_IP)) {
-            return $candidate;
-        }
+    $trusted = (array) ($config['trusted_proxies'] ?? []);
+    if (!in_array($remote, $trusted, true)) {
+        return $remote;
+    }
+    $hops = array_reverse(array_map('trim', explode(',', (string) ($_SERVER['HTTP_X_FORWARDED_FOR'] ?? ''))));
+    foreach ($hops as $hop) {
+        if (!filter_var($hop, FILTER_VALIDATE_IP)) { return $remote; }
+        if (!in_array($hop, $trusted, true)) { return $hop; }
     }
     return $remote;
 }

@@ -23,7 +23,14 @@ require_post();
 csrf_check();
 
 $b = read_json_body();
-switch ((string) ($b['action'] ?? '')) {
+$action = (string) ($b['action'] ?? '');
+// Actions that check the current password or a second factor are throttled
+// like sign-in, so a hijacked session cannot guess them at full speed.
+$reauthActions = ['password', 'mfa-disable', 'mfa-recovery', 'mfa-confirm'];
+if (in_array($action, $reauthActions, true) && ($blocked = reauth_throttle_error()) !== null) {
+    json_out(['ok' => false, 'error' => $blocked], 429);
+}
+switch ($action) {
     case 'password':
         $res = change_admin_password((string) ($b['current'] ?? ''), (string) ($b['new'] ?? ''));
         break;
@@ -51,5 +58,8 @@ switch ((string) ($b['action'] ?? '')) {
         break;
     default:
         $res = ['ok' => false, 'error' => 'Unknown action.'];
+}
+if (!empty($res['ok']) && in_array($action, $reauthActions, true)) {
+    reauth_succeeded();
 }
 json_out($res, !empty($res['ok']) ? 200 : 400);

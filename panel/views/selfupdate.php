@@ -35,7 +35,7 @@ $cur = su_current();
   <pre class="mono log-pre" id="suLog"></pre>
 </div>
 
-<script>
+<script nonce="<?= e(csp_nonce()) ?>">
 document.addEventListener('DOMContentLoaded', () => {
   const { apiGet, apiPost, toast } = window.Nebula;
   const applyBtn = document.getElementById('suApply');

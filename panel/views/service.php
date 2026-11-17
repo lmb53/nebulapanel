@@ -48,7 +48,7 @@ foreach ($services as $s) {
     <pre class="mono log-pre"><?= e($jout !== '' ? $jout : '(no journal output — may require a sudoers rule for journalctl)') ?></pre>
   </div>
 
-  <script>
+  <script nonce="<?= e(csp_nonce()) ?>">
   document.addEventListener('DOMContentLoaded', () => {
     const { apiPost, toast } = window.Nebula;
     const wrap = document.querySelector('[data-svc]');

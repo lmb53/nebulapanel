@@ -497,6 +497,13 @@ for _site_base in "$SITES_ROOT"/*; do
     find "$_site_base/public" -type d -exec setfacl -m "d:u:${PANEL_USER}:rX,d:u:www-data:rX" {} +
   fi
 done
+# Key that seals secrets at rest (TOTP seeds). Kept outside data/ so a copy
+# of the data directory does not carry usable second factors.
+if [[ ! -s /etc/nebula-panel/panel.key ]]; then
+  ( umask 027; openssl rand -hex 32 > /etc/nebula-panel/panel.key )
+fi
+chown root:"$PANEL_USER" /etc/nebula-panel/panel.key
+chmod 0640 /etc/nebula-panel/panel.key
 chown -R root:root "$DEST"
 find "$DEST" -type d -exec chmod 755 {} \;
 find "$DEST" -type f -exec chmod 644 {} \;
@@ -598,30 +605,34 @@ security.limit_extensions = .php
 php_admin_value[disable_functions] = exec,passthru,shell_exec,system,proc_open,popen
 EOF
 install -d -m 0700 -o "$PANEL_USER" -g "$PANEL_USER" "$DEST/data/sessions" "$DEST/data/tmp"
-# Some php*-fpm.service units (notably newer PPA builds) enable systemd
-# sandboxing such as ProtectSystem=full. Privileged helper calls made through
-# sudo inherit that namespace, so /usr and /etc become read-only and package
-# installs, useradd and certbot all fail. The panel pool is the server's
-# control plane, so lift the filesystem restrictions for every FPM unit.
+# The panel pool reaches the privileged helper through sudo, which needs
+# set-uid binaries to work inside the PHP-FPM unit; some PPA builds restrict
+# that. Filesystem sandboxing (ProtectSystem etc.) stays on: the helper
+# re-executes itself outside the unit's namespace when it needs to write to
+# /etc or /usr. Only the unit that runs the panel pool gets this override, so
+# customer-only PHP versions keep their full sandbox.
 for _fpm_dir in /etc/php/*/fpm; do
   [[ -d "$_fpm_dir" ]] || continue
   _fpm_ver="$(basename "$(dirname "$_fpm_dir")")"
   [[ "$_fpm_ver" =~ ^[0-9]+\.[0-9]+$ ]] || continue
-  install -d -m 0755 "/etc/systemd/system/php${_fpm_ver}-fpm.service.d"
-  cat > "/etc/systemd/system/php${_fpm_ver}-fpm.service.d/nebula-panel.conf" <<'EOF'
-# Managed by Nebula Panel install.sh. The panel's privileged helper runs
-# apt, useradd and certbot via sudo from this service, so it must see a
-# writable /usr and /etc.
+  _dropin="/etc/systemd/system/php${_fpm_ver}-fpm.service.d/nebula-panel.conf"
+  if [[ "$_fpm_ver" != "$PHP_VER" ]]; then
+    # Older installers lifted the sandbox for every PHP version.
+    if [[ -f "$_dropin" ]] && grep -q 'Managed by Nebula Panel install.sh' "$_dropin"; then
+      rm -f "$_dropin"
+      systemctl daemon-reload
+      systemctl try-restart "php${_fpm_ver}-fpm" 2>/dev/null || true
+    fi
+    continue
+  fi
+  install -d -m 0755 "$(dirname "$_dropin")"
+  cat > "$_dropin" <<EOF
+# Managed by Nebula Panel install.sh. This unit runs the panel pool, which
+# calls the root helper through sudo (a set-uid program).
 [Service]
-ProtectSystem=no
-ProtectHome=no
-PrivateDevices=no
-ProtectKernelModules=no
-ProtectKernelTunables=no
-ProtectControlGroups=no
+NoNewPrivileges=no
 RestrictSUIDSGID=no
-ReadOnlyPaths=
-InaccessiblePaths=
+ReadWritePaths=-${DEST}/data
 EOF
 done
 systemctl daemon-reload
@@ -801,6 +812,35 @@ EOF
     || warn "Could not enable nebula-panel-scheduler.timer; scheduled backups and alerts will not run."
 else
   warn "PHP CLI or bin/scheduler.php missing; scheduled backups and alerts will not run."
+fi
+
+# --------------------------------------------------------------------------
+# 6c. Fail2Ban jail for panel sign-in failures (active once Fail2Ban is installed)
+# --------------------------------------------------------------------------
+# Every audit event is also written to syslog as JSON; failed sign-ins carry
+# the client address. The jail bans an address after repeated failures, on
+# top of the panel's own per-account and per-address throttle.
+install -d -m 0755 /etc/fail2ban/filter.d /etc/fail2ban/jail.d
+cat > /etc/fail2ban/filter.d/nebula-panel.conf <<'EOF'
+# Managed by Nebula Panel install.sh
+[Definition]
+failregex = "ip":"<HOST>","action":"login","detail":"(?:failed for |rate limited|two-factor code rejected)
+ignoreregex =
+EOF
+cat > /etc/fail2ban/jail.d/nebula-panel.local <<'EOF'
+# Managed by Nebula Panel install.sh
+[nebula-panel]
+enabled = true
+backend = systemd
+journalmatch = SYSLOG_IDENTIFIER=nebula-panel
+filter = nebula-panel
+port = http,https
+maxretry = 10
+findtime = 600
+bantime = 3600
+EOF
+if command -v fail2ban-client >/dev/null 2>&1 && systemctl is-active --quiet fail2ban; then
+  fail2ban-client reload >/dev/null 2>&1 && ok "Fail2Ban jail nebula-panel loaded" || warn "Fail2Ban did not accept the nebula-panel jail"
 fi
 
 # --------------------------------------------------------------------------

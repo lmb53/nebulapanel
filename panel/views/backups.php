@@ -171,10 +171,10 @@ $kindLabels = ['manual' => ['Manual', 'badge-slate'], 'scheduled' => ['Scheduled
   </div>
 </div>
 
-<script>
+<script nonce="<?= e(csp_nonce()) ?>">
 document.addEventListener('DOMContentLoaded', () => {
   const { apiPost, toast, runTask, validateForm, setBusy } = window.Nebula;
-  const siteDbs = <?= json_encode((object) $siteDbs, JSON_HEX_TAG | JSON_HEX_AMP) ?>;
+  const siteDbs = <?= js_json((object) $siteDbs, JSON_HEX_TAG | JSON_HEX_AMP) ?>;
   const $ = (id) => document.getElementById(id);
 
   // ---- Create ----

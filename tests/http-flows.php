@@ -260,6 +260,12 @@ $hookPort = (int) substr(strrchr(stream_socket_get_name($probe, false), ':'), 1)
 fclose($probe);
 $hookServer = proc_open([PHP_BINARY, '-S', '127.0.0.1:' . $hookPort, '-t', $hookDir], [0 => ['pipe', 'r'], 1 => ['file', '/dev/null', 'w'], 2 => ['file', '/dev/null', 'w']], $hookPipes, $hookDir);
 for ($n = 0; $n < 50 && !@fsockopen('127.0.0.1', $hookPort); $n++) { usleep(100000); }
+$res = $a->api('settings', ['action' => 'alerts', 'enabled' => true, 'emails' => '', 'webhooks' => [['type' => 'generic', 'url' => 'http://127.0.0.1:' . $hookPort . '/']]]);
+$check(($res['ok'] ?? true) === false && str_contains((string) ($res['error'] ?? ''), 'private or local'), 'webhooks to loopback addresses are refused by default');
+// A self-hosted receiver on a private network is an explicit opt-in.
+$settingsFile = $app . '/data/settings.json';
+$current = json_decode((string) @file_get_contents($settingsFile), true) ?: [];
+file_put_contents($settingsFile, json_encode($current + ['alerts_allow_private_webhooks' => true]));
 $res = $a->api('settings', ['action' => 'alerts', 'enabled' => true, 'emails' => '', 'webhooks' => [['type' => 'generic', 'url' => 'http://127.0.0.1:' . $hookPort . '/']],
     'events' => ['resources' => true, 'services' => true, 'backups' => true, 'ssl' => true, 'panel' => true, 'updates' => false], 'remind_hours' => 24, 'notify_resolved' => true]);
 $check(($res['ok'] ?? false) === true, 'alert settings with a webhook are saved');

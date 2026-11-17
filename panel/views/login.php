@@ -40,6 +40,6 @@
     </div>
   </div>
 </div>
-<script>lucide.createIcons();document.getElementById('loginForm').addEventListener('submit',(e)=>{const b=e.currentTarget.querySelector('button[type=submit]');b.disabled=true;b.lastChild.textContent='Signing in…';});</script>
+<script nonce="<?= e(csp_nonce()) ?>">lucide.createIcons();document.getElementById('loginForm').addEventListener('submit',(e)=>{const b=e.currentTarget.querySelector('button[type=submit]');b.disabled=true;b.lastChild.textContent='Signing in…';});</script>
 </body>
 </html>

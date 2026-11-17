@@ -99,7 +99,7 @@ $healthCritical = (int) ($config['health_critical_percent'] ?? 90);
   </form>
 </div>
 
-<script>
+<script nonce="<?= e(csp_nonce()) ?>">
 document.addEventListener('DOMContentLoaded', () => {
   const { apiPost, toast, validateForm, setBusy } = window.Nebula;
   const form = document.getElementById('settingsForm');
@@ -124,7 +124,7 @@ document.addEventListener('DOMContentLoaded', () => {
     else toast(res.error || 'Could not save settings', 'error');
   });
   // ---- Alerts ----
-  const hookTypes = <?= json_encode(alert_webhook_types()) ?>;
+  const hookTypes = <?= js_json(alert_webhook_types()) ?>;
   const hooks = document.getElementById('alHooks');
   const addHook = (hook = { type: 'slack', url: '' }) => {
     const row = document.createElement('div'); row.className = 'form-grid'; row.style.setProperty('--cols', '150px minmax(0,1fr) auto'); row.dataset.alHook = '';
@@ -138,7 +138,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (window.lucide) lucide.createIcons();
     return url;
   };
-  <?= json_encode($alerts['webhooks']) ?>.forEach((hook) => addHook(hook));
+  <?= js_json($alerts['webhooks']) ?>.forEach((hook) => addHook(hook));
   document.getElementById('alAddHook').addEventListener('click', () => addHook().focus());
   const alertBody = () => ({
     action: 'alerts', enabled: document.getElementById('alEnabled').checked,

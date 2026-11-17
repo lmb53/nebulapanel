@@ -21,7 +21,11 @@ if ($action === 'general') {
     require_once APP_ROOT . '/lib/mod_alerts.php';
     $res = alerts_test();
 } elseif ($action === 'password') {
+    if (($blocked = reauth_throttle_error()) !== null) {
+        json_out(['ok' => false, 'error' => $blocked], 429);
+    }
     $res = change_admin_password((string) ($b['current'] ?? ''), (string) ($b['new'] ?? ''));
+    if (!empty($res['ok'])) { reauth_succeeded(); }
 } else {
     $res = ['ok' => false, 'error' => 'Unknown action.'];
 }

@@ -99,14 +99,14 @@ $items[] = ['key' => 'phpmyadmin', 'label' => 'phpMyAdmin', 'desc' => 'Web-based
 
 <div class="toast-stack" id="toastStack"></div>
 <script src="<?= e(asset('app.js')) ?>"></script>
-<script>
+<script nonce="<?= e(csp_nonce()) ?>">
 document.addEventListener('DOMContentLoaded', () => {
   const { apiPost, streamPost, toast } = window.Nebula;
   const installBtn = document.getElementById('wizInstall');
   const finishBtn = document.getElementById('wizFinish');
   const logCard = document.getElementById('wizLogCard');
   const logEl = document.getElementById('wizLog');
-  const DASH = <?= json_encode(url('dashboard')) ?>;
+  const DASH = <?= js_json(url('dashboard')) ?>;
 
   function log(line) { logCard.classList.remove('hidden'); logEl.textContent += line + '\n'; logEl.scrollTop = logEl.scrollHeight; }
   function statusFor(cb, text, color) {

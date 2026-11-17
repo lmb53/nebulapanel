@@ -81,6 +81,8 @@ function alerts_save(array $input): array
         if (strlen($url) > 500 || !filter_var($url, FILTER_VALIDATE_URL) || !preg_match('#^https?://#i', $url)) {
             return ['ok' => false, 'error' => 'Webhook URLs must be http:// or https:// addresses.'];
         }
+        $target = alert_url_target($url);
+        if (empty($target['ok'])) { return $target; }
         $webhooks[] = ['type' => $type, 'url' => $url];
     }
     if (count($webhooks) > ALERT_MAX_WEBHOOKS) { return ['ok' => false, 'error' => 'Use at most ' . ALERT_MAX_WEBHOOKS . ' webhooks.']; }
@@ -283,11 +285,54 @@ function alert_send_webhook(array $hook, array $events, array $text): array
 }
 
 /** Minimal POST used for webhooks: [ok, error]. No redirects are followed. */
+/**
+ * Resolve a webhook URL and refuse loopback, private, link-local and other
+ * reserved destinations, so alert settings cannot be used to make the server
+ * call its own internal services (cloud metadata, local admin ports).
+ * Returns the address to pin the request to. Set 'alerts_allow_private_webhooks'
+ * in config.php for a self-hosted receiver on a private network.
+ */
+function alert_url_target(string $url): array
+{
+    global $config;
+    $parts = parse_url($url);
+    $host = strtolower(trim((string) ($parts['host'] ?? ''), '[]'));
+    $scheme = strtolower((string) ($parts['scheme'] ?? ''));
+    if ($host === '' || !in_array($scheme, ['http', 'https'], true) || isset($parts['user']) || isset($parts['pass'])) {
+        return ['ok' => false, 'error' => 'Webhook URLs must be http:// or https:// addresses without credentials.'];
+    }
+    $port = (int) ($parts['port'] ?? ($scheme === 'https' ? 443 : 80));
+    if (filter_var($host, FILTER_VALIDATE_IP)) {
+        $addresses = [$host];
+    } else {
+        $addresses = @gethostbynamel($host) ?: [];
+        foreach ((array) @dns_get_record($host, DNS_AAAA) as $record) {
+            if (!empty($record['ipv6'])) { $addresses[] = (string) $record['ipv6']; }
+        }
+    }
+    if (!$addresses) {
+        return ['ok' => false, 'error' => 'The webhook host ' . $host . ' does not resolve.'];
+    }
+    if (empty($config['alerts_allow_private_webhooks'])) {
+        foreach ($addresses as $address) {
+            if (!filter_var($address, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE)) {
+                return ['ok' => false, 'error' => 'Webhooks to private or local addresses (' . $address . ') are not allowed.'];
+            }
+        }
+    }
+    return ['ok' => true, 'host' => $host, 'port' => $port, 'address' => $addresses[0]];
+}
+
 function alert_http_post(string $url, string $body, array $headers, int $timeout = 10): array
 {
     $headers[] = 'User-Agent: NebulaPanel-Alerts';
+    // Re-check at send time: DNS may have changed since the URL was saved.
+    $target = alert_url_target($url);
+    if (empty($target['ok'])) { return ['ok' => false, 'error' => (string) $target['error']]; }
     if (function_exists('curl_init')) {
         $ch = curl_init($url);
+        $pinned = str_contains($target['address'], ':') ? '[' . $target['address'] . ']' : $target['address'];
+        curl_setopt($ch, CURLOPT_RESOLVE, [$target['host'] . ':' . $target['port'] . ':' . $pinned]);
         curl_setopt_array($ch, [
             CURLOPT_POST => true, CURLOPT_POSTFIELDS => $body, CURLOPT_HTTPHEADER => $headers,
             CURLOPT_RETURNTRANSFER => true, CURLOPT_TIMEOUT => $timeout, CURLOPT_CONNECTTIMEOUT => 5,

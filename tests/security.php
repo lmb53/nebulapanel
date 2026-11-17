@@ -103,6 +103,33 @@ $check(backup_resolve('../not-a-backup') === null, 'backup filenames are strictl
 $redacted = log_redact("Authorization: Bearer abc.def\npassword=hunter2\nhttps://u:p@example.test/repo");
 $check(strpos($redacted, 'hunter2') === false && strpos($redacted, 'abc.def') === false && strpos($redacted, 'u:p') === false, 'log secrets are redacted');
 
+// --- Proxy, throttle and secret handling ---------------------------------------
+$config['trusted_proxies'] = ['10.0.0.1', '10.0.0.2'];
+$_SERVER['REMOTE_ADDR'] = '10.0.0.1';
+$_SERVER['HTTP_X_FORWARDED_FOR'] = '6.6.6.6, 198.51.100.7, 10.0.0.2';
+$check(client_ip() === '198.51.100.7', 'X-Forwarded-For takes the last untrusted hop, not the client-chosen first entry');
+$_SERVER['REMOTE_ADDR'] = '198.51.100.9';
+$check(client_ip() === '198.51.100.9', 'X-Forwarded-For is ignored from untrusted peers');
+unset($_SERVER['HTTP_X_FORWARDED_FOR']);
+$config['trusted_proxies'] = [];
+$check(login_throttle_ip('2001:db8:1:2:aaaa::1') === login_throttle_ip('2001:db8:1:2:bbbb::9'), 'IPv6 clients are throttled per /64');
+$check(login_throttle_ip('2001:db8:1:3::1') !== login_throttle_ip('2001:db8:1:2::1'), 'different IPv6 /64 networks are throttled separately');
+@unlink(login_attempts_file());
+$spread = [];
+for ($i = 1; $i <= 31; $i++) { $spread[] = reserve_login_attempt('192.0.2.' . $i, 'target-admin'); }
+$check($spread[29] === 0 && $spread[30] > 0, 'one account is throttled across many addresses');
+@unlink(login_attempts_file());
+$check(str_contains(js_json('a</script><script>alert(1)</script>'), 'u003C') &&!str_contains(js_json('</script>'), '</'), 'inline JSON cannot close a script element');
+$sealedNoKey = secret_seal('JBSWY3DPEHPK3PXP');
+$check(secret_open($sealedNoKey) === 'JBSWY3DPEHPK3PXP', 'secrets round-trip without a key');
+$check(secret_open('enc:v1:!!!') === '', 'a corrupt sealed secret opens to nothing');
+save_panel_users([['id' => 1, 'username' => 'CaseAdmin', 'hash' => panel_password_hash('case insensitive password 1'), 'role' => 'admin', 'enabled' => true]]);
+$check(attempt_login('caseadmin', 'case insensitive password 1') === true, 'sign-in names are matched case-insensitively');
+$_SESSION = [];
+$check(attempt_login('nobody-here', 'whatever password 1') === false, 'unknown accounts are refused');
+$check(is_file(DATA_DIR . '/login-dummy.hash'), 'unknown accounts are verified against a dummy hash');
+$_SESSION = [];
+
 $remove = static function (string $path) use (&$remove): void {
     if (!is_dir($path) || is_link($path)) { @unlink($path); return; }
     foreach (scandir($path) ?: [] as $entry) {

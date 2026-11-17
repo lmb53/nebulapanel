@@ -286,10 +286,81 @@ function login_attempts_file(): string
 
 /** Each address may make this many times the per-account attempt budget. */
 const LOGIN_IP_ATTEMPT_MULTIPLIER = 4;
+/** One account may receive this many times the budget from all addresses together. */
+const LOGIN_ACCOUNT_ATTEMPT_MULTIPLIER = 6;
+
+/**
+ * The address a throttle is keyed on. IPv6 clients usually control a whole
+ * /64, so counting single addresses there would let one client rotate
+ * through billions of them.
+ */
+function login_throttle_ip(string $ip): string
+{
+    if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6)) {
+        $packed = @inet_pton($ip);
+        if ($packed !== false && strlen($packed) === 16) {
+            return bin2hex(substr($packed, 0, 8)) . '::/64';
+        }
+    }
+    return $ip;
+}
 
 function login_ip_key(string $ip): string
 {
-    return 'ip:' . hash('sha256', $ip);
+    return 'ip:' . hash('sha256', login_throttle_ip($ip));
+}
+
+function login_pair_key(string $ip, string $username): string
+{
+    return hash('sha256', login_throttle_ip($ip) . "\0" . strtolower(trim($username)));
+}
+
+function login_account_key(string $username): string
+{
+    return 'acct:' . hash('sha256', strtolower(trim($username)));
+}
+
+/** Drop attempts older than the window; returns the pruned store. */
+function login_attempts_prune(array $data, int $window): array
+{
+    $cutoff = time() - $window;
+    foreach ($data as $k => $attempts) {
+        $data[$k] = is_array($attempts)
+            ? array_values(array_filter($attempts, fn($ts) => (int) $ts > $cutoff)) : [];
+        if (!$data[$k]) { unset($data[$k]); }
+    }
+    return $data;
+}
+
+/** Run $mutator over the attempt store under an exclusive lock. */
+function login_attempts_mutate(callable $mutator, $locked)
+{
+    global $config;
+    $window = max(60, (int) ($config['login_window'] ?? 600));
+    $path = login_attempts_file();
+    $handle = @fopen($path, 'c+');
+    if ($handle === false || !@flock($handle, LOCK_EX)) {
+        if (is_resource($handle)) { @fclose($handle); }
+        return $locked;
+    }
+    $data = json_decode((string) stream_get_contents($handle), true);
+    $data = login_attempts_prune(is_array($data) ? $data : [], $window);
+    $result = $mutator($data, $window);
+    ftruncate($handle, 0);
+    rewind($handle);
+    fwrite($handle, (string) json_encode($data));
+    fflush($handle);
+    @flock($handle, LOCK_UN);
+    fclose($handle);
+    @chmod($path, 0600);
+    return $result;
+}
+
+/** Seconds until a bucket with $max attempts frees a slot (0 = free now). */
+function login_bucket_retry(array $attempts, int $max, int $window): int
+{
+    if (count($attempts) < $max) { return 0; }
+    return max(1, ((int) $attempts[count($attempts) - $max] + $window) - time());
 }
 
 /** Return seconds until another login is allowed (0 means allowed). */
@@ -300,103 +371,92 @@ function login_retry_after(?string $ip = null, string $username = ''): int
     $max = max(1, (int) ($config['login_max_attempts'] ?? 5));
     $window = max(60, (int) ($config['login_window'] ?? 600));
     $data = @json_decode((string) @file_get_contents(login_attempts_file()), true);
-    $key = hash('sha256', $ip . "\0" . strtolower(trim($username)));
-    $attempts = is_array($data) && isset($data[$key]) && is_array($data[$key])
-        ? $data[$key] : [];
-    $cutoff = time() - $window;
-    $attempts = array_values(array_filter($attempts, fn($ts) => (int) $ts > $cutoff));
-    if (count($attempts) < $max) {
-        return 0;
-    }
-    return max(1, ((int) $attempts[0] + $window) - time());
+    $data = login_attempts_prune(is_array($data) ? $data : [], $window);
+    return login_bucket_retry($data[login_pair_key($ip, $username)] ?? [], $max, $window);
 }
 
-/** Atomically reserve one attempt, returning retry seconds when blocked. */
-function reserve_login_attempt(?string $ip = null, string $username = ''): int
+/**
+ * Atomically reserve one attempt, returning retry seconds when blocked.
+ * Three budgets apply: address+account, the address alone (so one client
+ * cannot cycle through usernames), and the account alone (so a distributed
+ * guess at one account is slowed too). $accountBudget=false skips the last
+ * one for keys that are not usernames.
+ */
+function reserve_login_attempt(?string $ip = null, string $username = '', bool $accountBudget = true): int
 {
     global $config;
     $ip = $ip ?? client_ip();
-    $key = hash('sha256', $ip . "\0" . strtolower(trim($username)));
     $max = max(1, (int) ($config['login_max_attempts'] ?? 5));
-    $window = max(60, (int) ($config['login_window'] ?? 600));
-    $path = login_attempts_file();
-    $handle = @fopen($path, 'c+');
-    if ($handle === false || !@flock($handle, LOCK_EX)) {
-        if (is_resource($handle)) { @fclose($handle); }
-        return $window; // fail closed if the throttle store is unavailable
-    }
-    $data = json_decode((string) stream_get_contents($handle), true);
-    $data = is_array($data) ? $data : [];
-    $cutoff = time() - $window;
-    foreach ($data as $k => $attempts) {
-        $data[$k] = is_array($attempts)
-            ? array_values(array_filter($attempts, fn($ts) => (int) $ts > $cutoff)) : [];
-        if (!$data[$k]) { unset($data[$k]); }
-    }
-    $attempts = $data[$key] ?? [];
-    $retry = count($attempts) >= $max ? max(1, ((int) $attempts[0] + $window) - time()) : 0;
-    // A second, looser per-address budget stops one client from cycling
-    // through usernames to escape the per-account limit.
-    $ipKey = login_ip_key($ip);
-    $ipAttempts = $data[$ipKey] ?? [];
-    $ipMax = $max * LOGIN_IP_ATTEMPT_MULTIPLIER;
-    if ($retry === 0 && count($ipAttempts) >= $ipMax) {
-        $retry = max(1, ((int) $ipAttempts[count($ipAttempts) - $ipMax] + $window) - time());
-    }
-    if ($retry === 0) {
-        $data[$key][] = time();
-        $data[$ipKey][] = time();
-    }
-    ftruncate($handle, 0);
-    rewind($handle);
-    fwrite($handle, (string) json_encode($data));
-    fflush($handle);
-    @flock($handle, LOCK_UN);
-    fclose($handle);
-    @chmod($path, 0600);
-    return $retry;
+    return (int) login_attempts_mutate(static function (array &$data, int $window) use ($ip, $username, $max, $accountBudget): int {
+        $pair = login_pair_key($ip, $username);
+        $ipKey = login_ip_key($ip);
+        $acct = login_account_key($username);
+        $retry = max(
+            login_bucket_retry($data[$pair] ?? [], $max, $window),
+            login_bucket_retry($data[$ipKey] ?? [], $max * LOGIN_IP_ATTEMPT_MULTIPLIER, $window),
+            $accountBudget && $username !== '' ? login_bucket_retry($data[$acct] ?? [], $max * LOGIN_ACCOUNT_ATTEMPT_MULTIPLIER, $window) : 0
+        );
+        if ($retry === 0) {
+            $data[$pair][] = time();
+            $data[$ipKey][] = time();
+            if ($accountBudget && $username !== '') { $data[$acct][] = time(); }
+        }
+        return $retry;
+    }, max(60, (int) ($config['login_window'] ?? 600))); // fail closed if the store is unavailable
 }
 
 function record_login_attempt(bool $success, ?string $ip = null, string $username = ''): void
 {
-    global $config;
     $ip = $ip ?? client_ip();
-    $key = hash('sha256', $ip . "\0" . strtolower(trim($username)));
-    $window = max(60, (int) ($config['login_window'] ?? 600));
-    $path = login_attempts_file();
-    $handle = @fopen($path, 'c+');
-    if ($handle === false || !@flock($handle, LOCK_EX)) {
-        if (is_resource($handle)) { @fclose($handle); }
-        return;
-    }
-    $raw = stream_get_contents($handle);
-    $data = json_decode((string) $raw, true);
-    $data = is_array($data) ? $data : [];
-    $cutoff = time() - $window;
-    foreach ($data as $k => $attempts) {
-        if (!is_array($attempts)) { unset($data[$k]); continue; }
-        $data[$k] = array_values(array_filter($attempts, fn($ts) => (int) $ts > $cutoff));
-        if (!$data[$k]) { unset($data[$k]); }
-    }
-    if ($success) {
-        unset($data[$key]);
-        // Only failures should count against the shared per-address budget;
-        // give back the slot reserve_login_attempt() took for this login.
-        $ipKey = login_ip_key($ip);
-        if (!empty($data[$ipKey])) {
-            array_pop($data[$ipKey]);
-            if (!$data[$ipKey]) { unset($data[$ipKey]); }
+    login_attempts_mutate(static function (array &$data) use ($success, $ip, $username): void {
+        $pair = login_pair_key($ip, $username);
+        if (!$success) {
+            $data[$pair][] = time();
+            return;
         }
-    } else {
-        $data[$key][] = time();
+        unset($data[$pair]);
+        // Only failures should count against the shared budgets; give back
+        // the slots reserve_login_attempt() took for this login.
+        foreach ([login_ip_key($ip), login_account_key($username)] as $key) {
+            if (!empty($data[$key])) {
+                array_pop($data[$key]);
+                if (!$data[$key]) { unset($data[$key]); }
+            }
+        }
+    }, null);
+}
+
+/**
+ * Throttle a re-authentication (current-password or second-factor check for
+ * a sensitive change). Returns an error message when blocked.
+ */
+function reauth_throttle_error(string $purpose = 'reauth'): ?string
+{
+    $retry = reserve_login_attempt(null, $purpose . ':' . (int) ($_SESSION['uid'] ?? 0), false);
+    if ($retry <= 0) { return null; }
+    return 'Too many attempts. Try again in ' . max(1, (int) ceil($retry / 60)) . ' minute' . ($retry > 60 ? 's' : '') . '.';
+}
+
+function reauth_succeeded(string $purpose = 'reauth'): void
+{
+    record_login_attempt(true, null, $purpose . ':' . (int) ($_SESSION['uid'] ?? 0));
+}
+
+/** A hash to verify against when no account matches, so timing does not reveal valid names. */
+function login_dummy_hash(): string
+{
+    static $hash = null;
+    if ($hash === null) {
+        $file = DATA_DIR . '/login-dummy.hash';
+        $stored = (string) @file_get_contents($file);
+        if ($stored === '' || panel_password_needs_rehash($stored)) {
+            $stored = (string) panel_password_hash(bin2hex(random_bytes(16)));
+            @file_put_contents($file, $stored, LOCK_EX);
+            @chmod($file, 0600);
+        }
+        $hash = $stored;
     }
-    ftruncate($handle, 0);
-    rewind($handle);
-    fwrite($handle, (string) json_encode($data));
-    fflush($handle);
-    @flock($handle, LOCK_UN);
-    fclose($handle);
-    @chmod($path, 0600);
+    return $hash;
 }
 
 /**
@@ -409,10 +469,16 @@ function attempt_login(string $username, string $password): bool|string
         return false;
     }
     $matched = null;
+    $wanted = strtolower(trim($username));
     foreach (panel_users() as $candidate) {
-        if (hash_equals((string) ($candidate['username'] ?? ''), $username)) { $matched = $candidate; break; }
+        // Usernames are unique case-insensitively, so match them that way too.
+        if (hash_equals(strtolower((string) ($candidate['username'] ?? '')), $wanted)) { $matched = $candidate; break; }
     }
-    $passwordOk = is_array($matched) && (!isset($matched['enabled']) || (bool) $matched['enabled']) && !empty($matched['hash']) && password_verify($password, (string) $matched['hash']);
+    // Always run one full password hash, even for unknown accounts, so the
+    // response time does not reveal which usernames exist.
+    $hash = is_array($matched) && !empty($matched['hash']) ? (string) $matched['hash'] : login_dummy_hash();
+    $passwordOk = password_verify($password, $hash) && is_array($matched)
+        && (!isset($matched['enabled']) || (bool) $matched['enabled']) && !empty($matched['hash']);
     if (!$passwordOk) {
         // Constant-ish delay to blunt brute force / timing.
         usleep(300000);
@@ -447,7 +513,7 @@ function attempt_login(string $username, string $password): bool|string
     if (mfa_user_enabled($matched)) {
         // The password was right; the session is not signed in until the
         // second factor is verified on the login-2fa step.
-        session_regenerate_id(true);
+        if (session_status() === PHP_SESSION_ACTIVE) { session_regenerate_id(true); }
         $_SESSION = [];
         $_SESSION['mfa_pending'] = [
             'uid' => (int) ($matched['id'] ?? 0),
@@ -466,7 +532,7 @@ function attempt_login(string $username, string $password): bool|string
 /** Turn the current session into a signed-in session for $user. */
 function login_establish(array $user, bool $mfaVerified = false): void
 {
-    session_regenerate_id(true);
+    if (session_status() === PHP_SESSION_ACTIVE) { session_regenerate_id(true); }
     $_SESSION = [];
     $_SESSION['uid'] = (int) ($user['id'] ?? 1);
     $_SESSION['username'] = (string) ($user['username'] ?? '');

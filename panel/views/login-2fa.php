@@ -40,7 +40,7 @@
     </div>
   </div>
 </div>
-<script>
+<script nonce="<?= e(csp_nonce()) ?>">
 lucide.createIcons();
 const code = document.getElementById('mfa-code');
 document.getElementById('useRecovery').addEventListener('click', (e) => {

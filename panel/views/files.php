@@ -436,8 +436,8 @@ if ($rel !== '') {
   </div>
 <?php endif; ?>
 
-<script>
-const CURDIR = <?= json_encode($rel) ?>;
+<script nonce="<?= e(csp_nonce()) ?>">
+const CURDIR = <?= js_json($rel) ?>;
 document.addEventListener('DOMContentLoaded', () => {
   const { apiGet, apiPost, toast, fmtBytes, fmtDate } = window.Nebula;
   const ask = window.Nebula.confirm, askText = window.Nebula.prompt, dialog = window.Nebula.dialog;

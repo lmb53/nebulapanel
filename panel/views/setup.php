@@ -39,6 +39,6 @@
     </div>
   </div>
 </div>
-<script>lucide.createIcons();</script>
+<script nonce="<?= e(csp_nonce()) ?>">lucide.createIcons();</script>
 </body>
 </html>

@@ -80,7 +80,7 @@ $helper = helper_available();
   <pre class="mono" id="appLog" style="margin:0;padding:16px;font-size:12px;line-height:1.55;white-space:pre-wrap;max-height:40vh;overflow:auto"></pre>
 </div>
 
-<script>
+<script nonce="<?= e(csp_nonce()) ?>">
 document.addEventListener('DOMContentLoaded', () => {
   const { streamPost, toast } = window.Nebula;
   // A missing brand file must not leave an empty tile — fall back to the glyph.

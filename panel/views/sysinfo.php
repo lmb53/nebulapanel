@@ -83,4 +83,4 @@ $rows = [
     </div>
   </div>
 </div>
-<script>window.NEBULA_PAGE = 'sysinfo';</script>
+<script nonce="<?= e(csp_nonce()) ?>">window.NEBULA_PAGE = 'sysinfo';</script>

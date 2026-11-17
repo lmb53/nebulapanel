@@ -325,7 +325,7 @@ $totalMb = count($state['accounts']);
 <script nonce="<?= e(csp_nonce()) ?>">
 document.addEventListener('DOMContentLoaded', () => {
   const { apiPost, streamPost, toast, copyText } = window.Nebula;
-  const domain = <?= json_encode($selected) ?>;
+  const domain = <?= js_json($selected) ?>;
   const reload = (ms = 500) => setTimeout(() => location.reload(), ms);
 
   // Keep the active tab after a reload. Deferred so it runs after app.js has
@@ -412,7 +412,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const val = document.getElementById('domainInput').value.trim();
     if (!val) return;
     const res = await apiPost('mail', { action: 'domain-add', domain: val });
-    if (res.ok) { toast(res.warning || 'Domain added', res.warning ? 'warning' : 'success'); setTimeout(() => location = <?= json_encode(url('mail')) ?> + '&domain=' + encodeURIComponent(val), 400); }
+    if (res.ok) { toast(res.warning || 'Domain added', res.warning ? 'warning' : 'success'); setTimeout(() => location = <?= js_json(url('mail')) ?> + '&domain=' + encodeURIComponent(val), 400); }
     else toast(res.error || 'Failed', 'error');
   });
   document.getElementById('domainInput')?.addEventListener('keydown', (e) => { if (e.key === 'Enter') document.getElementById('domainAdd').click(); });
@@ -420,7 +420,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const d = b.dataset.domainDelete;
     if (!await window.Nebula.confirm({ title: 'Delete mail domain ' + d + '?', message: 'Its mailboxes and aliases are removed.', danger: true })) return;
     const res = await apiPost('mail', { action: 'domain-delete', domain: d });
-    if (res.ok) { toast('Domain deleted', 'success'); location = <?= json_encode(url('mail')) ?>; } else toast(res.error || 'Failed', 'error');
+    if (res.ok) { toast('Domain deleted', 'success'); location = <?= js_json(url('mail')) ?>; } else toast(res.error || 'Failed', 'error');
   }));
 
   // Mailboxes

@@ -68,11 +68,11 @@ $siblingFiles = array_values(array_filter(array_slice($siblingListing['files'], 
 <script src="<?= e(asset('vendor/codemirror-clike-5.65.16.min.js')) ?>"></script>
 <script src="<?= e(asset('vendor/codemirror-php-5.65.16.min.js')) ?>"></script>
 <script src="<?= e(asset('vendor/codemirror-yaml-5.65.16.min.js')) ?>"></script>
-<script>
-const FEDIT_PATH = <?= json_encode($rel) ?>;
-const FEDIT_DIR = <?= json_encode($dir) ?>;
-const FEDIT_EDIT_URL = <?= json_encode(url('file-edit')) ?>;
-let FEDIT_HASH = <?= json_encode(hash_file('sha256', $abs) ?: '') ?>;
+<script nonce="<?= e(csp_nonce()) ?>">
+const FEDIT_PATH = <?= js_json($rel) ?>;
+const FEDIT_DIR = <?= js_json($dir) ?>;
+const FEDIT_EDIT_URL = <?= js_json(url('file-edit')) ?>;
+let FEDIT_HASH = <?= js_json(hash_file('sha256', $abs) ?: '') ?>;
 document.addEventListener('DOMContentLoaded', () => {
   const { apiPost, toast } = window.Nebula;
   const ta = document.getElementById('fedit');

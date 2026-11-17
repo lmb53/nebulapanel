@@ -190,7 +190,7 @@ function nav_link(string $route, string $icon, string $label, string $active): s
 </div>
 
 <div class="toast-stack" id="toastStack" role="status" aria-live="polite"></div>
-<script>window.NEBULA_PAGE = window.NEBULA_PAGE || <?= json_encode($active) ?>;</script>
+<script nonce="<?= e(csp_nonce()) ?>">window.NEBULA_PAGE = window.NEBULA_PAGE || <?= js_json($active) ?>;</script>
 <script src="<?= e(asset('app.js')) ?>"></script>
 </body>
 </html>

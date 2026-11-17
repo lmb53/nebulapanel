@@ -56,7 +56,7 @@ $validCount = count(array_filter($certs, fn($c) => $c['valid'] && ($c['days'] ==
     <div class="flex items-center justify-between" style="margin-top:14px;gap:16px;flex-wrap:wrap"><div class="field-help" style="margin:0">The matching key is stored root-only and is never written to panel state or returned by the API.</div><button class="btn btn-primary" id="sslUpload"><i data-lucide="upload"></i>Upload &amp; install</button></div>
   </div></div>
 
-  <script>
+  <script nonce="<?= e(csp_nonce()) ?>">
   document.addEventListener('DOMContentLoaded',()=>{const{apiPost,toast}=window.Nebula;
     document.getElementById('sslIssue')?.addEventListener('click',async()=>{const domain=document.getElementById('sslDomain').value.trim(),email=document.getElementById('sslEmail').value.trim();if(!domain){toast('Enter a domain','warning');return;}const res=await window.Nebula.runTask({title:'Issuing certificate for '+domain,endpoint:'ssl',body:{action:'issue',domain,email},successMessage:'Certificate issued'});if(res.ok){toast('Certificate issued','success');setTimeout(()=>location.reload(),600);}});
     document.querySelectorAll('[data-ssl-renew]').forEach(btn=>btn.addEventListener('click',async()=>{const name=btn.dataset.sslRenew;const res=await window.Nebula.runTask({title:'Renewing '+name,endpoint:'ssl',body:{action:'renew',name},successMessage:'Renewed'});if(res.ok){toast('Renewed','success');setTimeout(()=>location.reload(),600);}}));

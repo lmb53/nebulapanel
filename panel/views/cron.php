@@ -55,7 +55,7 @@ $scheduled = array_values(array_filter($jobs, fn($j) => ($j['type'] ?? '') === '
   <div class="drawer-footer"><button class="btn btn-secondary" data-close-cron>Cancel</button><button class="btn btn-primary" id="cronSave"><i data-lucide="save"></i>Save job</button></div>
 </div></div>
 
-<script>
+<script nonce="<?= e(csp_nonce()) ?>">
 document.addEventListener('DOMContentLoaded', () => {
   const { apiPost, toast } = window.Nebula;
   const drawer = document.getElementById('cronDrawer');

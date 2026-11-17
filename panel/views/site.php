@@ -235,10 +235,10 @@ $tab = static fn(string $id, string $icon, string $label, bool $active = false, 
   </section>
 </div>
 
-<script>
+<script nonce="<?= e(csp_nonce()) ?>">
 document.addEventListener('DOMContentLoaded', () => {
   const { apiPost, toast, runTask, setBusy } = window.Nebula;
-  const siteId = <?= json_encode($siteId) ?>, domain = <?= json_encode($domain) ?>;
+  const siteId = <?= js_json($siteId) ?>, domain = <?= js_json($domain) ?>;
   const reloadTo = (hash) => { location.hash = hash; location.reload(); };
   document.querySelectorAll('[data-site-backup]').forEach((btn) => btn.addEventListener('click', async () => {
     const res = await runTask({ title: 'Backing up ' + domain, endpoint: 'backups', body: { action: 'create', site_id: siteId, label: '', include_databases: true }, successMessage: 'Backup created' });

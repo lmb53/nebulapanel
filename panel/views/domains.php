@@ -39,7 +39,7 @@ $serverIps = domain_server_ips();
   </table></div>
 </div>
 
-<script>
+<script nonce="<?= e(csp_nonce()) ?>">
 document.addEventListener('DOMContentLoaded', () => {
   document.querySelectorAll('[data-copy]').forEach((chip) => chip.addEventListener('click', async () => {
     const ok = await window.Nebula.copyText(chip.dataset.copy);

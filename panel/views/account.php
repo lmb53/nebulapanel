@@ -83,7 +83,7 @@ $mfa = mfa_status((int) ($_SESSION['uid'] ?? 0));
   </div>
 </div>
 
-<script>
+<script nonce="<?= e(csp_nonce()) ?>">
 document.addEventListener('DOMContentLoaded', () => {
   const { apiPost, toast, validateForm, setBusy } = window.Nebula;
   const form = document.getElementById('accountPwForm');

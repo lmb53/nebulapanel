@@ -146,7 +146,7 @@ function mfa_begin_setup(int $uid, string $username): array
     $secret = mfa_new_secret();
     $res = mfa_update_user($uid, static function (array &$user) use ($secret) {
         if (mfa_user_enabled($user)) { return 'Two-factor sign-in is already on.'; }
-        $user['mfa_pending'] = ['secret' => $secret, 'created' => time()];
+        $user['mfa_pending'] = ['secret' => secret_seal($secret), 'created' => time()];
         return null;
     });
     if (empty($res['ok'])) { return $res; }
@@ -164,9 +164,10 @@ function mfa_confirm_setup(int $uid, string $code): array
         if (!is_array($pending) || time() - (int) ($pending['created'] ?? 0) > MFA_PENDING_TTL) {
             return 'The setup expired. Start again.';
         }
-        $step = mfa_verify_code((string) $pending['secret'], $code);
+        $secret = secret_open((string) $pending['secret']);
+        $step = mfa_verify_code($secret, $code);
         if ($step === null) { return 'That code is not valid. Check the time on your phone and try the next code.'; }
-        $user['mfa'] = ['secret' => (string) $pending['secret'], 'enabled_at' => date('c'), 'last_step' => $step, 'recovery' => $hashes];
+        $user['mfa'] = ['secret' => secret_seal($secret), 'enabled_at' => date('c'), 'last_step' => $step, 'recovery' => $hashes];
         unset($user['mfa_pending']);
         return null;
     });
@@ -192,10 +193,13 @@ function mfa_reauth(array &$user, string $password, string $code): ?string
  */
 function mfa_check_and_consume(array &$user, string $code): ?string
 {
-    $secret = (string) ($user['mfa']['secret'] ?? '');
+    $stored = (string) ($user['mfa']['secret'] ?? '');
+    $secret = secret_open($stored);
     $step = mfa_verify_code($secret, $code, (int) ($user['mfa']['last_step'] ?? 0));
     if ($step !== null) {
         $user['mfa']['last_step'] = $step;
+        // Seal seeds stored by older releases the first time they are used.
+        if (!str_starts_with($stored, 'enc:v1:')) { $user['mfa']['secret'] = secret_seal($secret); }
         return 'totp';
     }
     $hash = mfa_recovery_hash($code);

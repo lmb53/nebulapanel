@@ -58,7 +58,7 @@ $systemUsers = system_users();
   <div class="drawer-footer"><button class="btn btn-secondary" type="button" data-close-user-drawer>Cancel</button><button class="btn btn-primary" type="button" id="puSave"><i data-lucide="save"></i>Save user</button></div>
 </div></div>
 
-<script>
+<script nonce="<?= e(csp_nonce()) ?>">
 document.addEventListener('DOMContentLoaded', () => {
   const { apiGet, apiPost, toast } = window.Nebula; let data = {users:[],roles:{},current_id:0};
   const make=(tag,cls,text)=>{const e=document.createElement(tag);if(cls)e.className=cls;if(text!==undefined)e.textContent=text;return e;};

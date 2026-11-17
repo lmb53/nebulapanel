@@ -132,7 +132,7 @@ $statusBadge = static function (string $status): array {
   </div>
 </div>
 
-<script>
+<script nonce="<?= e(csp_nonce()) ?>">
 document.addEventListener('DOMContentLoaded', () => {
   const { apiPost, toast } = window.Nebula;
   document.getElementById('servicesRefresh')?.addEventListener('click', () => location.reload());

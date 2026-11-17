@@ -52,7 +52,7 @@ $helper = helper_available();
   <?php endif; ?>
 <?php endif; ?>
 
-<script>
+<script nonce="<?= e(csp_nonce()) ?>">
 document.addEventListener('DOMContentLoaded', () => {
   const { apiPost, streamPost, toast } = window.Nebula;
 

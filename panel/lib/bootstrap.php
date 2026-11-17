@@ -121,7 +121,11 @@ if (!empty($_SESSION['uid'])) {
             unset($_SESSION['obsolete_at']);
             $_SESSION['rotated_at'] = time();
         }
-        $_SESSION['last_seen'] = time();
+        // Automatic polling (live metrics, auto-refreshing logs) is not
+        // activity: counting it would keep an unattended tab signed in forever.
+        if (($_SERVER['HTTP_X_NEBULA_BACKGROUND'] ?? '') !== '1') {
+            $_SESSION['last_seen'] = time();
+        }
         // Signed out from another device (Account → Active sessions).
         if (!session_registry_check()) {
             logout_user();

@@ -72,11 +72,11 @@ $selectedWebsite = (string) ($_GET['website'] ?? '');
     <div class="table-wrap"><table class="data-table"><thead><tr><th>User</th><th>Host</th><th class="actions-col"><span class="sr-only">Actions</span></th></tr></thead><tbody id="dbUserBody"><tr class="empty-row"><td colspan="3">Loading…</td></tr></tbody></table></div>
   </div>
 
-  <script>
+  <script nonce="<?= e(csp_nonce()) ?>">
   document.addEventListener('DOMContentLoaded', () => {
     const { apiGet, apiPost, toast, fmtBytes } = window.Nebula;
     const pmaInstalled = <?= $pmaInstalled ? 'true' : 'false' ?>;
-    let websites = <?= json_encode(array_values(array_map(fn($s) => (string) ($s['domain'] ?? ''), $sites))) ?>;
+    let websites = <?= js_json(array_values(array_map(fn($s) => (string) ($s['domain'] ?? ''), $sites))) ?>;
     const make = (tag, cls, text) => { const el = document.createElement(tag); if (cls) el.className = cls; if (text !== undefined) el.textContent = text; return el; };
 
     async function openPma(database, button) {

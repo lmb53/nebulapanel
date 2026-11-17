@@ -27,7 +27,7 @@ $unread = count(array_filter($items, fn($item) => empty($item['read'])));
     </div>
   <?php endforeach; ?>
 </div>
-<script>
+<script nonce="<?= e(csp_nonce()) ?>">
 document.addEventListener('DOMContentLoaded', () => {
   const { apiPost, toast } = window.Nebula;
   document.getElementById('notifRead')?.addEventListener('click', async () => {

@@ -151,7 +151,7 @@ $apacheStatus = service_status('apache2');
     </div></div>
   <?php endif; ?>
 
-  <script>
+  <script nonce="<?= e(csp_nonce()) ?>">
   document.addEventListener('DOMContentLoaded', () => {
     const { apiPost, streamPost, toast } = window.Nebula;
 
@@ -226,7 +226,7 @@ $apacheStatus = service_status('apache2');
     </div></div>
     <div class="drawer-footer"><button class="btn btn-ghost" id="wsGitDisconnect" style="margin-right:auto;color:var(--red-400)">Disconnect</button><button class="btn btn-secondary" id="wsGitPull"><i data-lucide="refresh-cw"></i>Pull latest</button><button class="btn btn-primary" id="wsGitConnect"><i data-lucide="git-branch"></i>Connect</button></div>
   </div></div>
-  <script>
+  <script nonce="<?= e(csp_nonce()) ?>">
   document.addEventListener('DOMContentLoaded', () => {
     const { apiGet, apiPost, streamPost, toast } = window.Nebula;
     const $ = (id) => document.getElementById(id);

@@ -60,7 +60,7 @@ $updatesTab = ($updatesTab ?? '') === 'panel' ? 'panel' : 'system';
 </section>
 </div>
 
-<script>
+<script nonce="<?= e(csp_nonce()) ?>">
 document.addEventListener('DOMContentLoaded', () => {
   const { streamPost, toast } = window.Nebula;
   const out = document.getElementById('updOutput');

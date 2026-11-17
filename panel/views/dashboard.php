@@ -92,7 +92,7 @@ $initialDiskPct = $initialDisk ? round($initialDisk['used'] / max(1, $initialDis
   </div>
 </div>
 
-<script>
+<script nonce="<?= e(csp_nonce()) ?>">
 document.addEventListener('DOMContentLoaded', () => {
   const { apiGet, fmtBytes } = window.Nebula;
   const box = document.getElementById('healthItems');
@@ -119,7 +119,7 @@ document.addEventListener('DOMContentLoaded', () => {
         // A null route means the current role cannot open the related page.
         const row = document.createElement(item.route ? 'a' : 'div');
         row.className = 'service-row';
-        if (item.route) row.href = <?= json_encode(base_url() . '/?r=') ?> + encodeURIComponent(item.route);
+        if (item.route) row.href = <?= js_json(base_url() . '/?r=') ?> + encodeURIComponent(item.route);
         row.style.marginBottom = '8px';
         const iconWrap = document.createElement('div'); iconWrap.className = 'svc-icon';
         const icon = document.createElement('i'); icon.dataset.lucide = item.icon; icon.style.color = (levelMap[item.level] || [null, null, 'var(--blue-400)'])[2];
@@ -148,7 +148,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (processBusy || document.hidden) return;
     processBusy = true;
     try {
-      const res = await apiGet('processes');
+      const res = await apiGet('processes', { background: true });
       document.getElementById('procCount').textContent = res.count ?? 0;
       procBody.replaceChildren();
       (res.processes || []).forEach((row) => {
@@ -221,4 +221,4 @@ document.addEventListener('DOMContentLoaded', () => {
   window.Nebula.registerRefresh(() => { if (currentRange !== 'live') showRange(currentRange); });
 });
 </script>
-<script>window.NEBULA_PAGE = 'dashboard';</script>
+<script nonce="<?= e(csp_nonce()) ?>">window.NEBULA_PAGE = 'dashboard';</script>
