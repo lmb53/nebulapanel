@@ -86,6 +86,34 @@ switch ($route) {
             redirect('login', ['expired' => 1]);
         }
         $error = null;
+        if ($method === 'POST' && in_array((string) ($_GET['passkey'] ?? ''), ['options', 'verify'], true)) {
+            // Passkey second step (JSON, from the sign-in page's script).
+            csrf_check();
+            require_once APP_ROOT . '/lib/mod_passkeys.php';
+            $throttleKey = 'mfa:' . (int) $pending['uid'];
+            if ($_GET['passkey'] === 'options') {
+                $options = passkey_login_options((int) $pending['uid']);
+                json_out($options ? ['ok' => true, 'options' => $options] : ['ok' => false, 'error' => 'No passkey is available for this account here.'], $options ? 200 : 400);
+            }
+            if (($retry = reserve_login_attempt(null, $throttleKey)) > 0) {
+                json_out(['ok' => false, 'error' => 'Too many attempts. Try again in ' . max(1, (int) ceil($retry / 60)) . ' minutes.'], 429);
+            }
+            $res = passkey_login_verify((int) $pending['uid'], (int) $pending['version'], read_json_body(65536));
+            if (!empty($res['ok'])) {
+                record_login_attempt(true, null, $throttleKey);
+                login_establish($res['user'], true);
+                audit('login', 'success (two-factor passkey ' . $res['passkey'] . ')');
+                json_out(['ok' => true, 'redirect' => url('dashboard')]);
+            }
+            usleep(300000);
+            $_SESSION['mfa_pending']['tries'] = (int) ($pending['tries'] ?? 0) + 1;
+            audit('login', 'two-factor passkey rejected');
+            if ($_SESSION['mfa_pending']['tries'] >= MFA_LOGIN_MAX_TRIES) {
+                unset($_SESSION['mfa_pending']);
+                json_out(['ok' => false, 'error' => 'Too many attempts. Sign in again.', 'redirect' => url('login', ['expired' => 1])], 400);
+            }
+            json_out(['ok' => false, 'error' => (string) ($res['error'] ?? 'The passkey was not accepted.')], 400);
+        }
         if ($method === 'POST') {
             csrf_check();
             if (!empty($_POST['cancel'])) {
@@ -120,7 +148,11 @@ switch ($route) {
                 $error = (string) ($res['error'] ?? 'That code is not valid.');
             }
         }
-        render('login-2fa', ['error' => $error], false);
+        $hasPasskeys = false;
+        foreach (panel_users() as $candidate) {
+            if ((int) ($candidate['id'] ?? 0) === (int) $pending['uid']) { $hasPasskeys = !empty($candidate['mfa']['passkeys']); break; }
+        }
+        render('login-2fa', ['error' => $error, 'hasPasskeys' => $hasPasskeys], false);
         return;
 
     case 'deploy-hook':

@@ -63,6 +63,7 @@ $https = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off')
       || (($_SERVER['SERVER_PORT'] ?? null) == 443)
       || ($trustProxy && strtolower((string) ($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '')) === 'https');
 if ($https) { header('Strict-Transport-Security: max-age=31536000'); }
+define('REQUEST_HTTPS', $https);
 $loopback = in_array($remote, ['127.0.0.1', '::1'], true);
 if (!empty($config['force_https']) && !$https && !$loopback) {
     http_response_code(426);

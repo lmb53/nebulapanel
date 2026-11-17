@@ -1,4 +1,4 @@
-<?php /** @var ?string $error */ /** @var array $config */ ?>
+<?php /** @var ?string $error */ /** @var array $config */ $hasPasskeys = !empty($hasPasskeys); ?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -7,6 +7,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <?= favicon_tags() ?>
 <script src="<?= e(asset('vendor/lucide-subset.js')) ?>" defer></script>
+<?php if ($hasPasskeys): ?><script src="<?= e(asset('passkeys.js')) ?>"></script><?php endif; ?>
 <?= theme_boot_script() ?>
 <link rel="stylesheet" href="<?= e(asset('style.css')) ?>">
 </head>
@@ -25,6 +26,13 @@
       </div>
       <?php if ($error): ?>
         <div class="notice notice-danger" role="alert" style="margin-bottom:16px"><i data-lucide="circle-x"></i><div><?= e($error) ?></div></div>
+      <?php endif; ?>
+      <?php if ($hasPasskeys): ?>
+      <div id="pkBox" class="hidden" style="margin-bottom:16px">
+        <button class="btn btn-primary" type="button" id="pkUse" style="width:100%"><i data-lucide="fingerprint"></i>Use your passkey</button>
+        <div class="field-help" id="pkError" role="alert" style="margin-top:8px"></div>
+        <div class="text-tertiary" style="font-size:12px;text-align:center;margin:12px 0 0">or enter a code</div>
+      </div>
       <?php endif; ?>
       <form method="post" action="<?= e(url('login-2fa')) ?>" id="mfaForm">
         <?= csrf_field() ?>
@@ -56,6 +64,29 @@ document.getElementById('useRecovery').addEventListener('click', (e) => {
   code.value = ''; code.focus();
 });
 document.getElementById('mfaForm').addEventListener('submit', (e) => { const b = e.currentTarget.querySelector('button[type=submit]'); b.disabled = true; });
+<?php if ($hasPasskeys): ?>
+(() => {
+  const box = document.getElementById('pkBox'), btn = document.getElementById('pkUse'), err = document.getElementById('pkError');
+  if (!window.NebulaPasskeys || !NebulaPasskeys.supported()) return;
+  box.classList.remove('hidden');
+  const csrf = document.querySelector('#mfaForm input[name=_csrf]').value;
+  const post = (step, body) => fetch(<?= js_json(url('login-2fa')) ?> + '&passkey=' + step, { method: 'POST', credentials: 'same-origin',
+    headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'X-CSRF-Token': csrf }, body: JSON.stringify(body || {}) }).then((r) => r.json()).catch(() => ({ ok: false, error: 'The server could not be reached.' }));
+  const use = async () => {
+    btn.disabled = true; err.textContent = '';
+    try {
+      const opts = await post('options');
+      if (!opts.ok) throw new Error(opts.error);
+      const res = await post('verify', await NebulaPasskeys.get(opts.options));
+      if (res.redirect) { location.href = res.redirect; return; }
+      if (!res.ok) throw new Error(res.error);
+    } catch (e) { err.textContent = NebulaPasskeys.message(e); }
+    btn.disabled = false;
+  };
+  btn.addEventListener('click', use);
+  btn.focus();
+})();
+<?php endif; ?>
 </script>
 </body>
 </html>

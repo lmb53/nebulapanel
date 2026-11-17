@@ -5,6 +5,7 @@
  *   GET  → {sessions, mfa}
  *   POST {action: password | revoke-session | revoke-other-sessions |
  *         mfa-setup | mfa-confirm | mfa-disable | mfa-recovery |
+ *         passkey-options | passkey-register | passkey-delete |
  *         token-list | token-generate | token-revoke, ...}
  */
 require APP_ROOT . '/lib/mod_settings.php';
@@ -27,7 +28,7 @@ $b = read_json_body();
 $action = (string) ($b['action'] ?? '');
 // Actions that check the current password or a second factor are throttled
 // like sign-in, so a hijacked session cannot guess them at full speed.
-$reauthActions = ['password', 'mfa-disable', 'mfa-recovery', 'mfa-confirm'];
+$reauthActions = ['password', 'mfa-disable', 'mfa-recovery', 'mfa-confirm', 'passkey-options', 'passkey-delete'];
 if (in_array($action, $reauthActions, true) && ($blocked = reauth_throttle_error()) !== null) {
     json_out(['ok' => false, 'error' => $blocked], 429);
 }
@@ -56,6 +57,18 @@ switch ($action) {
         break;
     case 'mfa-recovery':
         $res = mfa_regenerate_recovery($uid, (string) ($b['password'] ?? ''), (string) ($b['code'] ?? ''));
+        break;
+    case 'passkey-options':
+        require_once APP_ROOT . '/lib/mod_passkeys.php';
+        $res = passkey_register_options($uid, (string) ($b['password'] ?? ''), (string) ($b['code'] ?? ''));
+        break;
+    case 'passkey-register':
+        require_once APP_ROOT . '/lib/mod_passkeys.php';
+        $res = passkey_register_finish($uid, (string) ($b['name'] ?? ''), (string) ($b['clientDataJSON'] ?? ''), (string) ($b['attestationObject'] ?? ''));
+        break;
+    case 'passkey-delete':
+        require_once APP_ROOT . '/lib/mod_passkeys.php';
+        $res = passkey_delete($uid, (string) ($b['id'] ?? ''), (string) ($b['password'] ?? ''), (string) ($b['code'] ?? ''));
         break;
     case 'token-list':
         require_once APP_ROOT . '/lib/mod_api.php';

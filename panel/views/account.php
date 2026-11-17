@@ -77,6 +77,13 @@ $mfa = mfa_status((int) ($_SESSION['uid'] ?? 0));
     </div>
   </div>
 
+  <div class="card" id="passkeys">
+    <div class="card-header"><div><h3>Passkeys</h3><span class="muted">Sign in with Touch ID, Windows Hello, your phone or a security key instead of typing a code</span></div>
+      <button class="btn btn-secondary btn-sm" type="button" id="pkAdd"<?= $mfa['enabled'] ? '' : ' disabled title="Turn on two-factor sign-in first"' ?>><i data-lucide="plus"></i>Add passkey</button></div>
+    <div class="table-wrap"><table class="data-table"><thead><tr><th>Name</th><th>Added</th><th>Last used</th><th class="actions-col"><span class="sr-only">Actions</span></th></tr></thead><tbody id="pkRows"></tbody></table></div>
+    <div class="card-pad field-help" style="margin:0" id="pkHelp"><?= $mfa['enabled'] ? 'Passkeys work next to your authenticator app; turning two-factor sign-in off removes them.' : 'Turn on two-factor sign-in with an authenticator app first — passkeys are added next to it, and your recovery codes stay valid.' ?></div>
+  </div>
+
   <div class="card" id="sessions">
     <div class="card-header"><h3>Where you’re signed in</h3><button class="btn btn-secondary btn-sm" type="button" id="sessRevokeOthers"><i data-lucide="log-out"></i>Sign out other sessions</button></div>
     <div class="session-list" id="sessList"><div class="card-pad text-tertiary" style="font-size:13px">Loading…</div></div>
@@ -98,9 +105,51 @@ $mfa = mfa_status((int) ($_SESSION['uid'] ?? 0));
   <div class="table-wrap"><table class="data-table"><thead><tr><th>Name</th><th>Access</th><th>Expires</th><th>Last used</th><th class="actions-col"><span class="sr-only">Actions</span></th></tr></thead><tbody id="tokRows"><tr class="empty-row"><td colspan="5">Loading…</td></tr></tbody></table></div>
 </div>
 
+<script src="<?= e(asset('passkeys.js')) ?>"></script>
 <script nonce="<?= e(csp_nonce()) ?>">
 document.addEventListener('DOMContentLoaded', () => {
   const { apiPost, toast, validateForm, setBusy } = window.Nebula;
+  // ---- Passkeys ----
+  const pkRows = document.getElementById('pkRows');
+  const askCreds = async (title) => {
+    const password = await window.Nebula.prompt({ title, label: 'Your password', type: 'password', autocomplete: 'current-password', confirmLabel: 'Continue' });
+    if (password === null) return null;
+    const code = await window.Nebula.prompt({ title, label: 'Authentication code from your app', placeholder: '123 456', mono: true, autocomplete: 'one-time-code', confirmLabel: 'Continue' });
+    return code === null ? null : { password, code };
+  };
+  const renderPasskeys = (keys) => {
+    pkRows.replaceChildren();
+    if (!keys.length) { const tr = document.createElement('tr'); tr.className = 'empty-row'; const td = document.createElement('td'); td.colSpan = 4; td.textContent = 'No passkeys yet.'; tr.append(td); pkRows.append(tr); return; }
+    keys.forEach((k) => {
+      const tr = document.createElement('tr');
+      const cell = (t, c) => { const td = document.createElement('td'); if (c) td.className = c; td.textContent = t; return td; };
+      const act = cell('', 'actions-col');
+      const rm = document.createElement('button'); rm.type = 'button'; rm.className = 'btn btn-danger btn-sm'; rm.textContent = 'Remove';
+      rm.addEventListener('click', async () => {
+        const creds = await askCreds('Remove passkey “' + k.name + '”');
+        if (!creds) return;
+        const r = await apiPost('account', { action: 'passkey-delete', id: k.id, ...creds });
+        if (r.ok) { toast('Passkey removed', 'success'); renderPasskeys(r.passkeys); } else toast(r.error || 'Could not remove it', 'error');
+      });
+      act.append(rm);
+      const nm = cell(k.name); nm.style.fontWeight = '600';
+      tr.append(nm, cell(window.Nebula.fmtDate(k.created_at), 'text-tertiary'), cell(k.last_used_at ? window.Nebula.fmtDate(k.last_used_at) : 'Never', 'text-tertiary'), act);
+      pkRows.append(tr);
+    });
+  };
+  renderPasskeys(<?= js_json($mfa['passkeys'] ?? []) ?>);
+  document.getElementById('pkAdd')?.addEventListener('click', async () => {
+    if (!window.NebulaPasskeys || !NebulaPasskeys.supported()) { toast('This browser or address does not support passkeys. Open the panel by its host name over HTTPS.', 'error'); return; }
+    const creds = await askCreds('Add a passkey');
+    if (!creds) return;
+    const opts = await apiPost('account', { action: 'passkey-options', ...creds });
+    if (!opts.ok) { toast(opts.error || 'Could not start', 'error'); return; }
+    let cred;
+    try { cred = await NebulaPasskeys.create(opts.options); } catch (e) { toast(NebulaPasskeys.message(e), 'error'); return; }
+    const name = await window.Nebula.prompt({ title: 'Name this passkey', label: 'Name', value: /Mac|iPhone|iPad/.test(navigator.userAgent) ? 'Apple device' : (/Windows/.test(navigator.userAgent) ? 'Windows Hello' : 'Passkey'), confirmLabel: 'Save' });
+    const r = await apiPost('account', { action: 'passkey-register', name: name || 'Passkey', clientDataJSON: cred.clientDataJSON, attestationObject: cred.attestationObject });
+    if (r.ok) { toast('Passkey added', 'success'); renderPasskeys(r.passkeys); } else toast(r.error || 'Could not add the passkey', 'error');
+  });
   // ---- Personal API tokens ----
   const tokRows = document.getElementById('tokRows');
   const roleNames = { auditor: 'Auditor', developer: 'Developer', operator: 'Operator', admin: 'Administrator' };

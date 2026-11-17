@@ -116,6 +116,46 @@ $users = panel_users(); $users[0]['enabled'] = false; save_panel_users($users);
 $check(!api_token_authenticate((string) $owned['token']), 'a disabled owner\'s tokens stop working');
 $check(!empty(api_token_revoke((string) $owned['record']['id'], 7)['ok']), 'owners can revoke their own tokens');
 api_tokens_save([]);
+// Passkeys: a real P-256 key signs assertions; anything off must be refused.
+require_once APP_ROOT . '/lib/mod_passkeys.php';
+$_SERVER['HTTP_HOST'] = 'panel.example.com'; $_SERVER['HTTPS'] = 'on';
+$cborHead = static fn(int $major, int $n): string => $n < 24 ? chr(($major << 5) | $n) : ($n < 256 ? chr(($major << 5) | 24) . chr($n) : chr(($major << 5) | 25) . pack('n', $n));
+$cborInt = static fn(int $v): string => $v >= 0 ? $cborHead(0, $v) : $cborHead(1, -1 - $v);
+$cborBytes = static fn(string $b): string => $cborHead(2, strlen($b)) . $b;
+$ec = openssl_pkey_new(['curve_name' => 'prime256v1', 'private_key_type' => OPENSSL_KEYTYPE_EC]);
+$ecd = openssl_pkey_get_details($ec)['ec'];
+$cose = $cborHead(5, 5) . $cborInt(1) . $cborInt(2) . $cborInt(3) . $cborInt(-7) . $cborInt(-1) . $cborInt(1)
+    . $cborInt(-2) . $cborBytes(str_pad($ecd['x'], 32, "\0", STR_PAD_LEFT)) . $cborInt(-3) . $cborBytes(str_pad($ecd['y'], 32, "\0", STR_PAD_LEFT));
+$credId = random_bytes(32);
+$regAuth = hash('sha256', 'panel.example.com', true) . chr(0x45) . pack('N', 0) . str_repeat("\0", 16) . pack('n', 32) . $credId . $cose;
+$parsed = passkey_parse_auth_data($regAuth, true);
+$check($parsed['cred_id'] === $credId && $parsed['key']['alg'] === -7 && openssl_pkey_get_public($parsed['key']['pem']) !== false, 'a COSE P-256 key converts to a usable public key');
+$threw = false; try { $o = 0; cbor_decode("\x9f\x01\xff", $o); } catch (RuntimeException) { $threw = true; }
+$check($threw, 'indefinite-length CBOR is rejected');
+save_panel_users([['id' => 9, 'username' => 'pk', 'hash' => panel_password_hash('pk password long 1'), 'role' => 'admin', 'enabled' => true, 'session_version' => 1,
+    'mfa' => ['secret' => 'JBSWY3DPEHPK3PXP', 'enabled_at' => date('c'), 'last_step' => 0, 'recovery' => [],
+        'passkeys' => [['id' => b64url_encode($credId), 'name' => 'test', 'key' => $parsed['key'], 'count' => 0, 'created_at' => date('c')]]]]]);
+$assert = static function (array $tweak = []) use ($ec, $credId): array {
+    $_SESSION['mfa_pending'] = ['uid' => 9, 'version' => 1, 'at' => time(), 'tries' => 0];
+    $options = passkey_login_options(9);
+    $client = json_encode(['type' => 'webauthn.get', 'challenge' => $tweak['challenge'] ?? $options['challenge'], 'origin' => $tweak['origin'] ?? 'https://panel.example.com']);
+    $auth = hash('sha256', $tweak['rp'] ?? 'panel.example.com', true) . chr(0x05) . pack('N', $tweak['count'] ?? 5);
+    openssl_sign($auth . hash('sha256', $client, true), $sig, $ec, OPENSSL_ALGO_SHA256);
+    if (!empty($tweak['badsig'])) { $sig[10] = chr(ord($sig[10]) ^ 1); }
+    return passkey_login_verify(9, 1, ['id' => $tweak['id'] ?? b64url_encode($credId), 'clientDataJSON' => b64url_encode($client), 'authenticatorData' => b64url_encode($auth), 'signature' => b64url_encode($sig)]);
+};
+$check(empty($assert(['badsig' => true])['ok']), 'a passkey assertion with a bad signature is refused');
+$check(empty($assert(['rp' => 'evil.example.com'])['ok']), 'a passkey assertion for another site is refused');
+$check(empty($assert(['origin' => 'https://evil.example.com'])['ok']), 'a passkey assertion from another origin is refused');
+$check(empty($assert(['challenge' => b64url_encode(random_bytes(32))])['ok']), 'a passkey assertion with a stale challenge is refused');
+$check(empty($assert(['id' => b64url_encode(random_bytes(32))])['ok']), 'an unregistered passkey is refused');
+$good = $assert(['count' => 5]);
+$check(!empty($good['ok']) && ($good['user']['username'] ?? '') === 'pk', 'a valid passkey assertion signs in');
+$check(empty($assert(['count' => 5])['ok']), 'a passkey whose counter does not advance (possible clone) is refused');
+$_SERVER['HTTP_HOST'] = '203.0.113.5';
+$check(!passkey_supported(), 'passkeys are not offered when the panel is opened by IP address');
+unset($_SERVER['HTTP_HOST'], $_SERVER['HTTPS']);
+$_SESSION = [];
 $check(backup_resolve('../not-a-backup') === null, 'backup filenames are strictly confined');
 
 $redacted = log_redact("Authorization: Bearer abc.def\npassword=hunter2\nhttps://u:p@example.test/repo");

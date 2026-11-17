@@ -118,9 +118,11 @@ function mfa_status(int $uid): array
             'enabled' => mfa_user_enabled($user),
             'enabled_at' => (string) ($user['mfa']['enabled_at'] ?? ''),
             'recovery_left' => count((array) ($user['mfa']['recovery'] ?? [])),
+            'passkeys' => array_map(static fn($k) => ['id' => $k['id'], 'name' => $k['name'], 'created_at' => $k['created_at'], 'last_used_at' => $k['last_used_at'] ?? null],
+                array_values((array) ($user['mfa']['passkeys'] ?? []))),
         ];
     }
-    return ['enabled' => false, 'enabled_at' => '', 'recovery_left' => 0];
+    return ['enabled' => false, 'enabled_at' => '', 'recovery_left' => 0, 'passkeys' => []];
 }
 
 /** Update one panel user under the store lock. $mutator returns an error string or null. */
