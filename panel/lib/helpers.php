@@ -477,13 +477,50 @@ function send_download(string $abs, string $type): void
     @set_time_limit(0);
     while (ob_get_level() > 0) { @ob_end_clean(); }
     clearstatcache(true, $abs);
+    $size = @filesize($abs);
+    $handle = @fopen($abs, 'rb');
+    if ($handle === false) {
+        http_response_code(404);
+        exit('Not found');
+    }
     header('Content-Type: ' . $type);
     header('Content-Disposition: ' . attachment_header(basename($abs)));
-    $size = @filesize($abs);
-    if ($size !== false) {
-        header('Content-Length: ' . $size);
+    header('Accept-Ranges: bytes');
+    $start = 0;
+    $end = $size !== false ? $size - 1 : -1;
+    // A single byte range lets browsers and download managers resume a large
+    // backup or upload instead of starting over.
+    if ($size !== false && preg_match('/^bytes=(\d*)-(\d*)$/', (string) ($_SERVER['HTTP_RANGE'] ?? ''), $range)) {
+        if ($range[1] === '' && $range[2] !== '') {
+            $start = max(0, $size - (int) $range[2]);
+        } else {
+            $start = (int) $range[1];
+            if ($range[2] !== '') { $end = min($end, (int) $range[2]); }
+        }
+        if ($start > $end || $start >= $size) {
+            http_response_code(416);
+            header('Content-Range: bytes */' . $size);
+            fclose($handle);
+            exit;
+        }
+        http_response_code(206);
+        header('Content-Range: bytes ' . $start . '-' . $end . '/' . $size);
     }
-    readfile($abs);
+    if ($size !== false) {
+        header('Content-Length: ' . ($end - $start + 1));
+        fseek($handle, $start);
+        $left = $end - $start + 1;
+        while ($left > 0 && !feof($handle) && !connection_aborted()) {
+            $chunk = fread($handle, (int) min(1048576, $left));
+            if ($chunk === false || $chunk === '') { break; }
+            echo $chunk;
+            $left -= strlen($chunk);
+            flush();
+        }
+    } else {
+        fpassthru($handle);
+    }
+    fclose($handle);
 }
 
 /** Small shared cache for expensive read-only system snapshots. */

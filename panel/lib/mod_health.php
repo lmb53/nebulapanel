@@ -44,6 +44,7 @@ function health_summary(): array
 
     $allowed = array_values(array_unique(array_merge((array) ($config['services'] ?? []), manageable_units())));
     $failed = [];
+    service_states($allowed); // one systemctl call for every unit
     foreach ($allowed as $service) {
         if (service_status($service) === 'failed') {
             $failed[] = $service;

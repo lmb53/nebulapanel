@@ -1413,6 +1413,14 @@ case "$CMD" in
       volumes) timeout 30s docker volume ls --format '{{json .}}' ;;
       networks) timeout 30s docker network ls --format '{{json .}}' ;;
       version) timeout 20s docker version --format '{{.Server.Version}}' ;;
+      # Everything the Docker page shows, in one sudo round-trip.
+      all)
+        echo "@@nebula-section containers"; timeout 30s docker ps -a --format '{{json .}}'
+        echo "@@nebula-section images"; timeout 30s docker images --format '{{json .}}' || true
+        echo "@@nebula-section volumes"; timeout 30s docker volume ls --format '{{json .}}' || true
+        echo "@@nebula-section networks"; timeout 30s docker network ls --format '{{json .}}' || true
+        echo "@@nebula-section version"; timeout 20s docker version --format '{{.Server.Version}}' || true
+        ;;
       *) die "invalid Docker query" ;;
     esac
     ;;

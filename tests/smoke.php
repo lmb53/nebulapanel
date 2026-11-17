@@ -165,6 +165,16 @@ foreach (compose_catalog() as $storeKey => $storeEntry) {
     $check(strpos((string) ($storeEntry['compose'] ?? ''), '/etc/') === false, 'App Store still deploys a host bind mount for ' . $storeKey);
 }
 
+// Every icon named in a template must be in the shipped Lucide subset.
+$subset = (string) @file_get_contents(APP_ROOT . '/assets/vendor/lucide-subset.js');
+$missingIcons = [];
+foreach (array_merge(glob(APP_ROOT . '/views/*.php') ?: [], [APP_ROOT . '/lib/modules.php', APP_ROOT . '/assets/app.js']) as $iconFile) {
+    preg_match_all('/data-lucide="([a-z0-9-]+)"/', (string) file_get_contents($iconFile), $iconNames);
+    foreach ($iconNames[1] as $iconName) {
+        if (!str_contains($subset, '"' . $iconName . '":')) { $missingIcons[$iconName] = true; }
+    }
+}
+$check(!$missingIcons, 'icons missing from lucide-subset.js (run node tools/build-icons.js): ' . implode(', ', array_keys($missingIcons)));
 $helperSource = (string) file_get_contents(APP_ROOT . '/bin/nebula-helper');
 $check(strpos($helperSource, "!= *\$'\\0'*") === false
     && strpos($helperSource, 'decode_payload_file "$ENCODED" "$PAYLOAD"') !== false,

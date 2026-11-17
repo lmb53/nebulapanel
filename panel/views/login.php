@@ -6,7 +6,7 @@
 <title>Sign in · <?= e($config['panel_name']) ?></title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <?= favicon_tags() ?>
-<script src="<?= e(asset('vendor/lucide-1.8.0.min.js')) ?>"></script>
+<script src="<?= e(asset('vendor/lucide-subset.js')) ?>" defer></script>
 <?= theme_boot_script() ?>
 <link rel="stylesheet" href="<?= e(asset('style.css')) ?>">
 </head>
@@ -40,6 +40,6 @@
     </div>
   </div>
 </div>
-<script nonce="<?= e(csp_nonce()) ?>">lucide.createIcons();document.getElementById('loginForm').addEventListener('submit',(e)=>{const b=e.currentTarget.querySelector('button[type=submit]');b.disabled=true;b.lastChild.textContent='Signing in…';});</script>
+<script nonce="<?= e(csp_nonce()) ?>">document.addEventListener('DOMContentLoaded', () => window.lucide && lucide.createIcons());document.getElementById('loginForm').addEventListener('submit',(e)=>{const b=e.currentTarget.querySelector('button[type=submit]');b.disabled=true;b.lastChild.textContent='Signing in…';});</script>
 </body>
 </html>

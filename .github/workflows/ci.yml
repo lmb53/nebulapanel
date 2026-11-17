@@ -13,6 +13,10 @@ jobs:
         run: sudo apt-get update -qq && sudo apt-get install -y -qq python3-yaml acl shellcheck
       - name: PHP syntax
         run: find panel tests -name '*.php' -print0 | xargs -0 -n1 php -l
+      - name: JavaScript syntax
+        run: for f in panel/assets/app.js panel/assets/vendor/lucide-subset.js tools/build-icons.js; do node --check "$f"; done
+      - name: Icon subset is current
+        run: node tools/build-icons.js && git diff --exit-code panel/assets/vendor/lucide-subset.js
       - name: Shell syntax
         run: bash -n install.sh panel/bin/nebula-helper
       - name: Smoke and security regressions

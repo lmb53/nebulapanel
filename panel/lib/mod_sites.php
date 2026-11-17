@@ -114,11 +114,17 @@ function sites_with_runtime(): array
         $docroot = (string) ($site['docroot'] ?? '');
         $id = (string) ($site['id'] ?? '');
         if (sv_managed_path_ok($docroot, $id)) {
-            [$c, $o] = helper_cmd('site-stats ' . escapeshellarg($id), 60);
-            if ($c === 0) {
+            // du + find over a whole site is slow on big sites; ten minutes
+            // of staleness is fine for a usage figure.
+            $stats = cache_remember('site-stats-' . $id, 600, static function () use ($id): ?array {
+                [$c, $o] = helper_cmd('site-stats ' . escapeshellarg($id), 60);
+                if ($c !== 0) { return null; }
                 [$bytes, $files] = array_pad(explode("\t", trim($o), 2), 2, 0);
-                $site['disk_used'] = max(0, (int) $bytes);
-                $site['file_count'] = max(0, (int) $files);
+                return ['bytes' => max(0, (int) $bytes), 'files' => max(0, (int) $files)];
+            });
+            if (is_array($stats)) {
+                $site['disk_used'] = $stats['bytes'];
+                $site['file_count'] = $stats['files'];
             }
             $site['disk_total'] = is_dir($docroot) ? (int) (@disk_total_space($docroot) ?: 0) : 0;
             $site['disk_free'] = is_dir($docroot) ? (int) (@disk_free_space($docroot) ?: 0) : 0;

@@ -6,7 +6,7 @@
 <title>Two-factor sign-in · <?= e($config['panel_name']) ?></title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <?= favicon_tags() ?>
-<script src="<?= e(asset('vendor/lucide-1.8.0.min.js')) ?>"></script>
+<script src="<?= e(asset('vendor/lucide-subset.js')) ?>" defer></script>
 <?= theme_boot_script() ?>
 <link rel="stylesheet" href="<?= e(asset('style.css')) ?>">
 </head>
@@ -41,7 +41,7 @@
   </div>
 </div>
 <script nonce="<?= e(csp_nonce()) ?>">
-lucide.createIcons();
+document.addEventListener('DOMContentLoaded', () => window.lucide && lucide.createIcons());
 const code = document.getElementById('mfa-code');
 document.getElementById('useRecovery').addEventListener('click', (e) => {
   const recovery = code.inputMode === 'numeric';

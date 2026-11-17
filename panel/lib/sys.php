@@ -172,8 +172,23 @@ function is_linux(): bool
 /** Is a binary available on PATH? */
 function has_cmd(string $bin): bool
 {
-    [$code] = run_cmd('command -v ' . escapeshellarg($bin));
-    return $code === 0;
+    // Asked many times per request (has_cmd('curl'), has_cmd('mysql')...);
+    // the answer does not change during one.
+    static $known = [];
+    if (!array_key_exists($bin, $known)) {
+        $found = false;
+        if (preg_match('/^[A-Za-z0-9._+-]+$/', $bin)) {
+            foreach (explode(':', (string) (getenv('PATH') ?: '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin')) as $dir) {
+                if ($dir !== '' && is_file($dir . '/' . $bin) && is_executable($dir . '/' . $bin)) { $found = true; break; }
+            }
+        }
+        if (!$found) {
+            [$code] = run_cmd('command -v ' . escapeshellarg($bin));
+            $found = $code === 0;
+        }
+        $known[$bin] = $found;
+    }
+    return $known[$bin];
 }
 
 /** Simple HTTP GET. Returns [ok(bool), body]. Uses curl if present. */
@@ -237,6 +252,35 @@ function helper_available(): bool
  * Invoke the privileged helper via sudo. $args must already be
  * escapeshellarg()'d by the caller. Returns [code, out, err].
  */
+/**
+ * Helper actions that only read state. They run on page loads and polls, so
+ * auditing them buried the real changes in noise; everything else is audited.
+ */
+function helper_action_is_read_only(string $args): bool
+{
+    $parts = preg_split('/\s+/', trim($args), 3);
+    $action = $parts[0] ?? '';
+    static $reads = ['php-versions', 'site-list', 'site-stats', 'site-git-status', 'docker-query', 'docker-logs',
+        'compose-list', 'compose-version', 'f2b-status', 'f2b-jail', 'f2b-log', 'modsec-status', 'modsec-log',
+        'mail-status', 'mail-stats', 'mail-diag', 'mail-dkim', 'cert-list', 'ssh-keys-list', 'log-read-unit', 'log-read-file'];
+    if (in_array($action, $reads, true)) { return true; }
+    if ($action === 'db-action') {
+        return in_array(trim((string) ($parts[1] ?? ''), "'"), ['list', 'version', 'schema-users', 'users'], true);
+    }
+    if ($action === 'compose-run') {
+        return (bool) preg_match("/^'?(plugin|standalone)'? '?(logs|validate)'?/", (string) ($parts[1] ?? '') . ' ' . (string) ($parts[2] ?? ''));
+    }
+    return false;
+}
+
+function helper_audit(string $args, array $result, float $started): void
+{
+    if (helper_action_is_read_only($args)) { return; }
+    $action = preg_split('/\s+/', trim($args), 2)[0] ?? 'unknown';
+    audit('helper.command', 'action=' . $action . ' outcome=' . ((int) $result[0] === 0 ? 'success' : 'failure')
+        . ' exit=' . (int) $result[0] . ' duration_ms=' . (int) round((microtime(true) - $started) * 1000));
+}
+
 function helper_cmd(string $args, int $timeout = 180): array
 {
     if (!helper_available()) {
@@ -244,9 +288,7 @@ function helper_cmd(string $args, int $timeout = 180): array
     }
     $started = microtime(true);
     $result = run_cmd('sudo -n ' . NEBULA_HELPER . ' ' . $args . ' 2>&1', $timeout);
-    $action = preg_split('/\s+/', trim($args), 2)[0] ?? 'unknown';
-    audit('helper.command', 'action=' . $action . ' outcome=' . ((int)$result[0] === 0 ? 'success' : 'failure')
-        . ' exit=' . (int)$result[0] . ' duration_ms=' . (int) round((microtime(true) - $started) * 1000));
+    helper_audit($args, $result, $started);
     return $result;
 }
 
@@ -257,9 +299,7 @@ function helper_cmd_stream(string $args, callable $onChunk, int $timeout = 180):
     }
     $started = microtime(true);
     $result = run_cmd_stream('sudo -n ' . NEBULA_HELPER . ' ' . $args . ' 2>&1', $onChunk, $timeout);
-    $action = preg_split('/\s+/', trim($args), 2)[0] ?? 'unknown';
-    audit('helper.command', 'action=' . $action . ' outcome=' . ((int)$result[0] === 0 ? 'success' : 'failure')
-        . ' exit=' . (int)$result[0] . ' duration_ms=' . (int) round((microtime(true) - $started) * 1000));
+    helper_audit($args, $result, $started);
     return $result;
 }
 
@@ -432,28 +472,61 @@ function net_interfaces(): array
 
 // --- Service control --------------------------------------------------------
 
+/**
+ * Fetch active/load/enablement state for many units with one systemctl call
+ * (the Services page and health checks used to run two or three processes
+ * per unit). Results are memoised for the rest of the request.
+ */
+function service_states(array $units): array
+{
+    $memo = &$GLOBALS['__nebula_service_states'];
+    $memo = is_array($memo) ? $memo : [];
+    $wanted = array_values(array_filter(array_unique($units), static fn($u) => !isset($memo[$u]) && preg_match('/^[A-Za-z0-9@._-]+$/', (string) $u)));
+    if ($wanted && is_linux()) {
+        [$code, $out] = run_cmd('systemctl show --property=Id,ActiveState,LoadState,UnitFileState -- '
+            . implode(' ', array_map(static fn($u) => escapeshellarg($u . '.service'), $wanted)) . ' 2>/dev/null', 20);
+        $blocks = $code === 0 ? preg_split('/\n\s*\n/', trim($out)) : [];
+        foreach ($wanted as $i => $unit) {
+            $fields = [];
+            foreach (preg_split('/\r?\n/', (string) ($blocks[$i] ?? '')) as $line) {
+                [$key, $value] = array_pad(explode('=', $line, 2), 2, '');
+                $fields[$key] = trim($value);
+            }
+            $memo[$unit] = $fields;
+        }
+    }
+    $result = [];
+    foreach ($units as $unit) { $result[$unit] = $memo[$unit] ?? []; }
+    return $result;
+}
+
+/** Drop memoised state after changing a unit. */
+function service_states_forget(string $unit): void
+{
+    unset($GLOBALS['__nebula_service_states'][$unit]);
+}
+
 /** Status of one systemd unit: active|inactive|failed|not-installed|unknown. */
 function service_status(string $name): string
 {
     if (!is_linux()) {
         return 'unknown';
     }
-    [$code, $out] = run_cmd('systemctl is-active ' . escapeshellarg($name) . ' 2>/dev/null');
-    $out = trim($out);
-    if ($out === 'active') {
+    $state = service_states([$name])[$name] ?? [];
+    $active = (string) ($state['ActiveState'] ?? '');
+    $load = (string) ($state['LoadState'] ?? '');
+    if ($active === 'active' || $active === 'reloading') {
         return 'active';
     }
-    if ($out === 'failed') {
+    if ($active === 'failed') {
         return 'failed';
     }
-    // Distinguish "not installed" from merely stopped.
-    [$c2, $load] = run_cmd('systemctl show -p LoadState --value ' . escapeshellarg($name) . ' 2>/dev/null');
-    if (trim($load) === 'not-found') {
+    if ($load === 'not-found') {
         return 'not-installed';
     }
     // systemctl gave no answer (no systemd, or no permission): fall back to the
     // unit files on disk so a missing service is never reported as "Stopped".
-    if (trim($load) === '') {
+    if ($load === '') {
         foreach (['/lib/systemd/system', '/etc/systemd/system', '/usr/lib/systemd/system'] as $dir) {
             if (is_file("$dir/$name.service")) {
                 return 'inactive';
@@ -486,6 +559,7 @@ function service_display_name(string $unit): string
 /** Statuses for the whitelist. */
 function services_overview(array $whitelist): array
 {
+    service_states($whitelist); // one systemctl call for the whole list
     $rows = [];
     foreach ($whitelist as $svc) {
         $rows[] = ['name' => $svc, 'label' => service_display_name($svc), 'status' => service_status($svc), 'enabled' => service_enabled($svc)];
@@ -499,12 +573,11 @@ function service_enabled(string $name): ?bool
     if (!is_linux()) {
         return null;
     }
-    [$code, $out] = run_cmd('systemctl is-enabled ' . escapeshellarg($name) . ' 2>/dev/null');
-    $state = trim($out);
-    if ($code === 0 || in_array($state, ['enabled', 'enabled-runtime', 'static', 'indirect', 'alias'], true)) {
-        return in_array($state, ['enabled', 'enabled-runtime'], true);
+    $state = (string) (service_states([$name])[$name]['UnitFileState'] ?? '');
+    if (in_array($state, ['enabled', 'enabled-runtime'], true)) {
+        return true;
     }
-    if (in_array($state, ['disabled', 'masked'], true)) {
+    if (in_array($state, ['disabled', 'masked', 'static', 'indirect', 'alias', 'generated', 'transient'], true)) {
         return false;
     }
     return null;
@@ -531,6 +604,7 @@ function service_action(string $name, string $action, array $whitelist): array
         $msg = trim($out . ' ' . $err);
         return ['ok' => false, 'error' => $msg ?: 'Command failed (exit ' . $code . ').'];
     }
+    service_states_forget($name);
     return ['ok' => true, 'status' => service_status($name), 'enabled' => service_enabled($name)];
 }
 

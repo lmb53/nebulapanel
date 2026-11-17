@@ -91,32 +91,31 @@ function api_token_authenticate(string $plain): bool
     global $apiAuthLabel, $apiAuthRole, $apiAuthScopes, $apiAuthId;
     if (!preg_match('/^nbp_[a-f0-9]{48}$/', $plain)) { return false; }
     $wanted = hash('sha256', $plain);
-    $matched = with_api_tokens_lock(static function () use ($wanted): array {
-        $tokens = api_tokens_load();
-        foreach ($tokens as &$token) {
-            if (empty($token['hash']) || !hash_equals((string) $token['hash'], $wanted)) { continue; }
-            $expiry = strtotime((string) ($token['expires_at'] ?? ''));
-            if ($expiry === false || $expiry < time()) {
-                unset($token);
-                return ['ok' => false];
-            }
-            $allowedIps = is_array($token['allowed_ips'] ?? null) ? $token['allowed_ips'] : [];
-            if ($allowedIps && !in_array(client_ip(), $allowedIps, true)) {
-                unset($token);
-                return ['ok'=>false];
-            }
-            $record = $token;
-            $last = isset($token['last_used_at']) ? strtotime((string) $token['last_used_at']) : false;
-            if ($last === false || time() - $last > 60) {
-                $token['last_used_at'] = date('c');
-                api_tokens_save($tokens);
-            }
-            unset($token);
-            return ['ok' => true, 'record' => $record];
+    // Verify without the lock; only take it (and rewrite the store) when the
+    // once-a-minute last-used timestamp is due. Every bearer request used to
+    // serialise on the lock.
+    $matched = ['ok' => false];
+    foreach (api_tokens_load() as $token) {
+        if (empty($token['hash']) || !hash_equals((string) $token['hash'], $wanted)) { continue; }
+        $expiry = strtotime((string) ($token['expires_at'] ?? ''));
+        $allowedIps = is_array($token['allowed_ips'] ?? null) ? $token['allowed_ips'] : [];
+        if ($expiry === false || $expiry < time() || ($allowedIps && !in_array(client_ip(), $allowedIps, true))) { break; }
+        $matched = ['ok' => true, 'record' => $token];
+        $last = isset($token['last_used_at']) ? strtotime((string) $token['last_used_at']) : false;
+        if ($last === false || time() - $last > 60) {
+            with_api_tokens_lock(static function () use ($wanted): array {
+                $tokens = api_tokens_load();
+                foreach ($tokens as &$candidate) {
+                    if (!empty($candidate['hash']) && hash_equals((string) $candidate['hash'], $wanted)) {
+                        $candidate['last_used_at'] = date('c');
+                    }
+                }
+                unset($candidate);
+                return ['ok' => api_tokens_save($tokens)];
+            });
         }
-        unset($token);
-        return ['ok' => false];
-    });
+        break;
+    }
     if (empty($matched['ok'])) { return false; }
     $token = $matched['record'];
     $apiAuthLabel = (string) ($token['label'] ?? 'token');

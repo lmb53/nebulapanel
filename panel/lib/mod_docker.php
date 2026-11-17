@@ -26,10 +26,36 @@ function dk_pinned_image_ok(string $image): bool
         && strtolower(substr($image, $tag + 1)) !== 'latest';
 }
 
+/**
+ * Read one Docker listing. The first call in a request fetches every listing
+ * the Docker page needs in a single helper call; later calls reuse it. Older
+ * helpers without "docker-query all" fall back to one call per listing.
+ */
+function dk_query(string $kind): array
+{
+    static $snapshot = null;
+    if ($snapshot === null) {
+        $snapshot = false;
+        [$code, $out] = helper_cmd('docker-query all', 90);
+        if ($code === 0 && str_contains($out, '@@nebula-section containers')) {
+            $snapshot = [];
+            $current = null;
+            foreach (preg_split('/\r?\n/', $out) as $line) {
+                if (preg_match('/^@@nebula-section ([a-z]+)$/', $line, $m)) { $current = $m[1]; $snapshot[$current] = ''; continue; }
+                if ($current !== null) { $snapshot[$current] .= $line . "\n"; }
+            }
+        }
+    }
+    if (is_array($snapshot) && array_key_exists($kind, $snapshot)) {
+        return [0, $snapshot[$kind], ''];
+    }
+    return helper_cmd('docker-query ' . $kind);
+}
+
 /** List all containers. */
 function dk_containers(): array
 {
-    [$code, $out] = helper_cmd('docker-query containers');
+    [$code, $out] = dk_query('containers');
     if ($code !== 0) {
         return ['ok' => false, 'error' => sudo_error($out, $code), 'containers' => []];
     }
@@ -83,7 +109,7 @@ function dk_parse_ports(string $raw): array
 /** List images. */
 function dk_images(): array
 {
-    [$code, $out] = helper_cmd('docker-query images');
+    [$code, $out] = dk_query('images');
     if ($code !== 0) {
         return ['ok' => false, 'error' => sudo_error($out, $code), 'images' => []];
     }
@@ -108,7 +134,7 @@ function dk_images(): array
 
 function dk_volumes(): array
 {
-    [$code,$out]=helper_cmd('docker-query volumes');
+    [$code,$out]=dk_query('volumes');
     if($code!==0)return ['ok'=>false,'error'=>sudo_error($out,$code),'volumes'=>[]];$items=[];
     foreach(preg_split('/\r?\n/',trim($out)) as $line){$j=json_decode($line,true);if(!is_array($j))continue;$items[]=['name'=>$j['Name']??'','driver'=>$j['Driver']??'','mountpoint'=>$j['Mountpoint']??''];}
     return ['ok'=>true,'volumes'=>$items];
@@ -116,7 +142,7 @@ function dk_volumes(): array
 
 function dk_networks(): array
 {
-    [$code,$out]=helper_cmd('docker-query networks');
+    [$code,$out]=dk_query('networks');
     if($code!==0)return ['ok'=>false,'error'=>sudo_error($out,$code),'networks'=>[]];$items=[];
     foreach(preg_split('/\r?\n/',trim($out)) as $line){$j=json_decode($line,true);if(!is_array($j))continue;$items[]=['id'=>$j['ID']??'','name'=>$j['Name']??'','driver'=>$j['Driver']??'','scope'=>$j['Scope']??''];}
     return ['ok'=>true,'networks'=>$items];
@@ -124,7 +150,7 @@ function dk_networks(): array
 
 function dk_version(): string
 {
-    [$code,$out]=helper_cmd('docker-query version');return $code===0?trim($out):'';
+    [$code,$out]=dk_query('version');return $code===0?trim($out):'';
 }
 
 function dk_container_create(array $input): array

@@ -150,10 +150,13 @@ function audit_search(array $filters, int $limit = 100, int $offset = 0): array
             if ($q !== '' && !str_contains(strtolower($line), $q)) { continue; }
             $total++;
             $ring[] = $event;
-            if (count($ring) > $keep) { array_shift($ring); }
+            // Trim in batches: array_shift() on every event made a 50,000-row
+            // export quadratic.
+            if (count($ring) > 2 * $keep + 1000) { $ring = array_slice($ring, -$keep); }
         }
         fclose($handle);
     }
+    $ring = array_slice($ring, -$keep);
     $events = array_slice(array_reverse($ring), $offset, $limit);
     ksort($actors);
     ksort($actions);

@@ -6,7 +6,7 @@
 <title>Set up · <?= e($config['panel_name']) ?></title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <?= favicon_tags() ?>
-<script src="<?= e(asset('vendor/lucide-1.8.0.min.js')) ?>"></script>
+<script src="<?= e(asset('vendor/lucide-subset.js')) ?>" defer></script>
 <?= theme_boot_script() ?>
 <link rel="stylesheet" href="<?= e(asset('style.css')) ?>">
 </head>
@@ -39,6 +39,6 @@
     </div>
   </div>
 </div>
-<script nonce="<?= e(csp_nonce()) ?>">lucide.createIcons();</script>
+<script nonce="<?= e(csp_nonce()) ?>">document.addEventListener('DOMContentLoaded', () => window.lucide && lucide.createIcons());</script>
 </body>
 </html>
