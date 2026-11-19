@@ -85,7 +85,16 @@ CONF
   printf 'fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;\n' > "$PFX/conf/snippets/fastcgi-php.conf"
   nginx -t -q -p "$PFX/" -c "$PFX/conf/nginx.conf" -g "error_log $PFX/logs/error.log;" 2>"$WORK/nginx.err"
 }
-use_site() { sed -e "s#/var/log/nginx/#$PFX/logs/#g" -e "/listen \[::/d" "$1" > "$PFX/sites/$(basename "$1")"; }
+# nginx -t binds every listen address, so the check runs on unprivileged
+# ports (and IPv4 only: some CI hosts have no IPv6).
+use_site() {
+  sed -E -e "s#/var/log/nginx/#$PFX/logs/#g" -e "/listen \[::/d" \
+    -e "s/listen (127\.0\.0\.1:)?80([ ;])/listen \1${TEST_PORT_BASE}80\2/" \
+    -e "s/listen (127\.0\.0\.1:)?443([ ;])/listen \1${TEST_PORT_BASE}43\2/" \
+    -e "s/listen (127\.0\.0\.1:)?2096([ ;])/listen \1${TEST_PORT_BASE}96\2/" \
+    "$1" > "$PFX/sites/$(basename "$1")"
+}
+TEST_PORT_BASE="$(( (RANDOM % 300) + 200 ))"
 if command -v nginx >/dev/null 2>&1; then
   use_site "$WORK/site.conf"; use_site "$WORK/webapps.conf"; use_site "$WORK/panel.conf"
   if nginx_test; then ok "nginx accepts the site, web-app and panel servers together"; else bad "nginx accepts the site, web-app and panel servers together"; cat "$WORK/nginx.err"; fi
