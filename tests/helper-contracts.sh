@@ -33,6 +33,13 @@ expect_reject "web app wrong name" webmail-remove /var/www/html/data
 expect_reject "ssh key for a system user" ssh-key-add root c3NoLWVkMjU1MTkgQUFBQQ==
 expect_reject "file op outside the root" file-chmod /etc/shadow 777
 expect_reject "special permission bits" file-chmod /srv/nebula/sites/x 4755
+# Self-updates name a commit; the panel can no longer hand root a tree.
+expect_reject "update from a staged folder" panel-update /var/www/html/panel/data/_update/x/panel
+expect_reject "update from a short ref" panel-update main
+expect_reject "update from an abbreviated commit" panel-update daf4a9d
+expect_reject "migration with arguments" security-migrate now
+expect_reject "web-app refresh with an unknown option" webapps-refresh --all
+expect_reject "loopback guard with arguments" loopback-guard 8080
 # The detached package worker is only reachable from systemd-run, never sudo.
 expect_reject "package worker without systemd-run" __package-worker /run/nebula-panel-ops/op.AAAAAAAA 1 pma-install /tmp/x
 echo "helper argument validation contracts passed"

@@ -10,6 +10,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $body = read_json_body();
     $action = (string) ($body['action'] ?? '');
     $id = (int) ($body['id'] ?? 0);
+    // Creating, changing or removing panel accounts needs a recent password check.
+    if (in_array($action, ['create', 'update', 'reset-mfa', 'delete'], true)) {
+        require_recent_auth();
+    }
     switch ($action) {
         case 'create':
             $res = panel_user_create((string) ($body['username'] ?? ''), (string) ($body['password'] ?? ''), (string) ($body['role'] ?? 'auditor'));

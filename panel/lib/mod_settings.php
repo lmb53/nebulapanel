@@ -89,7 +89,9 @@ function change_admin_password(string $current, string $new): array
         if (is_array($legacy)) { $legacy['hash']=$changedUser['hash'];$legacy['updated']=$changedUser['updated'];write_json_file(admin_file(),$legacy); }
     }
     audit('settings.password_changed');
-    return ['ok' => true];
+    require_once APP_ROOT . '/lib/mod_api.php';
+    $revoked = api_tokens_revoke_owner($uid, 'password changed');
+    return ['ok' => true, 'tokens_revoked' => $revoked];
 }
 
 /** Last N lines of the audit log. */

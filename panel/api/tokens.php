@@ -11,6 +11,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $body = read_json_body();
     $action = (string) ($body['action'] ?? '');
     if ($action === 'generate') {
+        // Never from a bearer token (it would mint tokens without an owner),
+        // and only after a recent password check.
+        require_recent_auth();
         $res = api_token_generate(
             (string) ($body['label'] ?? ''),
             (string) ($body['role'] ?? 'auditor'),

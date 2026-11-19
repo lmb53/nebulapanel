@@ -465,6 +465,11 @@ chmod 0644 /etc/nebula-panel/fm-root
 printf '%s\n' "$(readlink -f "$DEST")" > /etc/nebula-panel/panel-root
 chown root:root /etc/nebula-panel/panel-root
 chmod 0644 /etc/nebula-panel/panel-root
+# Where root fetches panel self-updates from. Root-owned, so the panel's own
+# (web-writable) settings can never redirect what root installs.
+printf '%s\n' "$REPO" > /etc/nebula-panel/update-repo
+chown root:root /etc/nebula-panel/update-repo
+chmod 0644 /etc/nebula-panel/update-repo
 if [[ -n "$PUBLIC_IP" ]]; then
   printf '%s\n' "$PUBLIC_IP" > /etc/nebula-panel/public-ip
   chown root:root /etc/nebula-panel/public-ip
@@ -492,8 +497,13 @@ for _site_base in "$SITES_ROOT"/*; do
   [[ -d "$_site_base" && ! -L "$_site_base" && "$(basename "$_site_base")" =~ ^[a-f0-9]{32}$ ]] || continue
   setfacl -m "u:${PANEL_USER}:rx,u:www-data:rx" "$_site_base"
   if [[ -d "$_site_base/public" && ! -L "$_site_base/public" ]]; then
-    setfacl -R -m "u:${PANEL_USER}:rX,u:www-data:rX" "$_site_base/public"
-    find "$_site_base/public" -type d -exec setfacl -m "d:u:${PANEL_USER}:rX,d:u:www-data:rX" {} +
+    # The tree belongs to the site: walk it as its owner, never as root, so a
+    # folder swapped for a symlink cannot hand the ACL to a system file.
+    _site_owner="$(stat -c %U "$_site_base/public")"
+    if [[ "$_site_owner" != root && "$_site_owner" != UNKNOWN ]]; then
+      runuser -u "$_site_owner" -- setfacl -R -P -m "u:${PANEL_USER}:rX,u:www-data:rX" -- "$_site_base/public" 2>/dev/null || true
+      runuser -u "$_site_owner" -- find "$_site_base/public" -type d -exec setfacl -m "d:u:${PANEL_USER}:rX,d:u:www-data:rX" {} + 2>/dev/null || true
+    fi
   fi
 done
 # Key that seals secrets at rest (TOTP seeds). Kept outside data/ so a copy
@@ -739,12 +749,15 @@ ${PANEL_TLS}
 ${PANEL_HTTP_REDIRECT}
     server_name ${SERVER_NAME};
     root ${WEBROOT};
+    disable_symlinks if_not_owner from=\$document_root; # NEBULA_DISABLE_SYMLINKS
     index index.php index.html;
     # nginx defaults to 1 MB, which rejects most File Manager uploads.
     client_max_body_size 72m;
 
     # Never serve the panel's private directories.
     location ~ ^/${PANEL_PREFIX}/(api|data|lib|views|bin)/ { deny all; return 404; }
+    # Bundled web apps are served on their own origin (port 2096), never here.
+    location ~ "^/(dbadmin|webmail|snappymail)-[0-9a-fA-F]{8}(/|\$)" { return 404; } # NEBULA_WEBAPPS_DENY
     location = /${PANEL_PREFIX}/config.php { deny all; return 404; }
 
     # Asset URLs carry a ?v=<mtime> version, so browsers may keep them.
@@ -777,6 +790,7 @@ ${ACCESS_RULES}
 }
 EOF
 
+chmod 0640 /etc/nginx/sites-available/nebula
 ln -sf /etc/nginx/sites-available/nebula /etc/nginx/sites-enabled/nebula
 rm -f /etc/nginx/sites-enabled/default
 if ! nginx -t >/dev/null 2>&1 || ! systemctl reload nginx; then
@@ -920,6 +934,20 @@ if [[ -n "$DOMAIN" ]]; then
     ok "HTTPS enabled for $DOMAIN"
   else
     warn "certbot failed (is DNS for $DOMAIN pointed at this box yet?). Re-run: certbot --nginx -d $DOMAIN"
+  fi
+fi
+
+# --------------------------------------------------------------------------
+# 8b. Security baseline for existing sites and web apps
+# --------------------------------------------------------------------------
+# Hardens sites created by older releases (symlink policy, private config
+# files, PHP isolation), rebuilds bundled web apps from their packages and
+# publishes them on their own origin, and refreshes the loopback guard.
+if [[ -x /usr/local/bin/nebula-helper ]]; then
+  if /usr/local/bin/nebula-helper security-migrate >/dev/null 2>&1; then
+    ok "Security baseline applied to existing sites and web apps"
+  else
+    warn "Could not apply the security baseline; run: sudo nebula-helper security-migrate"
   fi
 fi
 

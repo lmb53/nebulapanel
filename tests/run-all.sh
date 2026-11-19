@@ -14,12 +14,13 @@ run() {
     failed+=("$name")
   fi
 }
-for suite in smoke security robustness session-lifecycle session-api http-flows; do
+for suite in smoke security robustness session-lifecycle session-api http-flows offsite-roundtrip; do
   run "$suite" php "tests/$suite.php"
 done
 run helper-contracts bash tests/helper-contracts.sh
 run helper-sandbox bash tests/helper-sandbox.sh
-run shellcheck shellcheck -S warning install.sh panel/bin/nebula-helper tests/helper-contracts.sh tests/helper-sandbox.sh tests/run-all.sh
+run helper-configs bash tests/helper-configs.sh
+run shellcheck shellcheck -S warning install.sh panel/bin/nebula-helper tests/helper-contracts.sh tests/helper-sandbox.sh tests/helper-configs.sh tests/run-all.sh
 run js-syntax bash -c 'for f in panel/assets/app.js panel/assets/passkeys.js panel/assets/vendor/lucide-subset.js tools/build-icons.js; do node --check "$f" || exit 1; done'
 if (( ${#failed[@]} )); then echo "${#failed[@]} suite(s) failed: ${failed[*]}"; exit 1; fi
 echo "all suites passed"

@@ -82,7 +82,7 @@ the URL (runtime state is migrated), or use a fixed name. Options (env vars):
 | **SSL** — list / issue / renew / delete certbot certificates + validated custom PEM upload | ✅ helper |
 | **PHP** — per-version ini settings (memory_limit, upload size…) + modules | ✅ helper |
 | **Databases** — website-owned MariaDB/MySQL DB/user CRUD, passwords, read-only/full grants, export/import (chunked upload) and per-database quick access | ✅ sudo |
-| **phpMyAdmin** — one-click install + password-free, short-lived signed per-database signon | ✅ helper |
+| **phpMyAdmin** — one-click install + password-free, short-lived signed per-database signon, served on its own origin (port 2096) and rebuilt from its package after every update | ✅ helper |
 | **Email** — one-click Postfix + Dovecot + OpenDKIM mail server, virtual mailboxes & aliases, per-domain **DKIM** keys, copy-ready **MX / SPF / DKIM / DMARC** records (auto-publish to panel DNS zones), a **statistics dashboard** (sent/received/bounced/rejected, per-day chart, top senders & recipients, mailbox storage) and one-click **Roundcube** webmail | ✅ helper |
 | **Docker** — create/control containers with their published ports, view container logs, pull/remove/prune images, manage volumes and networks, **Compose stacks (editable docker-compose.yml, deploy/pull/restart/logs, one-click Compose install when the CLI plugin is missing)** and a one-click **App Store** of popular self-hosted apps with official brand logos | ✅ sudo |
 | **File Manager** — expandable tree previews, browse/pinned/recent, recoverable trash (restore, delete permanently, empty), create **and extract** archives (.zip, .tar, .tar.gz, .tar.bz2, .tar.xz — upload a zip and unpack it into `public/`), popup multi-tab editor, search, image preview, ownership, permissions and resumable drag-drop upload of files and folders up to 1 GB | ✅ helper |
@@ -90,7 +90,7 @@ the URL (runtime state is migrated), or use a fixed name. Options (env vars):
 | **Backups** — website files plus a `mysqldump` of every linked database, **restore** (into the original site or a re-created one, with an automatic safety copy first), nightly or weekly **schedule** with keep-the-last-N retention, **server configuration** backups, **encrypted off-site copies** to S3-compatible storage, verify / download / delete | ✅ helper |
 | **Terminal** — audited non-interactive command runner | ✅ |
 | **System Info** — OS, kernel, CPU, RAM, disk, network, plus **Restart server / Shut down** for administrators (also in the account menu; refused while packages are installing unless confirmed) | ✅ helper |
-| **Panel updates** — self-update from GitHub (check + apply), as the *Nebula Panel* tab of **Updates** | ✅ |
+| **Panel updates** — self-update from GitHub (check + apply), fetched and verified by the root helper itself, optionally requiring signed commits, as the *Nebula Panel* tab of **Updates** | ✅ |
 | **Settings** — panel name, session timeout, health thresholds, alerts · **My account** — password, two-factor sign-in and active sessions for every role · searchable, filterable **audit log** with CSV/JSON export under **Security** | ✅ |
 | **Notifications** — live operational inbox, top-bar dropdown, mark-read and delete state | ✅ |
 | **Bearer API** — named, scoped, expiring, optionally IP-bound tokens under `api/v1`, owned by the person who creates them (never above their role) | ✅ |
@@ -228,9 +228,10 @@ nebula-panel ALL=(root) NOPASSWD: /usr/local/bin/nebula-helper *
 The helper accepts only a fixed set of validated subcommands covering site,
 certificate, DNS, PHP, File Manager, phpMyAdmin, and panel-update operations and
 re-validates every argument itself. It lives **outside** the web-writable tree
-and is root-owned, so web identities cannot alter it. A validated self-update
-does refresh the staged helper; re-run `install.sh` when installer-owned FPM,
-Nginx, account, or sudoers configuration changes.
+and is root-owned, so web identities cannot alter it. A self-update names only
+a commit: the helper fetches, checks and installs that release (helper
+included) itself; re-run `install.sh` when installer-owned FPM, Nginx, account,
+or sudoers configuration changes.
 
 ## First run
 
@@ -307,7 +308,8 @@ with as little configuration as possible:
    panel-managed authoritative zones you can **publish them to DNS in one click**
    (long DKIM keys are split into valid 255-byte TXT chunks). For externally
    hosted DNS, copy each record with the copy button.
-4. **Roundcube webmail** installs to its own random URL with one click,
+4. **Roundcube webmail** installs to its own random URL on the web-app port
+   (2096, a separate origin from the panel) with one click,
    pre-configured against this server's local IMAP/SMTP with zero-config SQLite
    storage. Users sign in with their full email address and mailbox password.
 5. **Stats** aggregates the Postfix/Dovecot logs and the maildirs on disk:

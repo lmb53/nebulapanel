@@ -839,14 +839,15 @@ function mail_webmail(): ?array
     if (is_array($s['webmail'] ?? null) && !empty($s['webmail'])) {
         $w = $s['webmail'];
         $w['kind'] = (string) ($w['kind'] ?? 'roundcube');
-        return $w;
-    }
-    if (is_array($s['roundcube'] ?? null) && !empty($s['roundcube'])) {
+    } elseif (is_array($s['roundcube'] ?? null) && !empty($s['roundcube'])) {
         $w = $s['roundcube'];
         $w['kind'] = 'roundcube';
-        return $w;
+    } else {
+        return null;
     }
-    return null;
+    // Stored as a path; served on the web apps' own origin.
+    if (!empty($w['url'])) { $w['url'] = webapps_url((string) $w['url']); }
+    return $w;
 }
 
 /** Human label for the active webmail client. */
@@ -918,7 +919,7 @@ function mail_webmail_install(string $kind = 'roundcube', ?callable $onOutput = 
         return ['ok' => false, 'error' => 'Could not save webmail state.'];
     }
     audit('mail.webmail.install', $kind . ' ' . $target);
-    return ['ok' => true, 'url' => $url];
+    return ['ok' => true, 'url' => webapps_url($url)];
 }
 
 function mail_webmail_remove(): array

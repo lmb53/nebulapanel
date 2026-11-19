@@ -147,7 +147,7 @@ function panel_user_create(string $username, string $password, string $role): ar
 function panel_user_update(int $id, string $role, bool $enabled, string $password = ''): array
 {
     if (!isset(panel_roles()[$role])) return ['ok' => false, 'error' => 'Invalid role.'];
-    return with_panel_users_lock(function () use ($id, $role, $enabled, $password): array {
+    $res = with_panel_users_lock(function () use ($id, $role, $enabled, $password): array {
         $users = panel_users();
         $found = false;
         foreach ($users as &$user) {
@@ -185,8 +185,14 @@ function panel_user_update(int $id, string $role, bool $enabled, string $passwor
             }
         }
         audit('panel_user.update', 'id ' . $id . ' (' . $role . ', ' . ($enabled ? 'enabled' : 'disabled') . ')');
-        return ['ok' => true];
+        return ['ok' => true, 'password_changed' => $password !== ''];
     });
+    if (!empty($res['ok']) && !empty($res['password_changed'])) {
+        require_once APP_ROOT . '/lib/mod_api.php';
+        api_tokens_revoke_owner($id, 'password reset by an administrator');
+    }
+    unset($res['password_changed']);
+    return $res;
 }
 
 function panel_user_delete(int $id): array
@@ -205,11 +211,7 @@ function panel_user_delete(int $id): array
     if (!empty($res['ok'])) {
         // Their tokens already stop authenticating; remove them from the list too.
         require_once APP_ROOT . '/lib/mod_api.php';
-        with_api_tokens_lock(static function () use ($id): array {
-            $tokens = api_tokens_load();
-            $kept = array_values(array_filter($tokens, static fn($t) => (int) ($t['owner_id'] ?? 0) !== $id));
-            return ['ok' => count($kept) === count($tokens) || api_tokens_save($kept)];
-        });
+        api_tokens_revoke_owner($id, 'account deleted');
     }
     return $res;
 }
@@ -600,6 +602,52 @@ function attempt_login(string $username, string $password): bool|string
     return true;
 }
 
+/** Seconds a sign-in (or a password re-check) counts as recent for sensitive changes. */
+const RECENT_AUTH_WINDOW = 900;
+
+/**
+ * Sensitive account changes (API tokens, panel users) need a browser session
+ * that proved its password recently, so a stolen or forgotten-open session
+ * cannot quietly mint long-lived credentials. Bearer tokens may never do
+ * these. Answers 403 {code: reauth_required} for the browser to prompt.
+ */
+function require_recent_auth(): void
+{
+    if (function_exists('is_api_token_authenticated') && is_api_token_authenticated()) {
+        json_out(['ok' => false, 'error' => 'API tokens cannot manage tokens or panel users. Use a signed-in browser session.'], 403);
+    }
+    if ((int) ($_SESSION['uid'] ?? 0) > 0 && time() - (int) ($_SESSION['auth_at'] ?? 0) <= RECENT_AUTH_WINDOW) {
+        return;
+    }
+    $mfa = false;
+    foreach (panel_users() as $user) {
+        if ((int) ($user['id'] ?? 0) === (int) ($_SESSION['uid'] ?? 0)) {
+            $mfa = !empty($user['mfa']['secret']) && !empty($user['mfa']['enabled_at']);
+            break;
+        }
+    }
+    json_out(['ok' => false, 'error' => 'Confirm your password to continue.', 'code' => 'reauth_required',
+        'reauth' => ['mfa' => $mfa, 'message' => 'For your security, confirm your password before changing API tokens or panel users.']], 403);
+}
+
+/** Verify the password (and second factor) again and mark the session as recently authenticated. */
+function reauthenticate_session(string $password, string $code): array
+{
+    require_once APP_ROOT . '/lib/mod_mfa.php';
+    $uid = (int) ($_SESSION['uid'] ?? 0);
+    $res = mfa_update_user($uid, static function (array &$user) use ($password, $code) {
+        if (empty($user['enabled'])) { return 'Your account is disabled.'; }
+        return mfa_reauth($user, $password, $code);
+    });
+    if (empty($res['ok'])) {
+        usleep(300000);
+        return ['ok' => false, 'error' => (string) ($res['error'] ?? 'That did not match.')];
+    }
+    session_persist(['auth_at' => time()]);
+    audit('session.reauth');
+    return ['ok' => true];
+}
+
 /** Turn the current session into a signed-in session for $user. */
 function login_establish(array $user, bool $mfaVerified = false): void
 {
@@ -612,6 +660,7 @@ function login_establish(array $user, bool $mfaVerified = false): void
     $_SESSION['last_seen'] = time();
     $_SESSION['created_at'] = time();
     $_SESSION['rotated_at'] = time();
+    $_SESSION['auth_at'] = time();
     $_SESSION['mfa_verified'] = $mfaVerified;
     require_once APP_ROOT . '/lib/mod_sessions.php';
     session_registry_register();

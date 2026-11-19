@@ -48,8 +48,30 @@ MAIL_STORE=/var/mail/nebula
 MAIL_VUID="$(id -u vmail 2>/dev/null || printf '5000')"
 MAIL_VGID="$(id -g vmail 2>/dev/null || printf '5000')"
 DKIM_DIR="$MAIL_DIR/dkim"
+# Functions no hosted site may call. putenv is the key one: with it, mail()
+# (which runs /bin/sh) loads any LD_PRELOAD library the site wrote, which
+# escapes open_basedir and the rest of this list.
+SITE_DISABLE_FUNCTIONS="exec,passthru,shell_exec,system,proc_open,popen,putenv,pcntl_exec"
+# Bundled web apps (phpMyAdmin, webmail) get their own origin: a separate
+# Nginx server on this port, never the panel's host:port.
+WEBAPPS_PORT=2096
+WEBAPPS_VHOST="$NGINX_AV/nebula-webapps"
 
 die() { echo "$*" >&2; exit 2; }
+
+# The panel's own Unix group (owner of its data folder).
+panel_group() { stat -c %G "$(realpath "$(head -n 1 "$PANEL_ROOT_FILE")")/data"; }
+
+# Nginx vhosts name site IDs and paths: readable by root (the Nginx master)
+# only, never by hosted sites.
+secure_vhost_file() { chown root:root "$1"; chmod 0640 "$1"; }
+
+# FPM pools: root and the panel (it lists pools on the PHP page) only.
+secure_pool_file() {
+  local group
+  group="$(panel_group 2>/dev/null || echo root)"
+  chown "root:${group}" "$1"; chmod 0640 "$1"
+}
 
 # ---------------------------------------------------------------------------
 # Confined filesystem operations below the File Manager root.
@@ -984,6 +1006,28 @@ site_paths() {
   SITE_STATE="$SITES_STATE/$id"
 }
 
+# A path inside a site folder must be missing, or a real directory (never a
+# symlink) owned by the site user, before root relies on it. Root never
+# creates, chowns or chmods such a path itself; see site_as_owner.
+site_own_dir_check() {
+  local path="$1"
+  [[ -L "$path" ]] && die "$(basename "$path") in the site folder is a symlink; refusing"
+  [[ ! -e "$path" ]] && return 0
+  [[ -d "$path" ]] || die "$(basename "$path") in the site folder is not a directory; refusing"
+  [[ "$(stat -c %U "$path")" == "$SITE_USER" ]] || die "$(basename "$path") in the site folder is not owned by the site; refusing"
+}
+
+# Grant the panel and the web server read access to a site tree. Runs as the
+# tree's owner: setfacl walks paths by name, so as root a folder swapped for a
+# symlink mid-walk would hand the ACL to any file on the system.
+site_tree_acl() {
+  local owner="$1" tree="$2" panel_user acl
+  panel_user="$(stat -c %U "$(realpath "$(head -n 1 "$PANEL_ROOT_FILE")")/data")"
+  acl="u:${panel_user}:rX,u:www-data:rX"
+  runuser -u "$owner" -- setfacl -R -P -m "$acl" -- "$tree" 2>/dev/null || true
+  runuser -u "$owner" -- find "$tree" -type d -exec setfacl -m "d:${acl//,/,d:}" {} + 2>/dev/null || true
+}
+
 # Repository URLs: credential-free HTTPS, or SSH (git@host:path) used with
 # the site's own deploy key.
 git_url_check() {
@@ -1233,6 +1277,571 @@ mail_postfix_policy() {
   if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then
     ufw allow 465/tcp >/dev/null 2>&1 || true
   fi
+}
+
+# ---------------------------------------------------------------------------
+# Bundled web apps (phpMyAdmin, Roundcube).
+#
+# They are copies of the distribution packages placed next to the panel, so:
+#   * the code is root-owned (only their temp folders are theirs), and is
+#     rebuilt from the package after every apt run (webapps-refresh, from an
+#     apt hook), so package security updates reach the served copy;
+#   * they are served on their own origin (port $WEBAPPS_PORT, a separate
+#     Nginx server), never on the panel's host:port, so script running in
+#     one of them cannot read panel pages or the panel's CSRF token.
+# ---------------------------------------------------------------------------
+PMA_TICKETS=/var/lib/nebula-pma-tickets
+
+webapps_webroot() { dirname "$(realpath "$(head -n 1 "$PANEL_ROOT_FILE")")"; }
+
+# Copy one config file out of an existing (possibly app-writable) copy. It is
+# read as the web-app user, so a planted symlink reaches nothing more.
+webapp_copy_config() {
+  local from="$1" to="$2"
+  [[ -f "$from" && ! -L "$from" ]] || return 1
+  runuser -u nebula-webapps -- cat -- "$from" > "$to"
+}
+
+# The sign-on endpoint that turns a panel-issued, single-use ticket into
+# phpMyAdmin's signon session. It runs in the web-app pool, so the session
+# lands where phpMyAdmin reads it.
+pma_write_signon_script() {
+  local dest="$1"
+  cat > "$dest/nebula-signon.php" <<'PHPEOF'
+<?php
+// Managed by Nebula Panel: completes a panel-issued phpMyAdmin sign-on.
+$fail = static function (): void {
+    http_response_code(403);
+    header('Cache-Control: no-store');
+    exit('This phpMyAdmin link has expired or was already used. Open phpMyAdmin from the panel again.');
+};
+$ticket = (string) ($_GET['t'] ?? '');
+if (!preg_match('/^[a-f0-9]{48}$/', $ticket)) { $fail(); }
+$path = '/var/lib/nebula-pma-tickets/' . $ticket . '.json';
+$raw = is_file($path) && !is_link($path) ? @file_get_contents($path) : false;
+@unlink($path);
+$data = is_string($raw) ? json_decode($raw, true) : null;
+if (!is_array($data) || (int) ($data['exp'] ?? 0) < time()
+    || !is_string($data['user'] ?? null) || !is_string($data['password'] ?? null)) {
+    $fail();
+}
+$secure = !empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off';
+session_name('NebulaPmaSignon');
+session_set_cookie_params(['lifetime' => 0, 'path' => '/', 'secure' => $secure, 'httponly' => true, 'samesite' => 'Lax']);
+session_start();
+session_regenerate_id(true);
+$_SESSION['PMA_single_signon_user'] = $data['user'];
+$_SESSION['PMA_single_signon_password'] = $data['password'];
+$_SESSION['PMA_single_signon_host'] = 'localhost';
+session_write_close();
+$db = (string) ($data['db'] ?? '');
+header('Cache-Control: no-store');
+header('Location: index.php' . (preg_match('/^[A-Za-z0-9_]{1,64}$/', $db) ? '?route=/database/structure&db=' . rawurlencode($db) : ''));
+PHPEOF
+  chown root:root "$dest/nebula-signon.php"; chmod 0644 "$dest/nebula-signon.php"
+}
+
+pma_tickets_dir() {
+  local panel_user
+  panel_user="$(stat -c %U "$(realpath "$(head -n 1 "$PANEL_ROOT_FILE")")/data")"
+  install -d -m 2770 -o "$panel_user" -g nebula-webapps "$PMA_TICKETS"
+}
+
+# Build a phpMyAdmin tree at $1 from the package, keeping $2's configuration.
+pma_build_tree() {
+  local dest="$1" old="${2:-}" secret
+  copy_tree_deref /usr/share/phpmyadmin "$dest"
+  # Debian/Ubuntu build phpMyAdmin to read /etc/phpmyadmin/config.inc.php and
+  # cache in /var/lib/phpmyadmin. Point this copy at its own configuration
+  # (sign-on only) and temp folder; otherwise the packaged cookie login form
+  # is what gets served.
+  local vendor="$dest/libraries/vendor_config.php"
+  if [[ -f "$vendor" ]]; then
+    sed -i -e "s#'configFile' => '/etc/phpmyadmin/config.inc.php'#'configFile' => ROOT_PATH . 'config.inc.php'#" \
+           -e "s#'tempDir' => '/var/lib/phpmyadmin/tmp/'#'tempDir' => ROOT_PATH . 'tmp' . DIRECTORY_SEPARATOR#" "$vendor"
+    if grep -q "'configFile' => '/etc/" "$vendor"; then
+      echo "phpMyAdmin's vendor configuration has an unexpected layout" >&2; return 1
+    fi
+  fi
+  if [[ -z "$old" ]] || ! webapp_copy_config "$old/config.inc.php" "$dest/config.inc.php"; then
+    # 32 random bytes, the key length phpMyAdmin's encryption expects.
+    secret="$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')"
+    sed "s|\$cfg\['blowfish_secret'\] = '';|\$cfg['blowfish_secret'] = sodium_hex2bin('${secret}');|" \
+      "$dest/config.sample.inc.php" > "$dest/config.inc.php"
+  fi
+  chown -R root:root "$dest"
+  install -d -m 0700 -o nebula-webapps -g nebula-webapps "$dest/tmp"
+  chown root:nebula-webapps "$dest/config.inc.php"; chmod 0640 "$dest/config.inc.php"
+  pma_write_signon_script "$dest"
+  dpkg-query -W -f='${Version}' phpmyadmin > "$dest/.nebula-package-version" 2>/dev/null || true
+}
+
+# Build a Roundcube tree at $1 from the package. With $2 the existing copy's
+# configuration is kept; otherwise one is written for mail host $3.
+roundcube_build_tree() {
+  local dest="$1" old="${2:-}" hostfqdn="${3:-}" php_ver rc_php plugins="" plugin deskey
+  local src=/usr/share/roundcube
+  [[ -f "$src/index.php" && -f "$src/program/include/iniset.php" ]] || { echo "Roundcube package layout unexpected" >&2; return 1; }
+  [[ -f /etc/roundcube/defaults.inc.php ]] || { echo "/etc/roundcube/defaults.inc.php is missing" >&2; return 1; }
+  copy_tree_deref "$src" "$dest"
+  rm -rf "$dest/installer"
+  # The packaged iniset.php pins INSTALL_PATH to /var/lib/roundcube/, which
+  # would make this copy read /etc/roundcube instead of its own config/.
+  local iniset="$dest/program/include/iniset.php"
+  if grep -q "define('INSTALL_PATH', '/var/lib/roundcube/')" "$iniset"; then
+    sed -i "s#define('INSTALL_PATH', '/var/lib/roundcube/');#define('INSTALL_PATH', dirname(__DIR__, 2) . '/');#" "$iniset"
+    grep -q "dirname(__DIR__, 2)" "$iniset" || { echo "could not point Roundcube at its own install directory" >&2; return 1; }
+  fi
+  # PHP 8.5 added a native array_first(). Roundcube 1.6.6 (Ubuntu 24.04)
+  # declares its own unconditionally, so every request dies with "Cannot
+  # redeclare function array_first()" (HTTP 500). Keep Roundcube's version
+  # only where PHP lacks one, as upstream does from 1.6.11. Also stop its
+  # bootstrap from touching E_STRICT, whose deprecation notice (PHP 8.4+)
+  # is emitted before Roundcube turns display_errors off.
+  local boot="$dest/program/lib/Roundcube/bootstrap.php"
+  if grep -q '^function array_first(\$array)$' "$boot"; then
+    sed -i 's/^function array_first(\$array)$/function rcube_compat_array_first($array)/' "$boot"
+    printf '\n%s\n' "if (!function_exists('array_first')) { function array_first(\$array) { return rcube_compat_array_first(\$array); } }" >> "$boot"
+  fi
+  sed -i 's/E_ALL & ~E_NOTICE & ~E_STRICT,/E_ALL \& ~E_NOTICE \& ~E_DEPRECATED,/' "$boot"
+  php_ver="$(ls -d /etc/php/*/fpm 2>/dev/null | sort -V | tail -1 | awk -F/ '{print $4}')"
+  rc_php="$(command -v "php${php_ver}" || command -v php || true)"
+  if [[ -n "$rc_php" ]]; then
+    "$rc_php" -l "$boot" >/dev/null || { echo "patched Roundcube bootstrap failed PHP validation" >&2; return 1; }
+  fi
+  install -d -m 0755 "$dest/config"
+  cp /etc/roundcube/defaults.inc.php "$dest/config/defaults.inc.php"
+  if [[ -f /etc/roundcube/mimetypes.php ]]; then cp /etc/roundcube/mimetypes.php "$dest/config/mimetypes.php"; fi
+  if [[ -z "$old" ]] || ! webapp_copy_config "$old/config/config.inc.php" "$dest/config/config.inc.php"; then
+    [[ -n "$hostfqdn" ]] || { echo "the mail hostname is required for a new webmail configuration" >&2; return 1; }
+    for plugin in archive zipdownload managesieve; do
+      if [[ -f "$dest/plugins/$plugin/$plugin.php" ]]; then plugins+="${plugins:+, }'$plugin'"; fi
+    done
+    deskey="$(od -An -N24 -tx1 /dev/urandom | tr -d ' \n')"
+    cat > "$dest/config/config.inc.php" <<EOF
+<?php
+/* Managed by Nebula Panel. */
+\$config = [];
+\$config['db_dsnw'] = 'sqlite:////var/lib/nebula-mail/roundcube.db?mode=0640';
+// Dovecot and Postfix run on this server: connect over loopback (the
+// public name may not resolve to, or route back to, this machine from
+// itself) while still verifying the certificate issued for ${hostfqdn}.
+\$config['imap_host'] = 'ssl://127.0.0.1:993';
+\$config['smtp_host'] = 'tls://127.0.0.1:587';
+\$config['smtp_user'] = '%u';
+\$config['smtp_pass'] = '%p';
+\$config['imap_conn_options'] = ['ssl' => ['verify_peer' => true, 'verify_peer_name' => true, 'peer_name' => '${hostfqdn}']];
+\$config['smtp_conn_options'] = ['ssl' => ['verify_peer' => true, 'verify_peer_name' => true, 'peer_name' => '${hostfqdn}']];
+\$config['support_url'] = '';
+\$config['product_name'] = 'Nebula Webmail';
+\$config['des_key'] = '${deskey:0:24}';
+\$config['plugins'] = [${plugins}];
+\$config['skin'] = 'elastic';
+\$config['enable_installer'] = false;
+\$config['log_dir'] = '/var/lib/nebula-mail/rc-logs/';
+\$config['temp_dir'] = '/var/lib/nebula-mail/rc-temp/';
+EOF
+  fi
+  chown -R root:root "$dest"
+  chown root:nebula-webapps "$dest/config/config.inc.php"; chmod 0640 "$dest/config/config.inc.php"
+  install -d -m 0750 -o nebula-webapps -g nebula-webapps /var/lib/nebula-mail /var/lib/nebula-mail/rc-logs /var/lib/nebula-mail/rc-temp
+  dpkg-query -W -f='${Version}' roundcube-core > "$dest/.nebula-package-version" 2>/dev/null || true
+}
+
+# Replace a web-app tree in one step: build next to it, then swap.
+webapp_swap_in() {
+  local target="$1" built="$2"
+  rm -rf -- "$target.nebula-old"
+  mv -- "$target" "$target.nebula-old"
+  if ! mv -- "$built" "$target"; then mv -- "$target.nebula-old" "$target"; return 1; fi
+  rm -rf -- "$target.nebula-old"
+}
+
+# Managed web-app folders next to the panel (one name per line).
+webapps_list() {
+  local webroot dir
+  webroot="$(webapps_webroot)"
+  shopt -s nullglob
+  for dir in "$webroot"/dbadmin-* "$webroot"/webmail-* "$webroot"/snappymail-*; do
+    if [[ -d "$dir" && ! -L "$dir" && "$(basename "$dir")" =~ ^(dbadmin|webmail|snappymail)-[0-9a-fA-F]{8}$ ]]; then printf '%s\n' "$dir"; fi
+  done
+  shopt -u nullglob
+}
+
+# Rebuild every web-app copy whose package changed since it was built.
+webapps_refresh() {
+  local force="${1:-}" dir want have built
+  exec 6>/run/lock/nebula-webapps.lock
+  flock -w 600 6 || { echo "another web-app operation is running" >&2; return 1; }
+  while IFS= read -r dir; do
+    case "$(basename "$dir")" in
+      dbadmin-*)
+        [[ -f "$dir/config.inc.php" && -f /usr/share/phpmyadmin/index.php ]] || continue
+        want="$(dpkg-query -W -f='${Version}' phpmyadmin 2>/dev/null || true)"
+        have="$(cat "$dir/.nebula-package-version" 2>/dev/null || true)"
+        [[ -n "$want" && ( "$want" != "$have" || "$force" == --force ) ]] || continue
+        built="$dir.nebula-new"; rm -rf -- "$built"
+        if pma_build_tree "$built" "$dir" && webapp_swap_in "$dir" "$built"; then
+          echo "refreshed phpMyAdmin in $dir (${have:-unknown} -> $want)"
+        else
+          rm -rf -- "$built"; echo "warning: could not refresh phpMyAdmin in $dir" >&2
+        fi
+        ;;
+      webmail-*)
+        [[ -f "$dir/config/config.inc.php" && -f /usr/share/roundcube/index.php ]] || continue
+        want="$(dpkg-query -W -f='${Version}' roundcube-core 2>/dev/null || true)"
+        have="$(cat "$dir/.nebula-package-version" 2>/dev/null || true)"
+        [[ -n "$want" && ( "$want" != "$have" || "$force" == --force ) ]] || continue
+        built="$dir.nebula-new"; rm -rf -- "$built"
+        if roundcube_build_tree "$built" "$dir" && webapp_swap_in "$dir" "$built"; then
+          echo "refreshed Roundcube in $dir (${have:-unknown} -> $want)"
+        else
+          rm -rf -- "$built"; echo "warning: could not refresh Roundcube in $dir" >&2
+        fi
+        ;;
+    esac
+  done < <(webapps_list)
+  flock -u 6
+}
+
+# After every apt/dpkg run (manual, panel or unattended-upgrades), rebuild the
+# served copies so package security fixes reach them.
+webapps_apt_hook() {
+  local hook=/etc/apt/apt.conf.d/80nebula-webapps
+  [[ -d /etc/apt/apt.conf.d ]] || return 0
+  cat > "$hook.tmp" <<'HOOK'
+// Managed by Nebula Panel: keep the served phpMyAdmin/webmail copies in step
+// with their packages (security updates included).
+DPkg::Post-Invoke { "if [ -x /usr/local/bin/nebula-helper ]; then /usr/local/bin/nebula-helper webapps-refresh >/dev/null 2>&1 || true; fi"; };
+HOOK
+  chmod 0644 "$hook.tmp"; mv -f "$hook.tmp" "$hook"
+}
+
+# The panel's own server must never serve the web apps (they get their own
+# origin) and must not follow cross-owner symlinks. Idempotent.
+# Text filter (stdin → stdout) behind panel_vhost_lockdown; kept pure so
+# tests can run it without root.
+panel_vhost_lockdown_filter() {
+  local text
+  text="$(cat)"
+  awk -v deny_done="$(grep -c 'NEBULA_WEBAPPS_DENY' <<<"$text" || true)" \
+      -v links_done="$(grep -c 'NEBULA_DISABLE_SYMLINKS' <<<"$text" || true)" '
+    /# NEBULA_WEBAPPS_DENY/ {print; next}
+    /# NEBULA_DISABLE_SYMLINKS/ {print; next}
+    {print}
+    !deny_done && $1 == "location" && index($0, "/(api|data|lib|views|bin)/") > 0 {
+      print "    location ~ \"^/(dbadmin|webmail|snappymail)-[0-9a-fA-F]{8}(/|$)\" { return 404; } # NEBULA_WEBAPPS_DENY"
+      deny_done=1
+    }
+    !links_done && /^[[:space:]]*root[[:space:]]+\/[^;]*;/ {
+      print "    disable_symlinks if_not_owner from=$document_root; # NEBULA_DISABLE_SYMLINKS"
+      links_done=1
+    }
+  ' <<<"$text"
+}
+
+panel_vhost_lockdown() {
+  local conf="$NGINX_AV/nebula" tmp
+  [[ -f "$conf" ]] || return 0
+  tmp="$(mktemp)"
+  panel_vhost_lockdown_filter < "$conf" > "$tmp"
+  if ! cmp -s "$tmp" "$conf"; then
+    cp -a "$conf" "$tmp.orig"
+    install -m 0640 -o root -g root "$tmp" "$conf"
+    if ! nginx -t >/dev/null 2>&1; then
+      install -m 0640 -o root -g root "$tmp.orig" "$conf"
+      rm -f "$tmp" "$tmp.orig"
+      echo "warning: Nginx rejected the panel server lockdown; it was not applied" >&2
+      return 1
+    fi
+    rm -f "$tmp.orig"
+  fi
+  rm -f "$tmp"
+  secure_vhost_file "$conf"
+}
+
+# Write (or remove) the separate web-app server. Its TLS certificate and
+# address family follow the panel server; an ADMIN_IP allowlist on the panel
+# also guards phpMyAdmin.
+webapps_vhost_apply() {
+  local panel_conf="$NGINX_AV/nebula" webroot cert key listen access tmp ufw_active=no
+  [[ -d "$NGINX_AV" && -f "$panel_conf" ]] || return 0
+  command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active" && ufw_active=yes
+  if [[ -z "$(webapps_list)" ]]; then
+    if [[ -e "$WEBAPPS_VHOST" ]]; then
+      rm -f "$NGINX_EN/nebula-webapps" "$WEBAPPS_VHOST" /etc/nebula-panel/webapps-port
+      nginx -t >/dev/null 2>&1 && systemctl reload nginx >/dev/null 2>&1 || true
+      [[ "$ufw_active" == yes ]] && ufw delete allow "${WEBAPPS_PORT}/tcp" >/dev/null 2>&1 || true
+    fi
+    return 0
+  fi
+  webroot="$(webapps_webroot)"
+  cert="$(awk '/^[[:space:]]*ssl_certificate[[:space:]]/ {sub(/;.*/, "", $2); print $2; exit}' "$panel_conf")"
+  key="$(awk '/^[[:space:]]*ssl_certificate_key[[:space:]]/ {sub(/;.*/, "", $2); print $2; exit}' "$panel_conf")"
+  [[ "$cert" =~ ^/[A-Za-z0-9._/-]+$ && "$key" =~ ^/[A-Za-z0-9._/-]+$ ]] \
+    || { echo "the panel server has no TLS certificate; web apps were not published" >&2; return 1; }
+  if grep -Eq '^[[:space:]]*listen[[:space:]]+127\.0\.0\.1:443[[:space:];]' "$panel_conf"; then
+    listen="    listen 127.0.0.1:${WEBAPPS_PORT} ssl;
+    listen [::1]:${WEBAPPS_PORT} ssl;"
+  else
+    listen="    listen ${WEBAPPS_PORT} ssl;
+    listen [::]:${WEBAPPS_PORT} ssl;"
+  fi
+  access="$(grep -E '^[[:space:]]*(allow|deny)[[:space:]]+[A-Za-z0-9.:/]+;[[:space:]]*$' "$panel_conf" | sed 's/^[[:space:]]*/        /' | awk '!seen[$0]++')"
+  tmp="$(mktemp)"
+  cat > "$tmp" <<EOF
+# Managed by Nebula Panel: bundled web apps (phpMyAdmin, webmail) on their
+# own origin, so a flaw in one of them can never script the panel.
+server {
+${listen}
+    server_name _;
+    ssl_certificate ${cert};
+    ssl_certificate_key ${key};
+    ssl_protocols TLSv1.2 TLSv1.3;
+    root ${webroot};
+    index index.php index.html;
+    client_max_body_size 72m;
+    disable_symlinks if_not_owner from=\$document_root;
+    # Plain HTTP sent to this TLS port: answer with the https:// address.
+    error_page 497 =301 https://\$host:\$server_port\$request_uri;
+
+    location ~ /\.(?!well-known) { deny all; return 404; }
+    location ~ "^/(webmail|snappymail)-[0-9a-fA-F]{8}/(bin|SQL|config|temp|logs|tests|vendor|installer|program/(include|lib|localization|steps))/" { return 404; }
+    location ~ "^/(webmail|snappymail)-[0-9a-fA-F]{8}/(README|INSTALL|LICENSE|CHANGELOG|UPGRADING|composer\.)[^/]*$" { return 404; }
+    location ~ "^/dbadmin-[0-9a-f]{8}/(libraries|setup|templates|tmp|vendor|sql|config\.)" { return 404; }
+    location ~ "^/dbadmin-[0-9a-f]{8}/" {
+${access}
+        location ~ \.php\$ {
+            include snippets/fastcgi-php.conf;
+            fastcgi_pass unix:/run/php/nebula-webapps.sock;
+        }
+    }
+    location ~ "^/(webmail|snappymail)-[0-9a-fA-F]{8}/" {
+        location ~ \.php\$ {
+            include snippets/fastcgi-php.conf;
+            fastcgi_pass unix:/run/php/nebula-webapps.sock;
+        }
+    }
+    location / { return 404; }
+}
+EOF
+  local had=no
+  [[ -f "$WEBAPPS_VHOST" ]] && { cp -a "$WEBAPPS_VHOST" "$tmp.orig"; had=yes; }
+  install -m 0640 -o root -g root "$tmp" "$WEBAPPS_VHOST"
+  ln -sfn "$WEBAPPS_VHOST" "$NGINX_EN/nebula-webapps"
+  if ! nginx -t >/dev/null 2>&1; then
+    if [[ "$had" == yes ]]; then install -m 0640 -o root -g root "$tmp.orig" "$WEBAPPS_VHOST"
+    else rm -f "$NGINX_EN/nebula-webapps" "$WEBAPPS_VHOST"; fi
+    rm -f "$tmp" "$tmp.orig"
+    echo "Nginx rejected the web-app server; web apps were not published" >&2
+    return 1
+  fi
+  rm -f "$tmp" "$tmp.orig"
+  systemctl reload nginx >/dev/null 2>&1 || true
+  printf '%s\n' "$WEBAPPS_PORT" > /etc/nebula-panel/webapps-port.tmp
+  chmod 0644 /etc/nebula-panel/webapps-port.tmp; mv -f /etc/nebula-panel/webapps-port.tmp /etc/nebula-panel/webapps-port
+  [[ "$ufw_active" == yes ]] && ufw allow "${WEBAPPS_PORT}/tcp" >/dev/null 2>&1 || true
+  # Only once the apps answer on their own origin, stop the panel origin
+  # from serving them.
+  panel_vhost_lockdown || true
+}
+
+# ---------------------------------------------------------------------------
+# security-migrate: bring sites created by older releases up to the current
+# isolation baseline (idempotent; run by install.sh and, once per helper
+# version, by the panel's scheduler). Every rewritten file is backed up and
+# restored if Nginx or PHP-FPM rejects the result.
+# ---------------------------------------------------------------------------
+MIGRATE_DIR=""
+declare -A MIGRATE_PHP=()
+
+migrate_backup() {
+  local path="$1" key
+  key="$(printf '%s' "$path" | sha256sum | awk '{print $1}')"
+  [[ -e "$MIGRATE_DIR/$key" ]] || { cp -a "$path" "$MIGRATE_DIR/$key"; printf '%s\t%s\n' "$key" "$path" >> "$MIGRATE_DIR/index"; }
+}
+
+migrate_restore() {
+  local pattern="$1" key path
+  [[ -f "$MIGRATE_DIR/index" ]] || return 0
+  while IFS=$'\t' read -r key path; do
+    # shellcheck disable=SC2053 # $pattern is deliberately a glob
+    if [[ "$path" == $pattern ]]; then cp -a "$MIGRATE_DIR/$key" "$path"; fi
+  done < "$MIGRATE_DIR/index"
+}
+
+# Add any of the required disabled functions a pool does not list yet.
+merge_disabled_functions() {
+  local current="$1" fn out="$1"
+  for fn in ${SITE_DISABLE_FUNCTIONS//,/ }; do
+    [[ ",${current// /}," == *",$fn,"* ]] || out="${out:+$out,}$fn"
+  done
+  printf '%s\n' "$out"
+}
+
+# Text filters (stdin → stdout) behind site_harden; pure, so tests can run
+# them without root.
+site_vhost_symlink_filter() {
+  local root="$1"
+  awk -v root="$root;" '{print} $1 == "root" && $2 == root {print "    disable_symlinks if_not_owner from=$document_root;"}'
+}
+
+site_pool_harden_filter() {
+  local base="$1" disabled="$2" with_tmp="${3:-yes}" text
+  text="$(sed -e "s#^php_admin_value\[open_basedir\] = ${base}:/tmp\$#php_admin_value[open_basedir] = ${base}#")"
+  if grep -q '^php_admin_value\[disable_functions\]' <<<"$text"; then
+    text="$(sed "s#^php_admin_value\[disable_functions\].*#php_admin_value[disable_functions] = ${disabled}#" <<<"$text")"
+  else
+    text+=$'\n'"php_admin_value[disable_functions] = ${disabled}"
+  fi
+  if [[ "$with_tmp" == yes ]] && ! grep -q '^php_admin_value\[sys_temp_dir\]' <<<"$text"; then
+    text+=$'\n'"php_admin_value[sys_temp_dir] = ${base}/tmp"
+  fi
+  printf '%s\n' "$text"
+}
+
+site_harden() {
+  local id="$1" domain conf pool tmp ver current merged
+  site_paths "$id"
+  [[ -f "$SITE_STATE" && ! -L "$SITE_STATE" ]] || return 0
+  getent passwd "$SITE_USER" >/dev/null 2>&1 || return 0
+  domain="$(sed -n 's/^domain=//p' "$SITE_STATE" | head -n 1)"
+  usermod -aG nebula-sites "$SITE_USER" 2>/dev/null || true
+  # Private temp folder (PHP no longer shares /tmp between sites).
+  if [[ -d "$SITE_BASE" && ! -L "$SITE_BASE" && ! -e "$SITE_BASE/tmp" && "$(stat -c %U "$SITE_BASE")" == "$SITE_USER" ]]; then
+    runuser -u "$SITE_USER" -- mkdir -m 0700 -- "$SITE_BASE/tmp" 2>/dev/null || true
+  fi
+  conf="$NGINX_AV/$domain"
+  if [[ -n "$domain" && -f "$conf" && ! -L "$conf" ]] && grep -q "Site ID: $id" "$conf"; then
+    if ! grep -q 'disable_symlinks' "$conf"; then
+      tmp="$(mktemp)"
+      site_vhost_symlink_filter "$SITE_PUBLIC" < "$conf" > "$tmp"
+      migrate_backup "$conf"
+      install -m 0640 -o root -g root "$tmp" "$conf"
+      rm -f "$tmp"
+    fi
+    secure_vhost_file "$conf"
+  fi
+  for pool in /etc/php/*/fpm/pool.d/nebula-site-"$id".conf; do
+    [[ -f "$pool" && ! -L "$pool" ]] || continue
+    ver="$(awk -F/ '{print $4}' <<<"$pool")"
+    current="$(sed -n 's/^php_admin_value\[disable_functions\][[:space:]]*=[[:space:]]*//p' "$pool" | tail -n 1)"
+    merged="$(merge_disabled_functions "${current:-}")"
+    tmp="$(mktemp)"
+    site_pool_harden_filter "$SITE_BASE" "$merged" "$([[ -d "$SITE_BASE/tmp" ]] && echo yes || echo no)" < "$pool" > "$tmp"
+    if ! cmp -s "$tmp" "$pool"; then
+      migrate_backup "$pool"
+      install -m 0640 -o root -g "$(panel_group)" "$tmp" "$pool"
+      MIGRATE_PHP["$ver"]=1
+    fi
+    rm -f "$tmp"
+    secure_pool_file "$pool"
+  done
+}
+
+security_migrate() {
+  local state id conf ver dir force="" incomplete=0
+  MIGRATE_DIR="$(mktemp -d)"
+  getent group nebula-sites >/dev/null 2>&1 || groupadd --system nebula-sites
+  shopt -s nullglob
+  for state in "$SITES_STATE"/*; do
+    id="$(basename "$state")"
+    [[ "$id" =~ ^[a-f0-9]{32}$ ]] || continue
+    site_harden "$id"
+  done
+  for conf in "$NGINX_AV"/*; do
+    if [[ -f "$conf" && ! -L "$conf" ]] && grep -q '^# Managed by Nebula Panel' "$conf"; then secure_vhost_file "$conf"; fi
+  done
+  shopt -u nullglob
+  if command -v nginx >/dev/null 2>&1; then
+    if nginx -t >/dev/null 2>&1; then
+      systemctl reload nginx >/dev/null 2>&1 || true
+    else
+      migrate_restore "$NGINX_AV/*"
+      incomplete=1
+      echo "warning: Nginx rejected the hardened site configuration; it was rolled back" >&2
+    fi
+  fi
+  for ver in "${!MIGRATE_PHP[@]}"; do
+    if "/usr/sbin/php-fpm${ver}" -t >/dev/null 2>&1; then
+      schedule_php_service reload "$ver"
+    else
+      migrate_restore "/etc/php/${ver}/fpm/pool.d/*"
+      incomplete=1
+      echo "warning: PHP-FPM ${ver} rejected the hardened pools; they were rolled back" >&2
+    fi
+  done
+  rm -rf "$MIGRATE_DIR"
+  # Web apps: root-owned, package-current copies on their own origin.
+  if [[ -r "$PANEL_ROOT_FILE" ]]; then
+    while IFS= read -r dir; do
+      if [[ "$(stat -c %U "$dir")" == nebula-webapps ]]; then force=--force; fi
+    done < <(webapps_list)
+    webapps_apt_hook
+    webapps_refresh "$force" || true
+    webapps_vhost_apply || true
+    panel_vhost_lockdown || true
+  fi
+  loopback_guard_apply || true
+  if (( incomplete )); then
+    echo "security baseline only partly applied; fix the configuration error above and run: sudo nebula-helper security-migrate" >&2
+    return 1
+  fi
+  echo "security baseline applied"
+}
+
+# ---------------------------------------------------------------------------
+# Loopback guard. Services the panel publishes on loopback only (App Store
+# containers, the Apache backend) are not reachable from the Internet, but
+# every local account could reach them, hosted sites included. Website users
+# (group nebula-sites) are refused those ports; MariaDB, Redis, mail and the
+# sites themselves stay reachable. Re-applied by the scheduler and after every
+# Docker change, so it survives reboots and firewall reloads.
+# ---------------------------------------------------------------------------
+loopback_guard_ports() {
+  local family="$1"
+  {
+    if command -v docker >/dev/null 2>&1; then
+      if [[ "$family" == 4 ]]; then
+        timeout 20s docker ps --format '{{.Ports}}' 2>/dev/null | grep -oE '127\.[0-9]+\.[0-9]+\.[0-9]+:[0-9]+' | awk -F: '{print $NF}'
+      else
+        timeout 20s docker ps --format '{{.Ports}}' 2>/dev/null | grep -oE '\[::1\]:[0-9]+' | awk -F: '{print $NF}'
+      fi
+    fi
+    if [[ "$family" == 4 ]] && apache_installed; then echo "$APACHE_BACKEND_PORT"; fi
+  } | grep -E '^[0-9]{1,5}$' | sort -un
+}
+
+loopback_guard_apply() {
+  local tool family dest chain=NEBULA-LOOPBACK port
+  getent group nebula-sites >/dev/null 2>&1 || return 0
+  for family in 4 6; do
+    if [[ "$family" == 4 ]]; then tool=iptables; dest=127.0.0.0/8; else tool=ip6tables; dest=::1/128; fi
+    command -v "$tool" >/dev/null 2>&1 || continue
+    "$tool" -w -N "$chain" >/dev/null 2>&1 || "$tool" -w -F "$chain" >/dev/null 2>&1 || continue
+    while IFS= read -r port; do
+      "$tool" -w -A "$chain" -p tcp -d "$dest" --dport "$port" \
+        -m owner --gid-owner nebula-sites --suppl-groups -j REJECT --reject-with tcp-reset >/dev/null 2>&1 \
+        || echo "warning: could not add the loopback guard rule for port $port ($tool)" >&2
+    done < <(loopback_guard_ports "$family")
+    "$tool" -w -C OUTPUT -o lo -j "$chain" >/dev/null 2>&1 || "$tool" -w -I OUTPUT 1 -o lo -j "$chain" >/dev/null 2>&1 || true
+  done
+  return 0
+}
+
+# Root-configured release source for self-updates. The panel's own settings
+# never choose where root fetches code from.
+update_repo() {
+  local repo="" cfg
+  [[ -r /etc/nebula-panel/update-repo ]] && repo="$(head -n 1 /etc/nebula-panel/update-repo)"
+  if [[ -z "$repo" && -r "$PANEL_ROOT_FILE" ]]; then
+    cfg="$(realpath "$(head -n 1 "$PANEL_ROOT_FILE")")/config.php"
+    [[ -f "$cfg" && "$(stat -c %u "$cfg")" == 0 ]] \
+      && repo="$(grep -oE "'repo'[[:space:]]*=>[^,]*'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+'" "$cfg" | grep -oE "[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+'" | tr -d "'" | head -n 1)"
+  fi
+  [[ -n "$repo" ]] || repo=lmb53/nebulapanel
+  [[ "$repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || die "the configured update repository is invalid"
+  printf '%s\n' "$repo"
 }
 
 CMD="${1:-}"; shift || true
@@ -1520,6 +2129,7 @@ case "$CMD" in
     done <<<"$VOLUMES"
     ARGS+=("$IMAGE")
     timeout 180s "${ARGS[@]}"
+    loopback_guard_apply
     ;;
 
   docker-pull)
@@ -1538,7 +2148,7 @@ case "$CMD" in
   docker-container)
     ACTION="${1:-}"; ID="${2:-}"; valid_docker_id "$ID"
     case "$ACTION" in
-      start|stop|restart) timeout 60s docker "$ACTION" "$ID" ;;
+      start|stop|restart) timeout 60s docker "$ACTION" "$ID"; loopback_guard_apply ;;
       remove) timeout 60s docker rm -f "$ID" ;;
       *) die "invalid container action" ;;
     esac
@@ -1599,9 +2209,9 @@ case "$CMD" in
     FILE="$NORMALIZED"
     case "$OP" in
       validate) echo "Compose file is valid" ;;
-      up) timeout 600s "${COMPOSE[@]}" -p "$NAME" -f "$FILE" up -d --remove-orphans ;;
+      up) timeout 600s "${COMPOSE[@]}" -p "$NAME" -f "$FILE" up -d --remove-orphans; loopback_guard_apply ;;
       down) timeout 180s "${COMPOSE[@]}" -p "$NAME" -f "$FILE" down ;;
-      stop|start|restart|pull) timeout 600s "${COMPOSE[@]}" -p "$NAME" -f "$FILE" "$OP" ;;
+      stop|start|restart|pull) timeout 600s "${COMPOSE[@]}" -p "$NAME" -f "$FILE" "$OP"; loopback_guard_apply ;;
       destroy) timeout 180s "${COMPOSE[@]}" -p "$NAME" -f "$FILE" down -v --remove-orphans ;;
       logs)
         [[ "$EXTRA" =~ ^[0-9]+$ && "$EXTRA" -ge 1 && "$EXTRA" -le 2000 ]] || die "invalid line limit"
@@ -1633,37 +2243,91 @@ case "$CMD" in
     timeout 10s tail -n "$LINES" -- "$LOG_PATH" | head -c 1048576
     ;;
 
-  # panel-update <staged-panel-source>
-  # Source must be staged by Nebula beneath its private data/_update folder.
+  # panel-update <40-hex-commit>
+  # Root fetches, verifies and installs the release itself, from the
+  # root-configured repository. The panel only names which commit: it can no
+  # longer hand root a tree (or a helper) of its own making.
   panel-update)
     exec 9>/run/lock/nebula-panel-update.lock
     flock -n 9 || die "another panel update is already running"
-    SOURCE="${1:-}"
+    SHA="${1:-}"
+    [[ "$SHA" =~ ^[a-f0-9]{40}$ ]] || die "the update must name a full 40-character release commit"
     [[ -r "$PANEL_ROOT_FILE" ]] || die "panel root is not configured; re-run install.sh"
     PANEL_ROOT="$(realpath "$(head -n 1 "$PANEL_ROOT_FILE")")"
-    SOURCE="$(realpath "$SOURCE" 2>/dev/null || true)"
-    [[ -n "$PANEL_ROOT" && -n "$SOURCE" ]] || die "update source not found"
-    [[ "$SOURCE" == "$PANEL_ROOT/data/_update/"* ]] || die "update source is outside the staging directory"
-    [[ -f "$SOURCE/index.php" && -f "$SOURCE/lib/bootstrap.php" ]] || die "invalid panel update source"
+    [[ -f "$PANEL_ROOT/index.php" && -d "$PANEL_ROOT/data" && ! -L "$PANEL_ROOT/data" ]] || die "panel installation not found"
     command -v rsync >/dev/null || die "rsync is required"
-    SNAP_DIR="$PANEL_ROOT/data/backups"; mkdir -p "$SNAP_DIR"
-    SNAP="$SNAP_DIR/pre-update-$(date +%Y%m%d-%H%M%S).tar.gz"
-    tar -czf "$SNAP" --exclude='data/backups' --exclude='data/_update' -C "$(dirname "$PANEL_ROOT")" "$(basename "$PANEL_ROOT")"
+    REPO="$(update_repo)"
+    SIGNERS=/etc/nebula-panel/update-signers
     PANEL_USER="$(stat -c %U "$PANEL_ROOT/data")"
-    chown "$PANEL_USER:$PANEL_USER" "$SNAP"; chmod 0600 "$SNAP"
-    find "$SNAP_DIR" -maxdepth 1 -type f -name 'pre-update-*.tar.gz' -printf '%T@ %p\n' \
-      | sort -nr | awk 'NR>5 {$1=""; sub(/^ /,""); print}' | xargs -r rm -f --
+    WORK="$(mktemp -d /var/tmp/nebula-update.XXXXXX)"; chmod 0700 "$WORK"
     MAINTENANCE="$PANEL_ROOT/data/maintenance"
-    install -m 0600 -o "$PANEL_USER" -g "$PANEL_USER" /dev/null "$MAINTENANCE"
     ROLLBACK_TMP="$(mktemp -d)"
-    cleanup_panel_update() { rm -f "$MAINTENANCE"; rm -rf "$ROLLBACK_TMP"; }
+    cleanup_panel_update() { rm -f -- "$MAINTENANCE"; rm -rf "$ROLLBACK_TMP" "$WORK"; }
     trap cleanup_panel_update EXIT
+    echo "==> Fetching ${REPO}@${SHA:0:12}"
+    SIGNED=no
+    if command -v git >/dev/null 2>&1; then
+      # No system or user git configuration takes part (signing programs,
+      # URL rewrites, hooks): only what is set here.
+      ugit() { env GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null HOME="$WORK" GIT_TERMINAL_PROMPT=0 git "$@"; }
+      ugit init -q "$WORK/repo"
+      timeout 300s env GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null HOME="$WORK" GIT_TERMINAL_PROMPT=0 git -C "$WORK/repo" fetch -q --depth 1 --no-tags "https://github.com/${REPO}.git" "$SHA" \
+        || die "could not fetch commit ${SHA} from ${REPO}"
+      [[ "$(ugit -C "$WORK/repo" rev-parse FETCH_HEAD)" == "$SHA" ]] || die "the fetched commit does not match the requested one"
+      if [[ -s "$SIGNERS" ]]; then
+        ugit -C "$WORK/repo" -c gpg.format=ssh -c gpg.ssh.allowedSignersFile="$SIGNERS" verify-commit "$SHA" >/dev/null 2>&1 \
+          || die "commit ${SHA:0:12} is not signed by a key in ${SIGNERS}; refusing to install it"
+        SIGNED=yes
+      fi
+      ugit -C "$WORK/repo" archive --format=tar "$SHA" > "$WORK/src.tar" || die "could not export the release"
+    else
+      [[ -s "$SIGNERS" ]] && die "git is required to verify signed releases (${SIGNERS} is configured)"
+      timeout 300s curl -fsSL "https://codeload.github.com/${REPO}/tar.gz/${SHA}" -o "$WORK/src.tar.gz" || die "download failed"
+      gzip -dc "$WORK/src.tar.gz" > "$WORK/src.tar" || die "the downloaded archive is invalid"
+    fi
+    ARCHIVE_SHA="$(sha256sum "$WORK/src.tar" | awk '{print $1}')"
+    echo "==> Checking the release"
+    tar -tf "$WORK/src.tar" > "$WORK/list" || die "the release archive is unreadable"
+    grep -Eq '^/|(^|/)\.\.(/|$)' "$WORK/list" && die "the release archive contains an unsafe path"
+    tar -tvf "$WORK/src.tar" | grep -Eq '^[^d-]' && die "the release archive contains links or special files"
+    mkdir -m 0700 "$WORK/src"
+    tar --no-same-owner --no-same-permissions -xf "$WORK/src.tar" -C "$WORK/src" || die "could not extract the release"
+    SOURCE=""
+    for CANDIDATE in "$WORK/src/panel" "$WORK"/src/*/panel; do
+      [[ -f "$CANDIDATE/index.php" && -f "$CANDIDATE/lib/bootstrap.php" ]] && { SOURCE="$CANDIDATE"; break; }
+    done
+    [[ -n "$SOURCE" ]] || die "the release has no panel/ directory"
+    for REQUIRED in index.php lib/bootstrap.php lib/auth.php lib/helpers.php bin/nebula-helper; do
+      [[ -f "$SOURCE/$REQUIRED" ]] || die "the release is incomplete (missing $REQUIRED)"
+    done
+    PHP_LINT="$(command -v php || true)"
+    if [[ -n "$PHP_LINT" ]]; then
+      while IFS= read -r -d '' PHPFILE; do
+        "$PHP_LINT" -l "$PHPFILE" >/dev/null 2>&1 || die "PHP validation failed for ${PHPFILE#"$SOURCE"/}"
+      done < <(find "$SOURCE" -type f -name '*.php' -print0)
+    fi
+    head -n1 "$SOURCE/bin/nebula-helper" | grep -q '^#!.*bash' && bash -n "$SOURCE/bin/nebula-helper" \
+      || die "the release's privileged helper failed validation"
+    # Snapshots are root's alone: the panel can neither plant one (rollback
+    # restores whatever it contains) nor point one somewhere else.
+    SNAP_DIR=/var/lib/nebula-panel-snapshots
+    install -d -m 0700 -o root -g root "$SNAP_DIR"
+    SNAP="$SNAP_DIR/pre-update-$(date +%Y%m%d-%H%M%S).tar.gz"
+    echo "==> Snapshotting the current release"
+    tar -czf "$SNAP" --exclude='data/backups' --exclude='data/_update' --exclude='data/file-staging' \
+      -C "$(dirname "$PANEL_ROOT")" "$(basename "$PANEL_ROOT")"
+    chmod 0600 "$SNAP"
+    find "$SNAP_DIR" -maxdepth 1 -type f -name 'pre-update-*.tar.gz' -printf '%T@\t%f\n' \
+      | sort -nr | awk -F'\t' 'NR>5 && $2 ~ /^pre-update-[0-9]{8}-[0-9]{6}\.tar\.gz$/ {print $2}' \
+      | while IFS= read -r OLD; do rm -f -- "$SNAP_DIR/$OLD"; done
+    runuser -u "$PANEL_USER" -- sh -c 'umask 077; : > "$1"' _ "$MAINTENANCE" || true
     rollback_panel_update() {
       tar -xzf "$SNAP" -C "$ROLLBACK_TMP"
       PREVIOUS="$ROLLBACK_TMP/$(basename "$PANEL_ROOT")"
       [[ -f "$PREVIOUS/index.php" ]] || die "automatic rollback snapshot is invalid"
       rsync -a --delete --exclude=data --exclude=config.php "$PREVIOUS/" "$PANEL_ROOT/"
     }
+    echo "==> Installing"
     if ! rsync -a --delete --exclude=data --exclude=config.php "$SOURCE/" "$PANEL_ROOT/"; then
       rollback_panel_update
       die "update copy failed; previous release restored"
@@ -1677,25 +2341,18 @@ case "$CMD" in
     find "$PANEL_ROOT" -path "$PANEL_ROOT/data" -prune -o -type f -exec chown root:root {} + -exec chmod 0644 {} +
     chown -R "$PANEL_USER:$PANEL_USER" "$PANEL_ROOT/data"
     chmod 0700 "$PANEL_ROOT/data"
-    # Refresh the privileged helper itself from the staged, hash-verified
-    # release so panel self-updates deliver helper changes too. Without this,
-    # new helper actions (e.g. a new webmail installer) fail with
-    # "unknown command" until install.sh is re-run by hand. Validate the staged
-    # helper first so a corrupt file can never brick the privileged surface.
-    if [[ -f "$SOURCE/bin/nebula-helper" ]]; then
-      if head -n1 "$SOURCE/bin/nebula-helper" | grep -q '^#!.*bash' && bash -n "$SOURCE/bin/nebula-helper" 2>/dev/null; then
-        install -m 0755 -o root -g root "$SOURCE/bin/nebula-helper" /usr/local/bin/nebula-helper
-        echo "helper=updated"
-      else
-        echo "helper=skipped-invalid" >&2
-      fi
-    fi
+    install -m 0755 -o root -g root "$SOURCE/bin/nebula-helper" /usr/local/bin/nebula-helper
+    echo "helper=updated"
     if [[ -f "$SOURCE/bin/nebula-recovery" ]] && bash -n "$SOURCE/bin/nebula-recovery"; then
       install -m 0755 -o root -g root "$SOURCE/bin/nebula-recovery" /usr/local/sbin/nebula-recovery
     fi
     cleanup_panel_update
     trap - EXIT
+    # Bring existing sites and web apps up to the new release's baseline.
+    /usr/local/bin/nebula-helper security-migrate >/dev/null 2>&1 || echo "warning: the security baseline could not be applied; run: sudo nebula-helper security-migrate" >&2
     echo "snapshot=$(basename "$SNAP")"
+    echo "archive_sha256=$ARCHIVE_SHA"
+    echo "signed=$SIGNED"
     ;;
 
   # dns-zone-put <domain> <base64-zone-file>
@@ -2046,12 +2703,16 @@ pm.max_requests = 500
 clear_env = yes
 security.limit_extensions = .php
 chdir = $SITE_PUBLIC
-php_admin_value[open_basedir] = $SITE_BASE:/tmp
+php_admin_value[open_basedir] = $SITE_BASE
+php_admin_value[sys_temp_dir] = $SITE_BASE/tmp
 php_admin_value[upload_tmp_dir] = $SITE_BASE/tmp
 php_admin_value[session.save_path] = $SITE_BASE/sessions
-php_admin_value[disable_functions] = exec,passthru,shell_exec,system,proc_open,popen
+php_admin_value[disable_functions] = $SITE_DISABLE_FUNCTIONS
 EOF
+    secure_pool_file "$FPM_DIR/nebula-site-${SITE_ID}.conf"
     install -d -m 0700 -o "$SITE_USER" -g "$SITE_USER" "$SITE_BASE/tmp" "$SITE_BASE/sessions"
+    getent group nebula-sites >/dev/null || groupadd --system nebula-sites
+    usermod -aG nebula-sites "$SITE_USER"
     PANEL_USER="$(stat -c %U "$(realpath "$(head -n 1 "$PANEL_ROOT_FILE")")/data")"
     setfacl -m "u:${PANEL_USER}:rx" "$SITES_ROOT"
     setfacl -m "u:${PANEL_USER}:rx,u:www-data:rx" "$SITE_BASE"
@@ -2066,6 +2727,9 @@ server {
     # as app.example.com must not silently gain www.app.example.com.
     server_name $DOMAIN;
     root $SITE_PUBLIC;
+    # Serve a symlink only when it and its target have the same owner, so a
+    # site cannot publish another site's files (or /etc) through a link.
+    disable_symlinks if_not_owner from=\$document_root;
     index index.php index.html index.htm;
     # Nginx's 1 MB default rejects ordinary CMS media uploads with HTTP 413.
     client_max_body_size 64m;
@@ -2079,6 +2743,7 @@ server {
     location ~ /\.(?!well-known).* { deny all; }
 }
 EOF
+    secure_vhost_file "$NGINX_AV/$DOMAIN"
     install -d -m 0700 -o root -g root "$SITES_STATE" "$SITES_TRASH"
     printf 'domain=%s\npath=%s\nuser=%s\ndevice=%s\ninode=%s\n' \
       "$DOMAIN" "$SITE_PUBLIC" "$SITE_USER" "$(stat -c %d "$SITE_PUBLIC")" "$(stat -c %i "$SITE_PUBLIC")" \
@@ -2134,7 +2799,7 @@ EOF
     OLD_POOL="$(grep -l "listen = $SOCK" /etc/php/*/fpm/pool.d/nebula-site-"${SITE_ID}".conf 2>/dev/null | head -1)"
     [[ -n "$OLD_POOL" ]] || die "managed site pool not found"
     OLD_VER="$(awk -F/ '{print $4}' <<<"$OLD_POOL")"
-    cp "$OLD_POOL" "$TARGET_DIR/nebula-site-${SITE_ID}.conf"
+    cp "$OLD_POOL" "$TARGET_DIR/nebula-site-${SITE_ID}.conf"; secure_pool_file "$TARGET_DIR/nebula-site-${SITE_ID}.conf"
     if [[ "$OLD_POOL" != "$TARGET_DIR/nebula-site-${SITE_ID}.conf" ]]; then rm -f "$OLD_POOL"; fi
     schedule_php_service reload "$PHPVER"
     [[ "$OLD_VER" == "$PHPVER" ]] || schedule_php_service reload "$OLD_VER"
@@ -2331,9 +2996,7 @@ EOF
       runuser -u "$SITE_USER" -- rsync -a --ignore-times --delete "$STAGE/public/" "$SITE_PUBLIC/" \
         || die "could not replace the website files"
       rm -rf --one-file-system "$STAGE"; STAGE=""
-      PANEL_USER="$(stat -c %U "$(dirname "$BACKUP_DIR")")"
-      setfacl -R -P -m "u:${PANEL_USER}:rX,u:www-data:rX" "$SITE_PUBLIC"
-      find "$SITE_PUBLIC" -type d -exec setfacl -m "d:u:${PANEL_USER}:rX,d:u:www-data:rX" {} +
+      site_tree_acl "$SITE_USER" "$SITE_PUBLIC"
       echo "restored files into $SITE_PUBLIC"
     fi
     for DB in "${DBS[@]}"; do
@@ -2450,7 +3113,7 @@ EOF
     cp "$NGINX_AV/$DOMAIN" "$CONF_BACKUP"
     rm -f "$NGINX_EN/$DOMAIN" "$NGINX_AV/$DOMAIN"
     if ! nginx -t || ! systemctl reload nginx; then
-      install -m 0644 -o root -g root "$CONF_BACKUP" "$NGINX_AV/$DOMAIN"
+      install -m 0640 -o root -g root "$CONF_BACKUP" "$NGINX_AV/$DOMAIN"
       ln -sf "$NGINX_AV/$DOMAIN" "$NGINX_EN/$DOMAIN"
       systemctl reload nginx >/dev/null 2>&1 || true
       die "nginx rejected site removal; previous configuration restored"
@@ -2463,7 +3126,14 @@ EOF
       ARCHIVE="$SITES_TRASH/${SITE_ID}-$(date +%Y%m%d-%H%M%S)"
       mv -- "$SITE_BASE" "$ARCHIVE"
       chown -hR root:root "$ARCHIVE"
-      printf 'domain=%s\nid=%s\ndeleted=%s\n' "$DOMAIN" "$SITE_ID" "$(date +%s)" > "$ARCHIVE/.nebula-site"
+      chmod 0700 "$ARCHIVE"
+      # The folder was the site's until a moment ago: .nebula-site may be a
+      # planted symlink. Remove whatever is there (rm never follows a link)
+      # and create the file fresh; noclobber refuses to write through
+      # anything that reappears.
+      rm -f -- "$ARCHIVE/.nebula-site"
+      ( set -C; printf 'domain=%s\nid=%s\ndeleted=%s\n' "$DOMAIN" "$SITE_ID" "$(date +%s)" > "$ARCHIVE/.nebula-site" ) \
+        || echo "warning: could not record the archived site's details" >&2
       # Remove other server-side traces of the site so nothing is left behind.
       rm -rf "/etc/nebula-panel/certs/$DOMAIN"
       rm -f "/var/log/nginx/${DOMAIN}.access.log" "/var/log/nginx/${DOMAIN}.error.log" \
@@ -2545,11 +3215,11 @@ EOF
       echo "php_admin_flag[display_errors] = ${DISPLAY}"
       echo "; NEBULA_SITE_SETTINGS_END"
     } > "$WORK/pool.new"
-    install -m 0644 -o root -g root "$WORK/vhost.new" "$CONF"
-    install -m 0644 -o root -g root "$WORK/pool.new" "$POOL"
+    install -m 0640 -o root -g root "$WORK/vhost.new" "$CONF"
+    install -m 0640 -o root -g "$(panel_group)" "$WORK/pool.new" "$POOL"
     if ! nginx -t >/dev/null 2>&1 || ! "/usr/sbin/php-fpm${PHPVER}" -t >/dev/null 2>&1; then
-      install -m 0644 -o root -g root "$WORK/vhost.orig" "$CONF"
-      install -m 0644 -o root -g root "$WORK/pool.orig" "$POOL"
+      install -m 0640 -o root -g root "$WORK/vhost.orig" "$CONF"
+      install -m 0640 -o root -g "$(panel_group)" "$WORK/pool.orig" "$POOL"
       die "Nginx or PHP-FPM rejected the settings; the previous configuration was kept"
     fi
     systemctl reload nginx
@@ -2598,8 +3268,16 @@ EOF
         PASSWORD="$(<"$TMP")"
         [[ ${#PASSWORD} -ge 12 && "$PASSWORD" != *:* && "$PASSWORD" =~ ^[[:print:]]+$ ]] || die "SFTP passwords must be 12+ printable characters without a colon"
         getent group nebula-sftp >/dev/null || groupadd --system nebula-sftp
+        # The site folder belongs to the site user until the chroot takes it,
+        # so .ssh may be anything the site planted there (a symlink to /etc,
+        # /usr/local/bin…). Never let root create, chown or chmod it: refuse
+        # anything but a real folder of the site's own, and create it as the
+        # site user.
+        site_own_dir_check "$SITE_BASE/.ssh"
+        runuser -u "$SITE_USER" -- sh -c 'umask 077; [ -d "$1" ] || mkdir -m 0700 -- "$1"; chmod 0700 -- "$1"' _ "$SITE_BASE/.ssh" \
+          || die "could not prepare the site's .ssh folder"
+        site_own_dir_check "$SITE_BASE/.ssh"
         usermod -aG nebula-sftp "$SITE_USER"
-        install -d -m 0700 -o "$SITE_USER" -g "$SITE_USER" "$SITE_BASE/.ssh"
         chown root:"$SITE_USER" "$SITE_BASE"; chmod 0750 "$SITE_BASE"
         if [[ ! -f "$SFTP_CONF" ]]; then
           cat > "$SFTP_CONF" <<'SSHD'
@@ -2636,18 +3314,25 @@ SSHD
   # freshly created site (symlinks stay links; ownership becomes the target's).
   site-clone-files)
     SRC_ID="${1:-}"; DST_ID="${2:-}"
-    site_state_check "$SRC_ID"; SRC_PUBLIC="$SITE_PUBLIC"
+    site_state_check "$SRC_ID"; SRC_PUBLIC="$SITE_PUBLIC"; SRC_USER="$SITE_USER"
     site_state_check "$DST_ID"; DST_PUBLIC="$SITE_PUBLIC"; DST_USER="$SITE_USER"
     [[ "$SRC_ID" != "$DST_ID" ]] || die "source and target are the same site"
     exec 8>"/run/lock/nebula-site-${DST_ID}.lock"
     flock -w 30 8 || die "another operation is running for the target site"
     echo "==> Copying website files"
-    rsync -a --delete --one-file-system --no-specials --no-devices "$SRC_PUBLIC/" "$DST_PUBLIC/" || die "copy failed"
-    chown -hR "$DST_USER:$DST_USER" "$DST_PUBLIC"
-    find "$DST_PUBLIC" -perm /6000 -exec chmod ug-s {} + 2>/dev/null || true
-    PANEL_USER="$(stat -c %U "$(realpath "$(head -n 1 "$PANEL_ROOT_FILE")")/data")"
-    setfacl -R -P -m "u:${PANEL_USER}:rX,u:www-data:rX" "$DST_PUBLIC"
-    find "$DST_PUBLIC" -type d -exec setfacl -m "d:u:${PANEL_USER}:rX,d:u:www-data:rX" {} +
+    # The source tree is writable by its site, so it is read as that site's
+    # user and written as the target's: root never walks either tree, so a
+    # folder swapped for a symlink mid-copy reaches nothing either site could
+    # not reach already. Symlinks are copied as links; devices are skipped.
+    runuser -u "$DST_USER" -- find "$DST_PUBLIC" -mindepth 1 -delete || die "could not empty the target website folder"
+    set +o pipefail
+    runuser -u "$SRC_USER" -- tar -C "$SRC_PUBLIC" --one-file-system --ignore-failed-read -cf - . \
+      | runuser -u "$DST_USER" -- tar -C "$DST_PUBLIC" --no-same-owner -pxf -
+    CLONE_RC=("${PIPESTATUS[@]}")
+    set -o pipefail
+    (( CLONE_RC[0] <= 1 && CLONE_RC[1] == 0 )) || die "copy failed"
+    runuser -u "$DST_USER" -- find "$DST_PUBLIC" -perm /6000 -exec chmod ug-s {} + 2>/dev/null || true
+    site_tree_acl "$DST_USER" "$DST_PUBLIC"
     echo "copied"
     ;;
 
@@ -2658,9 +3343,11 @@ SSHD
     for ARCHIVE in "$SITES_TRASH"/*; do
       NAME="$(basename "$ARCHIVE")"
       [[ "$NAME" =~ ^[a-f0-9]{32}-[0-9]{8}-[0-9]{6}$ && -d "$ARCHIVE" && ! -L "$ARCHIVE" ]] || continue
-      DOMAIN="$(sed -n 's/^domain=//p' "$ARCHIVE/.nebula-site" 2>/dev/null | head -n 1)"
+      META="$ARCHIVE/.nebula-site"
+      [[ -f "$META" && ! -L "$META" ]] || META=/dev/null
+      DOMAIN="$(sed -n 's/^domain=//p' "$META" 2>/dev/null | head -n 1)"
       [[ "$DOMAIN" =~ ^[a-z0-9.-]{1,253}$ ]] || DOMAIN=""
-      DELETED="$(sed -n 's/^deleted=//p' "$ARCHIVE/.nebula-site" 2>/dev/null | head -n 1)"
+      DELETED="$(sed -n 's/^deleted=//p' "$META" 2>/dev/null | head -n 1)"
       [[ "$DELETED" =~ ^[0-9]+$ ]] || DELETED="$(stat -c %Y "$ARCHIVE")"
       BYTES="$(timeout 20s du -sb --one-file-system -- "$ARCHIVE" 2>/dev/null | awk '{print $1}')"
       printf '%s\t%s\t%s\t%s\n' "$NAME" "$DOMAIN" "$DELETED" "${BYTES:-0}"
@@ -2751,6 +3438,7 @@ map $http_upgrade $connection_upgrade {
 }
 EOF
     fi
+    secure_vhost_file "$NGINX_AV/$DOMAIN"
     ln -sfn "$NGINX_AV/$DOMAIN" "$NGINX_EN/$DOMAIN"
     if ! nginx -t >/dev/null 2>&1; then
       if [[ -n "$PROXY_BACKUP" ]]; then
@@ -3196,6 +3884,7 @@ EOF
     apachectl configtest || die "Apache configuration test failed"
     systemctl enable apache2 >/dev/null 2>&1 || true
     systemctl restart apache2 || die "Apache installed but did not start; see: journalctl -u apache2"
+    loopback_guard_apply
     echo "Apache is running on 127.0.0.1:${APACHE_BACKEND_PORT} (Nginx keeps ports 80 and 443)"
     ;;
 
@@ -3226,17 +3915,16 @@ EOF
     apt-get -o Dpkg::Use-Pty=0 -o APT::Color=0 install -y --no-install-recommends phpmyadmin \
       || die "distribution-verified phpMyAdmin package install failed"
     apache_tame_if_pulled_in "$HAD_APACHE"
-    SRC=/usr/share/phpmyadmin
-    [[ -f "$SRC/index.php" ]] || die "phpMyAdmin package layout unexpected"
-    copy_tree_deref "$SRC" "$TARGET"
-    # Avoid an infinite producer piped into head: with pipefail, head closing
-    # the pipe makes tr exit on SIGPIPE and aborts an otherwise good install.
-    SECRET="$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')"
-    sed "s|\$cfg\['blowfish_secret'\] = '';|\$cfg['blowfish_secret'] = '${SECRET}';|" \
-      "$TARGET/config.sample.inc.php" > "$TARGET/config.inc.php"
-    mkdir -p "$TARGET/tmp"
-    chown -R nebula-webapps:nebula-webapps "$TARGET"
-    chmod 700 "$TARGET/tmp"
+    [[ -f /usr/share/phpmyadmin/index.php ]] || die "phpMyAdmin package layout unexpected"
+    exec 6>/run/lock/nebula-webapps.lock
+    flock -w 600 6 || die "another web-app operation is running"
+    trap 'rm -rf -- "$TARGET"' EXIT
+    pma_build_tree "$TARGET" || die "could not build the phpMyAdmin copy"
+    trap - EXIT
+    flock -u 6
+    pma_tickets_dir
+    webapps_apt_hook
+    webapps_vhost_apply || echo "warning: phpMyAdmin is installed but could not be published on port ${WEBAPPS_PORT}" >&2
     echo "phpMyAdmin installed at $TARGET"
     ;;
 
@@ -3246,6 +3934,7 @@ EOF
     webapp_dir "$TARGET" '^dbadmin-[0-9a-f]{8}$'
     [[ -f "$TARGET/config.inc.php" ]] || die "not a phpMyAdmin dir"
     rm -rf "$TARGET"
+    webapps_vhost_apply || true
     echo "removed $TARGET"
     ;;
 
@@ -3260,6 +3949,8 @@ EOF
     COOKIE_SECURE=false; [[ "$SIGNON_URL" == https://* ]] && COOKIE_SECURE=true
     CONFIG="$TARGET/config.inc.php"
     [[ -f "$CONFIG" ]] || die "phpMyAdmin config not found"
+    pma_tickets_dir
+    [[ -f "$TARGET/nebula-signon.php" ]] || pma_write_signon_script "$TARGET"
     if ! grep -q 'NEBULA_SIGNON' "$CONFIG"; then
       cat >> "$CONFIG" <<EOF
 
@@ -3357,9 +4048,9 @@ EOF
         done=1
       }
     ' "$CONF" > "$TMP/new.conf"
-    install -m 0644 -o root -g root "$TMP/new.conf" "$CONF"
+    install -m 0640 -o root -g root "$TMP/new.conf" "$CONF"
     if ! nginx -t >/dev/null 2>&1; then
-      install -m 0644 -o root -g root "$TMP/nginx.conf" "$CONF"
+      install -m 0640 -o root -g root "$TMP/nginx.conf" "$CONF"
       if [[ -f "$TMP/old-fullchain.pem" && -f "$TMP/old-privkey.pem" ]]; then
         install -m 0644 -o root -g root "$TMP/old-fullchain.pem" "$CERT_DIR/fullchain.pem"
         install -m 0600 -o root -g root "$TMP/old-privkey.pem" "$CERT_DIR/privkey.pem"
@@ -4087,71 +4778,13 @@ EOF
     fi
     [[ -f /etc/roundcube/defaults.inc.php ]] \
       || die "Roundcube's default configuration (/etc/roundcube/defaults.inc.php) is missing and could not be restored"
-    SRC=/usr/share/roundcube
-    [[ -f "$SRC/index.php" && -f "$SRC/program/include/iniset.php" ]] || die "Roundcube package layout unexpected"
     [[ ! -e "$TARGET" ]] || die "webmail target already exists: $TARGET"
+    exec 6>/run/lock/nebula-webapps.lock
+    flock -w 600 6 || die "another web-app operation is running"
     # From here on, a failure removes the half-built copy.
     trap 'rm -rf -- "$TARGET"' EXIT
-    copy_tree_deref "$SRC" "$TARGET"
-    rm -rf "$TARGET/installer"
-    # The packaged iniset.php pins INSTALL_PATH to /var/lib/roundcube/, which
-    # would make this copy read /etc/roundcube instead of its own config/.
-    RC_INISET="$TARGET/program/include/iniset.php"
-    if grep -q "define('INSTALL_PATH', '/var/lib/roundcube/')" "$RC_INISET"; then
-      sed -i "s#define('INSTALL_PATH', '/var/lib/roundcube/');#define('INSTALL_PATH', dirname(__DIR__, 2) . '/');#" "$RC_INISET"
-      grep -q "dirname(__DIR__, 2)" "$RC_INISET" || die "could not point Roundcube at its own install directory"
-    fi
-    # PHP 8.5 added a native array_first(). Roundcube 1.6.6 (Ubuntu 24.04)
-    # declares its own unconditionally, so every request dies with "Cannot
-    # redeclare function array_first()" (HTTP 500). Keep Roundcube's version
-    # only where PHP lacks one, as upstream does from 1.6.11. Also stop its
-    # bootstrap from touching E_STRICT, whose deprecation notice (PHP 8.4+)
-    # is emitted before Roundcube turns display_errors off.
-    RC_BOOT="$TARGET/program/lib/Roundcube/bootstrap.php"
-    if grep -q '^function array_first(\$array)$' "$RC_BOOT"; then
-      sed -i 's/^function array_first(\$array)$/function rcube_compat_array_first($array)/' "$RC_BOOT"
-      printf '\n%s\n' "if (!function_exists('array_first')) { function array_first(\$array) { return rcube_compat_array_first(\$array); } }" >> "$RC_BOOT"
-    fi
-    sed -i 's/E_ALL & ~E_NOTICE & ~E_STRICT,/E_ALL \& ~E_NOTICE \& ~E_DEPRECATED,/' "$RC_BOOT"
-    RC_PHP="$(command -v "php${PHP_VER}" || command -v php || true)"
-    if [[ -n "$RC_PHP" ]]; then
-      "$RC_PHP" -l "$RC_BOOT" >/dev/null || die "patched Roundcube bootstrap failed PHP validation"
-    fi
-    install -d -m 0755 "$TARGET/config"
-    cp /etc/roundcube/defaults.inc.php "$TARGET/config/defaults.inc.php"
-    if [[ -f /etc/roundcube/mimetypes.php ]]; then cp /etc/roundcube/mimetypes.php "$TARGET/config/mimetypes.php"; fi
-    # Only enable plugins that are actually present.
-    RC_PLUGINS=""
-    for plugin in archive zipdownload managesieve; do
-      if [[ -f "$TARGET/plugins/$plugin/$plugin.php" ]]; then RC_PLUGINS+="${RC_PLUGINS:+, }'$plugin'"; fi
-    done
-    install -d -m 0750 -o nebula-webapps -g nebula-webapps /var/lib/nebula-mail
-    DESKEY="$(od -An -N24 -tx1 /dev/urandom | tr -d ' \n')"
-    cat > "$TARGET/config/config.inc.php" <<EOF
-<?php
-/* Managed by Nebula Panel. */
-\$config = [];
-\$config['db_dsnw'] = 'sqlite:////var/lib/nebula-mail/roundcube.db?mode=0640';
-// Dovecot and Postfix run on this server: connect over loopback (the
-// public name may not resolve to, or route back to, this machine from
-// itself) while still verifying the certificate issued for ${HOSTFQDN}.
-\$config['imap_host'] = 'ssl://127.0.0.1:993';
-\$config['smtp_host'] = 'tls://127.0.0.1:587';
-\$config['smtp_user'] = '%u';
-\$config['smtp_pass'] = '%p';
-\$config['imap_conn_options'] = ['ssl' => ['verify_peer' => true, 'verify_peer_name' => true, 'peer_name' => '${HOSTFQDN}']];
-\$config['smtp_conn_options'] = ['ssl' => ['verify_peer' => true, 'verify_peer_name' => true, 'peer_name' => '${HOSTFQDN}']];
-\$config['support_url'] = '';
-\$config['product_name'] = 'Nebula Webmail';
-\$config['des_key'] = '${DESKEY:0:24}';
-\$config['plugins'] = [${RC_PLUGINS}];
-\$config['skin'] = 'elastic';
-\$config['enable_installer'] = false;
-\$config['log_dir'] = '/var/lib/nebula-mail/rc-logs/';
-\$config['temp_dir'] = '/var/lib/nebula-mail/rc-temp/';
-EOF
-    install -d -m 0750 -o nebula-webapps -g nebula-webapps /var/lib/nebula-mail/rc-logs /var/lib/nebula-mail/rc-temp
-    chown -R nebula-webapps:nebula-webapps "$TARGET"
+    roundcube_build_tree "$TARGET" "" "$HOSTFQDN" || die "could not build the webmail copy"
+    flock -u 6
     trap - EXIT
     # Tell the administrator now, rather than at the first sign-in, if
     # webmail will not be able to reach IMAP over verified TLS.
@@ -4166,6 +4799,8 @@ EOF
         echo "     Check: systemctl status dovecot; and that Dovecot uses the certificate for $HOSTFQDN"
       fi
     fi
+    webapps_apt_hook
+    webapps_vhost_apply || echo "warning: webmail is installed but could not be published on port ${WEBAPPS_PORT}" >&2
     echo "roundcube installed at $TARGET"
     ;;
 
@@ -4174,6 +4809,7 @@ EOF
     TARGET="${1:-}"; webapp_dir "$TARGET" '^webmail-[0-9a-f]{8}$'
     [[ -f "$TARGET/config/config.inc.php" ]] || die "not a roundcube dir"
     rm -rf "$TARGET"
+    webapps_vhost_apply || true
     echo "removed $TARGET"
     ;;
 
@@ -4183,7 +4819,32 @@ EOF
     TARGET="${1:-}"; webapp_dir "$TARGET" '^(webmail|snappymail)-[0-9a-fA-F]{8}$'
     [[ -f "$TARGET/index.php" ]] || die "not a webmail dir"
     rm -rf "$TARGET"
+    webapps_vhost_apply || true
     echo "removed $TARGET"
+    ;;
+
+  # security-migrate — apply the current isolation baseline to existing
+  # sites and web apps (idempotent).
+  security-migrate)
+    [[ $# -eq 0 ]] || die "unexpected arguments"
+    exec 5>/run/lock/nebula-panel-migrate.lock
+    flock -w 120 5 || die "another migration is running"
+    security_migrate
+    ;;
+
+  # webapps-refresh [--force] — rebuild served web-app copies whose package
+  # changed (run by the apt hook after every dpkg operation).
+  webapps-refresh)
+    [[ -z "${1:-}" || "${1:-}" == --force ]] || die "invalid option"
+    [[ -r "$PANEL_ROOT_FILE" ]] || exit 0
+    webapps_refresh "${1:-}"
+    ;;
+
+  # loopback-guard — refresh the website-user loopback port guard.
+  loopback-guard)
+    [[ $# -eq 0 ]] || die "unexpected arguments"
+    loopback_guard_apply
+    echo "loopback guard applied"
     ;;
 
   *)

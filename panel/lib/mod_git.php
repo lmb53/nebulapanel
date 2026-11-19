@@ -104,8 +104,7 @@ function git_status(string $domain): array
         return ['ok' => false, 'error' => 'Website document root is not accessible.'];
     }
     $docroot = (string) $site['docroot'];
-    $meta = git_get_meta($domain);
-    unset($meta['hook_hash']); // never sent to the browser
+    $meta = git_public_meta(git_get_meta($domain));
     [$code, $raw] = helper_cmd('site-git-status ' . escapeshellarg((string) $site['id']), 30);
     if ($code !== 0) {
         return ['ok' => false, 'error' => trim($raw) ?: 'Could not inspect repository.'];
@@ -216,12 +215,22 @@ function git_record_sync(string $domain, string $url, string $branch): bool
 {
     $status = git_status($domain);
     $hash = (string) ($status['commit'] ?? '');
+    // Keep the push-to-deploy webhook: a deploy must not switch it off.
+    $hook = array_intersect_key(git_get_meta($domain), array_flip(['hook_hash', 'hook_secret', 'hook_created']));
     return git_set_meta($domain, [
         'url' => git_redact_url($url),
         'branch' => $branch,
         'last_commit' => trim($hash),
         'last_sync' => date('c'),
-    ]);
+    ] + $hook);
+}
+
+/** Git metadata without webhook secrets, for API responses. */
+function git_public_meta(array $meta): array
+{
+    if (isset($meta['hook_created'])) { $meta['hook_signed'] = !empty($meta['hook_secret']); }
+    unset($meta['hook_hash'], $meta['hook_secret']);
+    return $meta;
 }
 
 /** The site's SSH deploy key (created on first use): add it to the repository as a read-only deploy key. */
@@ -238,8 +247,11 @@ function git_deploy_key(string $domain): array
 }
 
 /**
- * Create (or replace) the push-to-deploy webhook secret. Only its hash is
- * stored; the URL with the secret is shown once.
+ * Create (or replace) the push-to-deploy webhook. The URL carries no secret
+ * (URLs end up in access logs); the Git host proves each delivery with the
+ * shared secret instead: an HMAC-SHA256 signature of the body (GitHub,
+ * Gitea, Forgejo, Gogs, Bitbucket) or the X-Gitlab-Token header (GitLab).
+ * The secret is sealed at rest and shown once.
  */
 function git_hook_rotate(string $domain): array
 {
@@ -247,48 +259,52 @@ function git_hook_rotate(string $domain): array
     if ($site === null) { return ['ok' => false, 'error' => 'Website not found.']; }
     $meta = git_get_meta($domain);
     if (empty($meta['branch'])) { return ['ok' => false, 'error' => 'Connect a repository first.']; }
-    $token = bin2hex(random_bytes(24));
-    $meta['hook_hash'] = hash('sha256', $token);
+    $secret = bin2hex(random_bytes(24));
+    $meta['hook_secret'] = secret_seal($secret);
+    $meta['hook_hash'] = hash('sha256', $secret);
     $meta['hook_created'] = date('c');
     if (!git_set_meta($domain, $meta)) { return ['ok' => false, 'error' => 'Could not save the webhook.']; }
     audit('git.hook.rotate', $domain);
-    return ['ok' => true, 'url' => git_hook_url((string) $site['id'], $token)];
+    return ['ok' => true, 'url' => git_hook_url((string) $site['id']), 'secret' => $secret];
 }
 
 function git_hook_disable(string $domain): array
 {
     $meta = git_get_meta($domain);
-    unset($meta['hook_hash'], $meta['hook_created']);
+    unset($meta['hook_hash'], $meta['hook_secret'], $meta['hook_created']);
     if (!git_set_meta($domain, $meta)) { return ['ok' => false, 'error' => 'Could not save the webhook.']; }
     audit('git.hook.disable', $domain);
     return ['ok' => true];
 }
 
-function git_hook_url(string $siteId, string $token): string
+function git_hook_url(string $siteId): string
 {
     global $config;
     $remote = (string) ($_SERVER['REMOTE_ADDR'] ?? '');
     $trusted = in_array($remote, (array) ($config['trusted_proxies'] ?? []), true);
     $host = $trusted && !empty($_SERVER['HTTP_X_FORWARDED_HOST']) ? (string) $_SERVER['HTTP_X_FORWARDED_HOST'] : (string) ($_SERVER['HTTP_HOST'] ?? 'localhost');
     $host = preg_replace('/[^A-Za-z0-9.:\[\]-]/', '', $host) ?: 'localhost';
-    return 'https://' . $host . url('deploy-hook', ['site' => $siteId, 'token' => $token]);
+    return 'https://' . $host . url('deploy-hook', ['site' => $siteId]);
 }
 
 /**
- * Public push-to-deploy endpoint (no session): verify the site's secret and
- * start a background pull. Answers quickly; the deploy shows up under Jobs.
+ * Public push-to-deploy endpoint (no session): verify the delivery and start
+ * a background pull. Answers quickly; the deploy shows up under Jobs.
+ *
+ * Webhooks created before signed deliveries existed carried their secret in
+ * the URL (?token=); those keep working until the webhook is replaced, and
+ * the Websites page asks for that.
  */
-function git_hook_receive(string $siteId, string $token): array
+function git_hook_receive(string $siteId, array $headers, string $body, string $legacyToken = ''): array
 {
-    if (!preg_match('/^[a-f0-9]{32}$/', $siteId) || !preg_match('/^[a-f0-9]{48}$/', $token)) {
+    if (!preg_match('/^[a-f0-9]{32}$/', $siteId)) {
         return ['ok' => false, 'status' => 404, 'error' => 'Not found'];
     }
     $site = null;
     foreach (sites_stored() as $candidate) {
         if (($candidate['id'] ?? '') === $siteId) { $site = $candidate; break; }
     }
-    $hash = (string) ($site['git']['hook_hash'] ?? '');
-    if ($site === null || $hash === '' || !hash_equals($hash, hash('sha256', $token))) {
+    if ($site === null || !git_hook_verify((array) ($site['git'] ?? []), $headers, $body, $legacyToken)) {
         usleep(200000);
         return ['ok' => false, 'status' => 404, 'error' => 'Not found'];
     }
@@ -301,4 +317,32 @@ function git_hook_receive(string $siteId, string $token): array
     if (empty($started['ok'])) { return ['ok' => false, 'status' => 500, 'error' => $started['error'] ?? 'Could not start the deploy.']; }
     audit('git.hook.received', (string) $site['domain']);
     return ['ok' => true, 'status' => 202, 'job' => $started['job']['id']];
+}
+
+/**
+ * Does this delivery prove knowledge of the site's webhook secret?
+ * $headers uses lower-case names.
+ */
+function git_hook_verify(array $meta, array $headers, string $body, string $legacyToken = ''): bool
+{
+    $hash = (string) ($meta['hook_hash'] ?? '');
+    if ($hash === '') { return false; }
+    $sealed = (string) ($meta['hook_secret'] ?? '');
+    if ($sealed === '') {
+        // Legacy webhook: the secret travels in the URL.
+        return preg_match('/^[a-f0-9]{48}$/', $legacyToken) === 1 && hash_equals($hash, hash('sha256', $legacyToken));
+    }
+    $secret = secret_open($sealed);
+    if ($secret === '' || !hash_equals($hash, hash('sha256', $secret))) { return false; }
+    $expected = hash_hmac('sha256', $body, $secret);
+    foreach (['x-hub-signature-256', 'x-hub-signature'] as $name) {
+        $value = strtolower(trim((string) ($headers[$name] ?? '')));
+        if (str_starts_with($value, 'sha256=') && hash_equals($expected, substr($value, 7))) { return true; }
+    }
+    foreach (['x-gitea-signature', 'x-gogs-signature', 'x-forgejo-signature'] as $name) {
+        $value = strtolower(trim((string) ($headers[$name] ?? '')));
+        if ($value !== '' && hash_equals($expected, $value)) { return true; }
+    }
+    $token = (string) ($headers['x-gitlab-token'] ?? '');
+    return $token !== '' && hash_equals($hash, hash('sha256', $token));
 }

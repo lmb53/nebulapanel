@@ -8,20 +8,25 @@ jobs:
   syntax-and-smoke:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      # Pinned by commit (v4.2.2): a moved tag cannot change what CI runs.
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
       - name: Tools
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq python3-yaml acl shellcheck
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq python3-yaml acl shellcheck nginx-light
       - name: PHP syntax
         run: find panel tests -name '*.php' -print0 | xargs -0 -n1 php -l
       - name: JavaScript syntax
         run: for f in panel/assets/app.js panel/assets/passkeys.js panel/assets/vendor/lucide-subset.js tools/build-icons.js; do node --check "$f"; done
+      - name: Vendored libraries match their recorded checksums
+        run: cd panel/assets/vendor && sha256sum --strict -c ../../../tools/vendor.sha256
       - name: Icon subset is current
         run: node tools/build-icons.js && git diff --exit-code panel/assets/vendor/lucide-subset.js
       - name: Shell syntax and lint
         run: bash -n install.sh panel/bin/nebula-helper && shellcheck -S warning install.sh panel/bin/nebula-helper tests/*.sh
       - name: Smoke and security regressions
-        run: php tests/smoke.php && php tests/security.php && php tests/robustness.php && bash tests/helper-contracts.sh && bash tests/helper-sandbox.sh
+        run: php tests/smoke.php && php tests/security.php && php tests/robustness.php && bash tests/helper-contracts.sh && bash tests/helper-sandbox.sh && bash tests/helper-configs.sh
       - name: End-to-end session lifecycle
         run: php tests/session-lifecycle.php && php tests/session-api.php
       - name: End-to-end HTTP flows
-        run: php tests/http-flows.php
+        run: php tests/http-flows.php && php tests/offsite-roundtrip.php

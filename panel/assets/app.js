@@ -58,7 +58,36 @@
     if (!r.ok) throw new Error(data.error || 'HTTP ' + r.status);
     return data;
   }
+  // Sensitive actions (API tokens, panel users) need a recent sign-in. When
+  // the server answers reauth_required, ask for the password (and a
+  // two-factor code when the account uses one), confirm it, and retry once.
+  async function reauthenticate(info) {
+    const password = await promptDialog('Password', '', {
+      title: 'Confirm it’s you', icon: 'lock-keyhole', type: 'password', autocomplete: 'current-password', confirmLabel: 'Continue',
+      message: info.message || 'This change needs you to confirm your password.',
+    });
+    if (password === null) return false;
+    let code = '';
+    if (info.mfa) {
+      const entered = await promptDialog('Authentication code', '', {
+        title: 'Two-factor code', mono: true, autocomplete: 'one-time-code', confirmLabel: 'Confirm',
+        message: 'Enter the 6-digit code from your authenticator app, or a recovery code.',
+      });
+      if (entered === null) return false;
+      code = entered;
+    }
+    const res = await apiPostOnce('account', { action: 'reauth', password, code });
+    if (!res.ok) toast(res.error || 'That did not match.', 'error');
+    return !!res.ok;
+  }
   async function apiPost(endpoint, body) {
+    const res = await apiPostOnce(endpoint, body);
+    if (res && res.code === 'reauth_required' && await reauthenticate(res.reauth || {})) {
+      return apiPostOnce(endpoint, body);
+    }
+    return res;
+  }
+  async function apiPostOnce(endpoint, body) {
     try {
       const r = await fetch(api(endpoint), {
         method: 'POST',

@@ -201,7 +201,11 @@ document.addEventListener('DOMContentLoaded', () => {
     setBusy(button, true);
     const res = await apiPost('account', { action: 'password', current: document.getElementById('accCurPw').value, new: pw.value });
     setBusy(button, false);
-    if (res.ok) { toast('Password updated', 'success'); form.reset(); }
+    if (res.ok) {
+      toast(res.tokens_revoked ? `Password updated. Your ${res.tokens_revoked} API token${res.tokens_revoked === 1 ? ' was' : 's were'} revoked; create new ones if you still need them.` : 'Password updated', 'success');
+      form.reset();
+      if (res.tokens_revoked) loadTokens();
+    }
     else toast(res.error || 'Could not update the password', 'error');
   });
   // ---- Active sessions ----

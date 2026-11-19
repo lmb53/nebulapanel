@@ -21,6 +21,39 @@ function url(string $route = 'dashboard', array $params = []): string
     return base_url() . '/?' . http_build_query($params);
 }
 
+/**
+ * Port the bundled web apps (phpMyAdmin, webmail) are published on, or 0
+ * while they still share the panel's origin (a helper that has not applied
+ * the security baseline yet). The root helper writes the file.
+ */
+function webapps_port(): int
+{
+    static $port = null;
+    if ($port === null) {
+        $file = defined('WEBAPPS_PORT_FILE') ? WEBAPPS_PORT_FILE : '/etc/nebula-panel/webapps-port';
+        $raw = trim((string) @file_get_contents($file));
+        $port = preg_match('/^[0-9]{2,5}$/', $raw) && (int) $raw <= 65535 ? (int) $raw : 0;
+    }
+    return $port;
+}
+
+/**
+ * Absolute URL of a bundled web-app path (e.g. "/dbadmin-1a2b3c4d/") on the
+ * web apps' own origin: same host name as the panel, separate port. Keeping
+ * them off the panel's origin means script running in one of them can never
+ * read panel pages or act with the panel session.
+ */
+function webapps_url(string $path): string
+{
+    $path = '/' . ltrim($path, '/');
+    $port = webapps_port();
+    if ($port === 0) { return $path; }
+    $host = (string) ($_SERVER['HTTP_HOST'] ?? $_SERVER['SERVER_NAME'] ?? 'localhost');
+    $host = preg_match('/^\[[0-9A-Fa-f:.]+\]/', $host, $m) ? $m[0] : (string) preg_replace('/:\d+$/', '', $host);
+    if (!preg_match('/^(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9.-]+)$/', $host)) { $host = 'localhost'; }
+    return 'https://' . $host . ':' . $port . $path;
+}
+
 /** Build a URL to a static asset. */
 function asset(string $path): string
 {

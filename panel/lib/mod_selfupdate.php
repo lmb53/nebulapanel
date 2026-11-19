@@ -81,10 +81,13 @@ function su_check(): array
 }
 
 /**
- * Download the latest commit of the configured repository, check it (no
- * unsafe paths, links or special files, one top-level folder, required files
- * present, every PHP file lints), then hand it to the helper, which snapshots
- * the current install and swaps the release in.
+ * Resolve the latest commit of the configured branch, then ask the root
+ * helper to install exactly that commit. The helper fetches it itself from
+ * its root-configured repository, checks the tree (no unsafe paths, links or
+ * special files, required files present, every PHP file lints, a valid
+ * helper) and, when /etc/nebula-panel/update-signers exists, its signature,
+ * then snapshots the current install and swaps the release in. The panel no
+ * longer stages code for root to install.
  */
 function su_apply(): array
 {
@@ -96,88 +99,24 @@ function su_apply(): array
     $ref = (string) ($config['repo_ref'] ?? 'main');
     if (!preg_match('#^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$#', $repo)) { return $fail('The update repository is invalid.'); }
     $remote = su_remote_latest();
-    $sha = (string) ($remote['sha'] ?? '');
-    if (empty($remote['ok']) || !preg_match('/^[a-f0-9]{40}$/i', $sha)) { return $fail($remote['error'] ?? 'Could not resolve the update commit.'); }
+    $sha = strtolower((string) ($remote['sha'] ?? ''));
+    if (empty($remote['ok']) || !preg_match('/^[a-f0-9]{40}$/', $sha)) { return $fail($remote['error'] ?? 'Could not resolve the update commit.'); }
 
-    $work = APP_ROOT . '/data/_update';
-    run_cmd('rm -rf ' . escapeshellarg($work));
-    if (!@mkdir($work, 0700, true)) { return $fail('Could not create work directory.'); }
-    try {
-        $tar = $work . '/src.tar.gz';
-        $add('Downloading immutable commit ' . substr($sha, 0, 12) . '…');
-        if (!http_download('https://codeload.github.com/' . $repo . '/tar.gz/' . rawurlencode($sha), $tar, 300)) { return $fail('Download failed.'); }
-        $archiveHash = hash_file('sha256', $tar) ?: '';
-
-        [$listCode, $listing, $listError] = run_cmd('tar -tzf ' . escapeshellarg($tar), 120);
-        if ($listCode !== 0) { return $fail('Downloaded archive is invalid: ' . trim($listError ?: $listing)); }
-        // `tar -t` ends its listing with a newline; that trailing empty line is
-        // not an archive entry and must not be mistaken for an unsafe one.
-        $entries = array_values(array_filter(preg_split('/\r?\n/', rtrim($listing, "\r\n")), static fn($entry) => $entry !== ''));
-        if (!$entries) { return $fail('Downloaded archive is empty.'); }
-        $topLevels = [];
-        foreach ($entries as $entry) {
-            if (str_starts_with($entry, '/') || preg_match('#(^|/)\.\.(/|$)#', $entry)) { return $fail('Downloaded archive contains an unsafe path.'); }
-            $topLevels[explode('/', $entry, 2)[0]] = true;
+    $add('Installing commit ' . substr($sha, 0, 12) . ' (fetched and verified by the privileged helper)…');
+    [$applyCode, $applyOutput] = helper_cmd('panel-update ' . escapeshellarg($sha), 900);
+    if ($applyCode !== 0) {
+        $error = trim($applyOutput);
+        if (stripos($error, 'update source') !== false) {
+            $error = 'The privileged helper on this server predates verified updates. Re-run install.sh once to refresh it.';
         }
-        if (count($topLevels) !== 1) { return $fail('Release archive must contain exactly one top-level directory.'); }
-        [$typesCode, $types] = run_cmd('tar -tvzf ' . escapeshellarg($tar), 120);
-        if ($typesCode !== 0 || preg_match('/^[^d-]/m', $types)) { return $fail('Release archive contains links or special files.'); }
-
-        $add('Extracting and validating…');
-        [$extractCode, $extractOutput] = run_cmd('tar -xzf ' . escapeshellarg($tar) . ' -C ' . escapeshellarg($work) . ' 2>&1', 120);
-        if ($extractCode !== 0) { return $fail('Extract failed: ' . trim($extractOutput)); }
-        $src = su_find_panel_dir($work);
-        if ($src === null) { return $fail('Downloaded archive has no panel directory.'); }
-        foreach (['index.php', 'lib/bootstrap.php', 'lib/auth.php', 'lib/helpers.php', 'bin/nebula-helper'] as $required) {
-            if (!is_file($src . '/' . $required)) { return $fail('Staged release is incomplete (missing ' . $required . ').'); }
-        }
-        $phpCli = su_php_cli();
-        foreach (new RecursiveIteratorIterator(new RecursiveDirectoryIterator($src, FilesystemIterator::SKIP_DOTS)) as $file) {
-            if ($file->getExtension() !== 'php') { continue; }
-            [$code, $stdout, $error] = run_cmd(escapeshellarg($phpCli) . ' -l ' . escapeshellarg($file->getPathname()), 15);
-            if ($code !== 0) {
-                return $fail('Staged PHP validation failed: ' . (trim($error) ?: trim($stdout) ?: 'lint of ' . $file->getFilename() . ' exited ' . $code));
-            }
-        }
-
-        $add('Creating a required snapshot and applying the validated release…');
-        [$applyCode, $applyOutput] = helper_cmd('panel-update ' . escapeshellarg($src), 300);
-        if ($applyCode !== 0) { return $fail(trim($applyOutput) ?: 'Privileged update apply failed. Re-run install.sh to refresh the helper.'); }
-        su_write_version($sha, $ref, $archiveHash);
-        audit('selfupdate.apply', $repo . '@' . $ref . ' -> ' . substr($sha, 0, 12) . ' archive ' . substr($archiveHash, 0, 12));
-        $snapshot = preg_match('/snapshot=([^\s]+)/', $applyOutput, $match) ? $match[1] : null;
-        $add('Updated to ' . substr($sha, 0, 12) . '.');
-        return ['ok' => true, 'log' => $log, 'new_sha' => $sha, 'snapshot' => $snapshot, 'archive_sha256' => $archiveHash];
-    } finally {
-        run_cmd('rm -rf ' . escapeshellarg($work));
+        return $fail($error ?: 'Privileged update apply failed. Re-run install.sh to refresh the helper.');
     }
-}
-
-/**
- * A PHP *CLI* binary usable for `-l` lint checks. Under PHP-FPM, PHP_BINARY is
- * the php-fpm daemon, which does not support `-l` — using it makes every staged
- * validation fail (often with an empty error). Prefer a real `php` CLI, falling
- * back to a versioned CLI, then to PHP_BINARY only when it isn't the FPM SAPI.
- */
-function su_php_cli(): string
-{
-    foreach (['php', 'php' . PHP_MAJOR_VERSION . '.' . PHP_MINOR_VERSION, 'php8.5', 'php8.4', 'php8.3', 'php8.2', 'php8.1'] as $candidate) {
-        if (has_cmd($candidate)) {
-            return $candidate;
-        }
-    }
-    if (PHP_BINARY !== '' && stripos(PHP_BINARY, 'fpm') === false && stripos(PHP_SAPI, 'fpm') === false) {
-        return PHP_BINARY;
-    }
-    return 'php';
-}
-
-function su_find_panel_dir(string $root): ?string
-{
-    $entries=array_values(array_filter(scandir($root)?:[],fn($entry)=>$entry!=='.'&&$entry!=='..'&&$entry!=='src.tar.gz'));
-    if(count($entries)!==1)return null;
-    $top=$root.'/'.$entries[0];
-    $candidates=[$top.'/panel',$top];
-    $matches=array_values(array_filter($candidates,fn($dir)=>is_file($dir.'/index.php')&&is_file($dir.'/lib/bootstrap.php')));
-    return count($matches)===1?$matches[0]:null;
+    $archiveHash = preg_match('/archive_sha256=([a-f0-9]{64})/', $applyOutput, $m) ? $m[1] : '';
+    $signed = preg_match('/signed=yes/', $applyOutput) === 1;
+    su_write_version($sha, $ref, $archiveHash);
+    audit('selfupdate.apply', $repo . '@' . $ref . ' -> ' . substr($sha, 0, 12) . ' archive ' . substr($archiveHash, 0, 12) . ($signed ? ' (signature verified)' : ' (unsigned)'));
+    $snapshot = preg_match('/snapshot=([^\s]+)/', $applyOutput, $match) ? $match[1] : null;
+    $add($signed ? 'Release signature verified.' : 'Release is not signature-checked (add trusted keys to /etc/nebula-panel/update-signers to require it).');
+    $add('Updated to ' . substr($sha, 0, 12) . '.');
+    return ['ok' => true, 'log' => $log, 'new_sha' => $sha, 'snapshot' => $snapshot, 'archive_sha256' => $archiveHash, 'signed' => $signed];
 }

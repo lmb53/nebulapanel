@@ -62,6 +62,10 @@ if (($_GET['trash'] ?? '') === '1') {
 json_out([
     'ok'           => true,
     'available'    => sites_available(),
-    'sites'        => sites_with_runtime(),
+    // Webhook secrets never leave the server.
+    'sites'        => array_map(static function (array $site): array {
+        if (is_array($site['git'] ?? null)) { unset($site['git']['hook_hash'], $site['git']['hook_secret']); }
+        return $site;
+    }, sites_with_runtime()),
     'php_versions' => php_versions(),
 ]);

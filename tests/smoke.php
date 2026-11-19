@@ -199,7 +199,23 @@ $check(strpos($helperSource, 'pma-signon)') !== false && strpos($helperSource, "
 $check(strpos($helperSource, 'roundcube-install)') !== false && strpos($helperSource, 'webmail-remove)') !== false, 'Roundcube installer or generic webmail remover is missing');
 $check(strpos($helperSource, 'site-cron-put)') !== false && strpos($helperSource, 'crontab -u "$SITE_USER" "$TMP"') !== false, 'per-site crontabs do not run as the site user');
 $check(strpos($helperSource, 'ChrootDirectory %h') !== false && strpos($helperSource, 'ForceCommand internal-sftp') !== false, 'website SFTP is not chrooted to SFTP only');
-$check(strpos($helperSource, 'rsync -a --delete --one-file-system --no-specials --no-devices') !== false, 'site cloning can copy devices or cross filesystems');
+// Root must never create, chown, chmod or ACL a path inside a tenant's tree.
+$check(strpos($helperSource, 'install -d -m 0700 -o "$SITE_USER" -g "$SITE_USER" "$SITE_BASE/.ssh"') === false
+    && strpos($helperSource, 'site_own_dir_check "$SITE_BASE/.ssh"') !== false, 'enabling SFTP lets root follow a site-planted .ssh symlink');
+$check(strpos($helperSource, 'rm -f -- "$ARCHIVE/.nebula-site"') !== false && strpos($helperSource, '( set -C; printf') !== false,
+    'archiving a deleted site writes its metadata through a site-planted symlink');
+$check(preg_match('/^\s*setfacl -R -P -m "u:\$\{PANEL_USER\}:rX,u:www-data:rX" "\$(SITE|DST)_PUBLIC"/m', $helperSource) === 0
+    && strpos($helperSource, 'runuser -u "$owner" -- setfacl -R -P') !== false, 'tenant trees are ACL-walked as root');
+$check(strpos($helperSource, 'php_admin_value[open_basedir] = $SITE_BASE:/tmp') === false && strpos($helperSource, 'putenv') !== false,
+    'site PHP pools share /tmp or allow putenv (LD_PRELOAD escape)');
+$check(substr_count($helperSource, 'disable_symlinks if_not_owner') >= 3, 'site, panel or web-app servers follow cross-owner symlinks');
+$check(strpos($helperSource, '"$SOURCE/bin/nebula-helper" /usr/local/bin/nebula-helper') !== false
+    && strpos($helperSource, 'data/_update/"*') === false, 'self-update installs a helper staged by the panel');
+$check(strpos($helperSource, 'DPkg::Post-Invoke') !== false && strpos($helperSource, 'webapps-refresh') !== false, 'web-app copies do not follow package security updates');
+$check(strpos($helperSource, 'runuser -u "$SRC_USER" -- tar -C "$SRC_PUBLIC" --one-file-system') !== false
+    && strpos($helperSource, 'runuser -u "$DST_USER" -- tar -C "$DST_PUBLIC" --no-same-owner') !== false
+    && strpos($helperSource, 'rsync -a --delete --one-file-system --no-specials --no-devices "$SRC_PUBLIC/"') === false,
+    'site cloning must read and write as the two site users, never walk tenant trees as root');
 require_once APP_ROOT . '/lib/mod_sites.php';
 $check(empty(site_cron_add('missing.example', '* * * * *', 'echo hi')['ok']) && empty(site_sftp('missing.example', true, 'short')['ok'])
     && empty(site_clone('missing.example', 'copy.example', false)['ok']), 'site cron/SFTP/clone accept an unknown website');
@@ -236,7 +252,10 @@ $check(mail_log_time('not a log line') === null, 'a non-log line was parsed as a
 $check(mail_log_time(date('M d H:i:s', strtotime('+40 days')) . ' host postfix/smtp[1]: x') < time(), 'a year-less future timestamp was not rolled back a year');
 $check(mail_log_reason('Jul 01 00:00:00 h postfix/smtp[1]: A1: to=<a@b>, status=bounced (host said: 550 no such user)') === 'host said: 550 no such user', 'the SMTP reason was not extracted from a status line');
 $pmaSource = (string) file_get_contents(APP_ROOT . '/lib/mod_pma.php');
-$check(preg_match("/session_write_close\(\);\s*session_id\(''\);\s*session_name\('NebulaPmaSignon'\)/", $pmaSource) === 1, 'phpMyAdmin signon session is not isolated from the panel session ID');
+$check(strpos($pmaSource, "session_name('NebulaPmaSignon')") === false && strpos($pmaSource, 'pma_write_ticket(') !== false,
+    'phpMyAdmin sign-on must hand over a single-use ticket, never touch a PHP session from the panel pool');
+$check(strpos($helperSource, "session_name('NebulaPmaSignon')") !== false && strpos($helperSource, '@unlink($path);') !== false,
+    'phpMyAdmin sign-on script must start its own session and consume the ticket');
 $check(strpos($pmaSource, "\$state['accounts'][\$key] = \$account") === false, 'phpMyAdmin passwords are still persisted outside short-lived launches');
 $check(strpos($helperSource, 'cert-upload)') !== false && strpos($helperSource, 'openssl x509') !== false, 'custom certificate installation is missing');
 $check(strpos($helperSource, 'dns-zone-put)') !== false && strpos($helperSource, 'named-checkzone') !== false, 'authoritative DNS helper support is missing');

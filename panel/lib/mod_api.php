@@ -57,6 +57,11 @@ function api_tokens_for(int $ownerId): array
 function api_token_generate(string $label, string $role = 'auditor', array $scopes = ['get:health'], int $ttlDays = 30, array $allowedIps = [], ?array $owner = null): array
 {
     $owner = $owner ?? api_current_owner();
+    // Every token has an owner, except ones made by local maintenance code:
+    // an ownerless token has no role ceiling and outlives every account.
+    if ($owner === null && PHP_SAPI !== 'cli') {
+        return ['ok' => false, 'error' => 'Tokens can only be created from a signed-in browser session.'];
+    }
     if ($owner !== null && api_role_rank($role) > api_role_rank($owner['role'])) {
         return ['ok' => false, 'error' => 'A token cannot have more access than your own role.'];
     }
@@ -113,6 +118,24 @@ function api_token_revoke(string $id, ?int $ownerId = null): array
     });
     if (!empty($result['ok'])) { audit('api_token.revoke', $id); }
     return $result;
+}
+
+/**
+ * Revoke every token a person owns. Called when their credentials change
+ * (password, two-factor reset, account recovery): a token minted from a
+ * hijacked session must not outlive the fix.
+ */
+function api_tokens_revoke_owner(int $ownerId, string $reason): int
+{
+    $removed = 0;
+    with_api_tokens_lock(static function () use ($ownerId, &$removed): array {
+        $tokens = api_tokens_load();
+        $kept = array_values(array_filter($tokens, static fn($t) => (int) ($t['owner_id'] ?? 0) !== $ownerId));
+        $removed = count($tokens) - count($kept);
+        return ['ok' => $removed === 0 || api_tokens_save($kept)];
+    });
+    if ($removed > 0) { audit('api_token.revoke_all', 'owner ' . $ownerId . ': ' . $removed . ' token(s), ' . $reason); }
+    return $removed;
 }
 
 function api_token_authenticate(string $plain): bool

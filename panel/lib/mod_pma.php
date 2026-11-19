@@ -36,7 +36,8 @@ function pma_installed(): bool
 function pma_url(): ?string
 {
     $s = pma_get();
-    return $s['url'] ?? null;
+    // Stored as a path; served on the web apps' own origin.
+    return isset($s['url']) ? webapps_url((string) $s['url']) : null;
 }
 
 function pma_save(array $state): bool
@@ -207,22 +208,49 @@ function pma_accept_signon(string $token): void
         http_response_code(403); exit('phpMyAdmin account is unavailable.');
     }
     audit('pma.launch', $database);
-    // PHP keeps the current session ID in process memory after closing the
-    // panel session. Clear it before changing names so the short-lived
-    // phpMyAdmin signon session can never replace/delete nebula_sess.
-    session_write_close();
-    session_id('');
-    session_name('NebulaPmaSignon');
-    global $https;
-    session_set_cookie_params(['lifetime' => 0, 'path' => '/', 'httponly' => true, 'secure' => (bool) $https, 'samesite' => 'Lax']);
-    session_start();
-    $_SESSION['PMA_single_signon_user'] = (string) $account['user'];
-    $_SESSION['PMA_single_signon_password'] = (string) $account['password'];
-    $_SESSION['PMA_single_signon_host'] = 'localhost';
-    session_write_close();
-    $target = rtrim((string) ($state['url'] ?? ''), '/') . '/index.php?route=/database/structure&db=' . rawurlencode($database);
+    // Hand the short-lived credentials to phpMyAdmin through a single-use
+    // ticket that its own sign-on script (in the web-app pool, on the web
+    // apps' origin) consumes. phpMyAdmin keeps its session where its pool
+    // stores sessions, which the panel pool cannot write to directly.
+    $ticket = pma_write_ticket([
+        'user' => (string) $account['user'],
+        'password' => (string) $account['password'],
+        'db' => $database,
+        'exp' => time() + 60,
+    ]);
+    if ($ticket === null) {
+        http_response_code(500); exit('Could not hand the sign-on to phpMyAdmin. Open phpMyAdmin from the panel again.');
+    }
+    $target = webapps_url(rtrim((string) ($state['url'] ?? ''), '/') . '/nebula-signon.php') . '?t=' . $ticket;
+    header('Cache-Control: no-store');
     header('Location: ' . $target);
     exit;
+}
+
+/** Folder the panel drops single-use phpMyAdmin sign-on tickets into. */
+function pma_tickets_dir(): string
+{
+    return defined('PMA_TICKETS_DIR') ? PMA_TICKETS_DIR : '/var/lib/nebula-pma-tickets';
+}
+
+/** Write one ticket (0640, readable by the web-app pool) and return its id. */
+function pma_write_ticket(array $payload): ?string
+{
+    $dir = pma_tickets_dir();
+    if (!is_dir($dir) || is_link($dir)) { return null; }
+    // Drop tickets nobody redeemed.
+    foreach (glob($dir . '/*.json') ?: [] as $stale) {
+        if (time() - (int) @filemtime($stale) > 120) { @unlink($stale); }
+    }
+    $id = bin2hex(random_bytes(24));
+    $path = $dir . '/' . $id . '.json';
+    $handle = @fopen($path, 'x');
+    if ($handle === false) { return null; }
+    @chmod($path, 0640);
+    $ok = fwrite($handle, (string) json_encode($payload, JSON_UNESCAPED_SLASHES)) !== false;
+    fclose($handle);
+    if (!$ok) { @unlink($path); return null; }
+    return $id;
 }
 
 /** Install phpMyAdmin into the web document root via the helper. */
@@ -232,8 +260,7 @@ function pma_install(?callable $onOutput = null): array
         return ['ok' => false, 'error' => 'Privileged helper not installed.'];
     }
     if (pma_installed()) {
-        $s = pma_get();
-        return ['ok' => true, 'url' => $s['url']];
+        return ['ok' => true, 'url' => pma_url()];
     }
     $name = 'dbadmin-' . bin2hex(random_bytes(4));
     $target = dirname(APP_ROOT) . '/' . $name;
@@ -255,7 +282,7 @@ function pma_install(?callable $onOutput = null): array
     $configured = pma_ensure_signon();
     if (empty($configured['ok'])) { return $configured; }
     audit('pma.install', $target);
-    return ['ok' => true, 'url' => $url];
+    return ['ok' => true, 'url' => webapps_url($url)];
 }
 
 /** Remove phpMyAdmin and clear state. */

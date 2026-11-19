@@ -166,7 +166,13 @@ switch ($route) {
         require_once APP_ROOT . '/lib/mod_api.php';
         require_once APP_ROOT . '/lib/mod_sites.php';
         require_once APP_ROOT . '/lib/mod_git.php';
-        $hook = git_hook_receive((string) ($_GET['site'] ?? ''), (string) ($_GET['token'] ?? ''));
+        $hookHeaders = [];
+        foreach (['x-hub-signature-256', 'x-hub-signature', 'x-gitea-signature', 'x-gogs-signature', 'x-forgejo-signature', 'x-gitlab-token'] as $hookHeader) {
+            $serverKey = 'HTTP_' . strtoupper(str_replace('-', '_', $hookHeader));
+            if (isset($_SERVER[$serverKey])) { $hookHeaders[$hookHeader] = (string) $_SERVER[$serverKey]; }
+        }
+        $hookBody = (string) file_get_contents('php://input', false, null, 0, 26 * 1048576);
+        $hook = git_hook_receive((string) ($_GET['site'] ?? ''), $hookHeaders, $hookBody, (string) ($_GET['token'] ?? ''));
         json_out(array_diff_key($hook, ['status' => true]), (int) $hook['status']);
         return;
 

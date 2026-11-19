@@ -325,6 +325,60 @@ $jobs = $a->api('jobs');
 $check(in_array((string) ($hookRes['job'] ?? ''), array_column((array) ($jobs['jobs'] ?? []), 'id'), true), 'administrators see webhook deploys under Jobs');
 @unlink($app . '/data/sites.json');
 
+// 14b. Signed webhooks: the secret proves itself in a header, never in the URL.
+$signedSite = str_repeat('d', 32);
+$signedSecret = str_repeat('ef', 24);
+file_put_contents($app . '/data/sites.json', json_encode([['id' => $signedSite, 'domain' => 'signed.example.com', 'docroot' => $fmRoot . '/' . $signedSite . '/public',
+    'git' => ['url' => 'https://example.com/r.git', 'branch' => 'main', 'hook_secret' => $signedSecret, 'hook_hash' => hash('sha256', $signedSecret), 'hook_created' => date('c')]]]));
+$payload = '{"ref":"refs/heads/main"}';
+[$status] = $anon->request('POST', 'deploy-hook&site=' . $signedSite, $payload, ['Content-Type: application/json', 'X-Hub-Signature-256: sha256=' . hash_hmac('sha256', $payload, $signedSecret)]);
+$check($status === 202, 'a delivery signed with the webhook secret deploys');
+[$status] = $anon->request('POST', 'deploy-hook&site=' . $signedSite, $payload, ['Content-Type: application/json', 'X-Hub-Signature-256: sha256=' . hash_hmac('sha256', $payload . ' ', $signedSecret)]);
+$check($status === 404, 'a signature over a different body is refused');
+[$status] = $anon->request('POST', 'deploy-hook&site=' . $signedSite . '&token=' . $signedSecret, $payload, ['Content-Type: application/json']);
+$check($status === 404, 'a signed webhook ignores a secret put in the URL');
+[$status] = $anon->request('POST', 'deploy-hook&site=' . $signedSite, $payload, ['Content-Type: application/json', 'X-Gitlab-Token: ' . $signedSecret]);
+$check($status === 202, 'GitLab\'s secret-token header is accepted');
+$sitesView = $a->api('sites');
+$exposed = json_encode($sitesView['sites'] ?? []);
+$check(!str_contains((string) $exposed, $signedSecret) && !str_contains((string) $exposed, hash('sha256', $signedSecret)), 'webhook secrets never appear in the sites API');
+@unlink($app . '/data/sites.json');
+
+// 14c. Tokens and panel users need a recent password check; credential
+// changes revoke the account's tokens.
+$fresh = $browser();
+$check($fresh->login('flow-admin', $newPassword), 'a second administrator session signs in');
+$res = $fresh->api('account', ['action' => 'token-generate', 'label' => 'ci', 'role' => 'admin', 'scopes' => ['get:health'], 'ttl_days' => 7]);
+$check(($res['ok'] ?? false) === true && str_starts_with((string) ($res['token'] ?? ''), 'nbp_'), 'a freshly signed-in session can create a token');
+$bearer = (string) ($res['token'] ?? '');
+// Age the session's sign-in past the recent-authentication window.
+$sessionFile = rtrim((string) ini_get('session.save_path'), '/') . '/sess_' . ($fresh->cookies['nebula_sess'] ?? '');
+$sessionData = (string) @file_get_contents($sessionFile);
+$aged = preg_replace('/auth_at\|i:\d+;/', 'auth_at|i:1;', $sessionData, 1, $replaced);
+$check($replaced === 1 && @file_put_contents($sessionFile, $aged) !== false, 'the test can age the session (found its sign-in time)');
+$res = $fresh->api('account', ['action' => 'token-generate', 'label' => 'later', 'role' => 'admin', 'scopes' => ['get:health'], 'ttl_days' => 7]);
+$check(($res['status'] ?? 0) === 403 && ($res['code'] ?? '') === 'reauth_required', 'an old session must confirm its password before creating a token');
+$res = $fresh->api('users', ['action' => 'create', 'username' => 'backdoor', 'password' => 'Another strong pass 1', 'role' => 'admin']);
+$check(($res['code'] ?? '') === 'reauth_required', 'an old session must confirm its password before creating a user');
+$res = $fresh->api('account', ['action' => 'reauth', 'password' => 'not the password at all', 'code' => '']);
+$check(($res['ok'] ?? true) === false, 'a wrong password does not confirm the session');
+$res = $fresh->api('account', ['action' => 'reauth', 'password' => $newPassword, 'code' => '']);
+$check(($res['ok'] ?? false) === true, 'the right password confirms the session');
+$res = $fresh->api('account', ['action' => 'token-generate', 'label' => 'later', 'role' => 'admin', 'scopes' => ['get:health'], 'ttl_days' => 7]);
+$check(($res['ok'] ?? false) === true, 'after confirming, the token is created');
+[$status, $out] = $anon->request('POST', 'api/tokens', json_encode(['action' => 'generate', 'label' => 'x', 'role' => 'admin', 'scopes' => ['*']]),
+    ['Accept: application/json', 'Content-Type: application/json', 'Authorization: Bearer ' . $bearer]);
+$check($status === 403, 'a bearer token cannot mint tokens');
+[$status] = $anon->request('GET', 'api/health', null, ['Accept: application/json', 'Authorization: Bearer ' . $bearer]);
+$check($status === 200, 'the token works before the password changes');
+$res = $fresh->api('account', ['action' => 'password', 'current' => $newPassword, 'new' => $password]);
+$check(($res['ok'] ?? false) === true && ($res['tokens_revoked'] ?? 0) === 2, 'changing the password revokes the account\'s tokens');
+[$status] = $anon->request('GET', 'api/health', null, ['Accept: application/json', 'Authorization: Bearer ' . $bearer]);
+$check($status === 401, 'a revoked token no longer authenticates');
+$newPassword = $password;
+// The password change signed out every other session; carry on with this one.
+$a = $fresh;
+
 // 12. Long actions run as background jobs that survive the request.
 $res = $a->api('jobs', ['action' => 'start', 'endpoint' => 'backups', 'body' => ['action' => 'schedule', 'enabled' => false, 'frequency' => 'weekly', 'hour' => 4, 'weekday' => 2, 'keep' => 5]]);
 $jobId = (string) ($res['job']['id'] ?? '');

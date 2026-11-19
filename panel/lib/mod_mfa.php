@@ -252,7 +252,11 @@ function mfa_admin_reset(int $uid): array
         $user['session_version'] = max(1, (int) ($user['session_version'] ?? 1)) + 1;
         return null;
     });
-    if (!empty($res['ok'])) { audit('mfa.admin_reset', 'id ' . $uid); }
+    if (!empty($res['ok'])) {
+        audit('mfa.admin_reset', 'id ' . $uid);
+        require_once APP_ROOT . '/lib/mod_api.php';
+        api_tokens_revoke_owner($uid, 'two-factor sign-in reset');
+    }
     return $res;
 }
 

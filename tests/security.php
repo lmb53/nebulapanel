@@ -6,6 +6,10 @@ $tmp = sys_get_temp_dir() . '/nebula-security-' . bin2hex(random_bytes(6));
 mkdir($tmp, 0700, true);
 define('APP_ROOT', $root . '/panel');
 define('DATA_DIR', $tmp);
+define('WEBAPPS_PORT_FILE', $tmp . '/webapps-port');
+define('PMA_TICKETS_DIR', $tmp . '/pma-tickets');
+file_put_contents($tmp . '/webapps-port', "2096\n");
+mkdir($tmp . '/pma-tickets', 0700);
 $config = require APP_ROOT . '/config.php';
 $_SESSION = [];
 $_SERVER['REMOTE_ADDR'] = '127.0.0.1';
@@ -195,6 +199,50 @@ $remove = static function (string $path) use (&$remove): void {
     }
     @rmdir($path);
 };
+
+// Bundled web apps live on their own origin (same host, separate port).
+$_SERVER['HTTP_HOST'] = 'panel.example.com';
+$check(webapps_url('/dbadmin-1a2b3c4d/') === 'https://panel.example.com:2096/dbadmin-1a2b3c4d/', 'web-app links use the web-app port');
+$_SERVER['HTTP_HOST'] = 'panel.example.com:8443';
+$check(webapps_url('webmail-1a2b3c4d/') === 'https://panel.example.com:2096/webmail-1a2b3c4d/', 'the panel port is replaced, not appended');
+$_SERVER['HTTP_HOST'] = '[2001:db8::1]:443';
+$check(webapps_url('/x/') === 'https://[2001:db8::1]:2096/x/', 'IPv6 hosts keep their brackets');
+$_SERVER['HTTP_HOST'] = 'evil.example/"><script>';
+$check(webapps_url('/x/') === 'https://localhost:2096/x/', 'a malformed Host header never reaches a web-app link');
+
+// phpMyAdmin sign-on tickets: single files, readable by the web-app group only.
+require_once APP_ROOT . '/lib/mod_pma.php';
+$ticket = pma_write_ticket(['user' => 'u', 'password' => 'p', 'db' => 'd', 'exp' => time() + 60]);
+$ticketFile = PMA_TICKETS_DIR . '/' . $ticket . '.json';
+$check(is_string($ticket) && preg_match('/^[a-f0-9]{48}$/', $ticket) === 1 && is_file($ticketFile), 'a sign-on ticket is written under a random name');
+$check((fileperms($ticketFile) & 0777) === 0640, 'sign-on tickets are not world-readable');
+$check(pma_write_ticket(['x' => 1]) !== $ticket, 'every sign-on gets its own ticket');
+
+// Deploy webhooks: HMAC or GitLab token; legacy URL tokens only for legacy hooks.
+$secret = str_repeat('ab', 24);
+$signed = ['hook_secret' => $secret, 'hook_hash' => hash('sha256', $secret)];
+$body = '{"ref":"refs/heads/main"}';
+$check(git_hook_verify($signed, ['x-hub-signature-256' => 'sha256=' . hash_hmac('sha256', $body, $secret)], $body), 'a GitHub-style signature verifies');
+$check(git_hook_verify($signed, ['x-gitea-signature' => hash_hmac('sha256', $body, $secret)], $body), 'a Gitea-style signature verifies');
+$check(!git_hook_verify($signed, ['x-hub-signature-256' => 'sha256=' . hash_hmac('sha256', $body, 'other')], $body), 'a signature under another secret is refused');
+$check(!git_hook_verify($signed, [], $body, $secret), 'a signed webhook ignores URL tokens');
+$check(git_hook_verify(['hook_hash' => hash('sha256', $secret)], [], $body, $secret), 'a legacy webhook keeps its URL token');
+$check(!git_hook_verify([], ['x-gitlab-token' => $secret], $body), 'a site without a webhook accepts nothing');
+$check(git_public_meta($signed + ['hook_created' => 'now']) === ['hook_created' => 'now', 'hook_signed' => true], 'webhook secrets are removed from API metadata');
+
+// Off-site manifests are authenticated: any edit breaks the MAC.
+require_once APP_ROOT . '/lib/mod_offsite.php';
+$key = offsite_mac_key('a long passphrase', str_repeat("\x01", 16));
+$manifest = ['file' => 'site-20260101-000000.tar.gz', 'sha256' => str_repeat('a', 64), 'databases' => ['b', 'a'], 'format' => 2, 'mac' => str_repeat('c', 64)];
+$manifest['manifest_mac'] = hash_hmac('sha256', offsite_manifest_canonical($manifest), $key);
+$roundTrip = json_decode((string) json_encode($manifest, JSON_PRETTY_PRINT), true);
+$check(hash_equals($manifest['manifest_mac'], hash_hmac('sha256', offsite_manifest_canonical($roundTrip), $key)), 'a stored manifest verifies after a JSON round trip');
+$tampered = $roundTrip; $tampered['sha256'] = str_repeat('b', 64);
+$check(!hash_equals($manifest['manifest_mac'], hash_hmac('sha256', offsite_manifest_canonical($tampered), $key)), 'changing the checksum in the bucket is detected');
+$reordered = array_reverse($roundTrip, true);
+$check(hash_equals($manifest['manifest_mac'], hash_hmac('sha256', offsite_manifest_canonical($reordered), $key)), 'key order does not change the manifest MAC');
+$check(!hash_equals($manifest['manifest_mac'], hash_hmac('sha256', offsite_manifest_canonical($roundTrip), offsite_mac_key('another passphrase', str_repeat("\x01", 16)))), 'another passphrase cannot produce the MAC');
+
 $remove($tmp);
 
 if ($failures > 0) {

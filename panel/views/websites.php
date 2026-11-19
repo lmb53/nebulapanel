@@ -265,8 +265,9 @@ $apacheStatus = service_status('apache2');
         <div class="cmd-line"><code id="wsGitKey" class="mono" style="word-break:break-all">Open to create the key…</code><button class="btn btn-secondary btn-sm" type="button" id="wsGitKeyCopy"><i data-lucide="copy"></i>Copy</button></div>
       </details>
       <details class="git-extra" id="wsGitHookBox"><summary>Deploy on push (webhook)</summary>
-        <div class="field-help" id="wsGitHookState">Create a webhook URL and add it to the repository (GitHub: Settings → Webhooks, content type JSON, push events). Every push to the branch then deploys automatically; deploys appear under Jobs.</div>
-        <div class="cmd-line hidden" id="wsGitHookLine"><code id="wsGitHookUrl" class="mono" style="word-break:break-all"></code><button class="btn btn-secondary btn-sm" type="button" id="wsGitHookCopy"><i data-lucide="copy"></i>Copy</button></div>
+        <div class="field-help" id="wsGitHookState">Create a webhook and add it to the repository with its secret (GitHub, Gitea, Forgejo: Settings → Webhooks, content type JSON, push events, paste the secret; GitLab: Settings → Webhooks, paste the secret as the Secret token). Every push to the branch then deploys automatically; deploys appear under Jobs.</div>
+        <div class="cmd-line hidden" id="wsGitHookLine"><code id="wsGitHookUrl" class="mono" style="word-break:break-all"></code><button class="btn btn-secondary btn-sm" type="button" id="wsGitHookCopy"><i data-lucide="copy"></i>Copy URL</button></div>
+        <div class="cmd-line hidden" id="wsGitHookSecretLine"><code id="wsGitHookSecret" class="mono" style="word-break:break-all"></code><button class="btn btn-secondary btn-sm" type="button" id="wsGitHookSecretCopy"><i data-lucide="copy"></i>Copy secret</button></div>
         <div class="flex gap-2"><button class="btn btn-secondary btn-sm" type="button" id="wsGitHookCreate"><i data-lucide="webhook"></i>Create webhook URL</button><button class="btn btn-ghost btn-sm" type="button" id="wsGitHookOff">Turn off</button></div>
       </details>
       <div><label class="field-label" for="wsGitBranch">Branch</label><input class="input mono" id="wsGitBranch" value="main" autocomplete="off"></div>
@@ -305,10 +306,12 @@ $apacheStatus = service_status('apache2');
       const res = await apiPost('git', { action: 'hook-rotate', domain });
       if (!res.ok) { toast(res.error || 'Failed', 'error'); return; }
       $('wsGitHookUrl').textContent = res.url; $('wsGitHookLine').classList.remove('hidden');
-      $('wsGitHookState').textContent = 'Copy this URL now — it is shown only once. Pushes then deploy automatically.';
+      $('wsGitHookSecret').textContent = res.secret || ''; $('wsGitHookSecretLine').classList.toggle('hidden', !res.secret);
+      $('wsGitHookState').textContent = 'Add this URL and secret to the repository’s webhook settings now — the secret is shown only once. Pushes then deploy automatically.';
       $('wsGitHookCreate').dataset.exists = '1';
     });
     $('wsGitHookCopy')?.addEventListener('click', () => window.Nebula.copyText($('wsGitHookUrl').textContent).then((ok) => toast(ok ? 'Webhook URL copied' : 'Copy failed', ok ? 'success' : 'error')));
+    $('wsGitHookSecretCopy')?.addEventListener('click', () => window.Nebula.copyText($('wsGitHookSecret').textContent).then((ok) => toast(ok ? 'Webhook secret copied' : 'Copy failed', ok ? 'success' : 'error')));
     $('wsGitHookOff')?.addEventListener('click', async () => {
       const res = await apiPost('git', { action: 'hook-disable', domain });
       toast(res.ok ? 'Webhook turned off' : (res.error || 'Failed'), res.ok ? 'success' : 'error');
@@ -321,7 +324,11 @@ $apacheStatus = service_status('apache2');
       if ($('wsGitHookCreate')) {
         $('wsGitHookCreate').dataset.exists = hook ? '1' : '0';
         $('wsGitHookCreate').lastChild.textContent = hook ? 'Replace webhook URL' : 'Create webhook URL';
-        $('wsGitHookState').textContent = hook ? 'On since ' + window.Nebula.fmtDate(r.meta.hook_created) + '. The URL was shown when it was created; replace it to see a new one.' : $('wsGitHookState').textContent;
+        $('wsGitHookState').textContent = hook
+          ? (r.meta.hook_signed === false
+            ? 'On since ' + window.Nebula.fmtDate(r.meta.hook_created) + ' with an older URL that carries its secret. Replace it to switch to a signed webhook (URL plus secret), which keeps the secret out of server logs.'
+            : 'On since ' + window.Nebula.fmtDate(r.meta.hook_created) + '. The secret was shown when it was created; replace the webhook to get a new one.')
+          : $('wsGitHookState').textContent;
         $('wsGitHookLine').classList.add('hidden');
       }
       if (!r || r.available === false) { s.textContent = 'Git is not installed on the server.'; }

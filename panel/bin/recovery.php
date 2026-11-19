@@ -14,12 +14,20 @@ if (!is_dir($data)) {
     exit(1);
 }
 
-$atomic = static function (string $path, array $value): void {
+// Files are handed to the panel's own account: written root-owned, the panel
+// could no longer read its user store after a reset.
+$dataOwner = (int) @fileowner($data);
+$dataGroup = (int) @filegroup($data);
+$atomic = static function (string $path, array $value) use ($dataOwner, $dataGroup): void {
     $tmp = tempnam(dirname($path), '.recovery-');
     if ($tmp === false || file_put_contents($tmp, json_encode($value, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n", LOCK_EX) === false) {
         throw new RuntimeException('Could not stage recovery state.');
     }
     chmod($tmp, 0600);
+    if ($dataOwner > 0 && (!@chown($tmp, $dataOwner) || !@chgrp($tmp, $dataGroup))) {
+        @unlink($tmp);
+        throw new RuntimeException('Could not hand recovery state to the panel account.');
+    }
     if (!rename($tmp, $path)) {
         @unlink($tmp);
         throw new RuntimeException('Could not replace recovery state.');
@@ -65,6 +73,16 @@ try {
     if ($index === null) $users[]=$record; else $users[$index]=$record;
     $atomic($path,['version'=>1,'users'=>array_values($users)]);
     $atomic($data.'/admin.json',['username'=>$username,'hash'=>$hash,'updated'=>date('c')]);
+    // API tokens minted by whoever held the account before the reset die with it.
+    $tokensFile = $data . '/api_tokens.json';
+    $tokens = json_decode((string) @file_get_contents($tokensFile), true);
+    if (is_array($tokens)) {
+        $kept = array_values(array_filter($tokens, static fn($t) => is_array($t) && (int) ($t['owner_id'] ?? 0) !== (int) $record['id'] && isset($t['owner_id'])));
+        if (count($kept) !== count($tokens)) {
+            $atomic($tokensFile, $kept);
+            echo 'Revoked ' . (count($tokens) - count($kept)) . " API token(s) of that account (and any without an owner).\n";
+        }
+    }
     foreach (glob($data.'/sessions/*') ?: [] as $session) {
         if (is_file($session) && !is_link($session)) @unlink($session);
     }

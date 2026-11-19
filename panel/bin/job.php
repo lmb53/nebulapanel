@@ -118,9 +118,30 @@ if ((string) ($job['token'] ?? '') !== '') {
         job_log_event(['type' => 'result', 'result' => ['ok' => false, 'error' => 'The API token was revoked or expired.']]);
         exit(1);
     }
+    // The same rules as a direct bearer request: the source address must be
+    // allowed, and an owned token follows its owner (disabled → refused,
+    // demoted → demoted).
+    $allowedIps = is_array($token['allowed_ips'] ?? null) ? $token['allowed_ips'] : [];
+    if ($allowedIps && !in_array((string) ($job['ip'] ?? ''), $allowedIps, true)) {
+        job_log_event(['type' => 'result', 'result' => ['ok' => false, 'error' => 'The API token is not allowed from this address.']]);
+        exit(1);
+    }
+    $apiAuthRole = isset(panel_roles()[(string) ($token['role'] ?? '')]) ? (string) $token['role'] : 'auditor';
+    if (isset($token['owner_id'])) {
+        $owner = null;
+        foreach (panel_users() as $candidate) {
+            if ((int) ($candidate['id'] ?? 0) === (int) $token['owner_id']) { $owner = $candidate; break; }
+        }
+        if ($owner === null || empty($owner['enabled'])) {
+            job_log_event(['type' => 'result', 'result' => ['ok' => false, 'error' => 'The API token owner is disabled or gone.']]);
+            exit(1);
+        }
+        if (api_role_rank((string) ($owner['role'] ?? 'auditor')) < api_role_rank($apiAuthRole)) {
+            $apiAuthRole = (string) ($owner['role'] ?? 'auditor');
+        }
+    }
     $apiAuthLabel = (string) ($token['label'] ?? 'token');
     $apiAuthId = (string) $token['id'];
-    $apiAuthRole = isset(panel_roles()[(string) ($token['role'] ?? '')]) ? (string) $token['role'] : 'auditor';
     $apiAuthScopes = is_array($token['scopes'] ?? null) ? $token['scopes'] : [];
     $_SESSION = [];
 } elseif (!empty($job['system'])) {

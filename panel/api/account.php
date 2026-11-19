@@ -28,11 +28,14 @@ $b = read_json_body();
 $action = (string) ($b['action'] ?? '');
 // Actions that check the current password or a second factor are throttled
 // like sign-in, so a hijacked session cannot guess them at full speed.
-$reauthActions = ['password', 'mfa-disable', 'mfa-recovery', 'mfa-confirm', 'passkey-options', 'passkey-delete'];
+$reauthActions = ['password', 'mfa-disable', 'mfa-recovery', 'mfa-confirm', 'passkey-options', 'passkey-delete', 'reauth'];
 if (in_array($action, $reauthActions, true) && ($blocked = reauth_throttle_error()) !== null) {
     json_out(['ok' => false, 'error' => $blocked], 429);
 }
 switch ($action) {
+    case 'reauth':
+        $res = reauthenticate_session((string) ($b['password'] ?? ''), (string) ($b['code'] ?? ''));
+        break;
     case 'password':
         $res = change_admin_password((string) ($b['current'] ?? ''), (string) ($b['new'] ?? ''));
         break;
@@ -75,6 +78,7 @@ switch ($action) {
         $res = ['ok' => true, 'tokens' => api_tokens_for($uid)];
         break;
     case 'token-generate':
+        require_recent_auth();
         require_once APP_ROOT . '/lib/mod_api.php';
         $owner = api_current_owner();
         $res = $owner === null ? ['ok' => false, 'error' => 'Your account was not found.'] : api_token_generate(

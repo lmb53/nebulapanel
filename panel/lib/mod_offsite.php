@@ -229,6 +229,46 @@ function offsite_crypt(bool $encrypt, string $in, string $out, string $passphras
     return null;
 }
 
+// ---- Integrity --------------------------------------------------------------------
+// Encrypt-then-MAC: the ciphertext and the manifest each carry an HMAC-SHA256
+// under a key derived from the passphrase, so whoever controls the bucket can
+// neither swap an archive nor rewrite its manifest (checksum included)
+// without it being refused before anything is decrypted.
+
+const OFFSITE_FORMAT = 2;
+
+function offsite_mac_key(string $passphrase, string $salt): string
+{
+    return hash_pbkdf2('sha256', 'nebula-offsite-mac:' . $passphrase, $salt, 200000, 32, true);
+}
+
+/** Stable JSON of a manifest without its own MAC (keys sorted at every level). */
+function offsite_manifest_canonical(array $manifest): string
+{
+    unset($manifest['manifest_mac']);
+    $sort = static function ($value) use (&$sort) {
+        if (!is_array($value)) { return $value; }
+        if ($value === [] || array_keys($value) === range(0, count($value) - 1)) { return array_map($sort, $value); }
+        ksort($value);
+        return array_map($sort, $value);
+    };
+    return (string) json_encode($sort($manifest), JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+}
+
+/** Names of archives this server uploaded with MACs (a stripped MAC is then a downgrade). */
+function offsite_authenticated_names(): array
+{
+    $names = @json_decode((string) @file_get_contents(DATA_DIR . '/offsite-authenticated.json'), true);
+    return is_array($names) ? $names : [];
+}
+
+function offsite_remember_authenticated(string $name): void
+{
+    $names = offsite_authenticated_names();
+    $names[$name] = date('c');
+    write_json_file(DATA_DIR . '/offsite-authenticated.json', $names);
+}
+
 // ---- Operations -----------------------------------------------------------------
 
 /** Write, read back and delete a small object. */
@@ -264,17 +304,26 @@ function offsite_upload(string $file, ?callable $onOutput = null, ?array $cfg = 
     $enc = backup_store() . '/.offsite-' . bin2hex(random_bytes(6)) . '.enc';
     $say('Encrypting ' . $name);
     if (($error = offsite_crypt(true, $abs, $enc, $cfg['passphrase'])) !== null) { return ['ok' => false, 'error' => $error]; }
+    $salt = random_bytes(16);
+    $macKey = offsite_mac_key($cfg['passphrase'], $salt);
+    $mac = (string) hash_hmac_file('sha256', $enc, $macKey);
     $say('Uploading ' . $name . ' (' . human_bytes((int) filesize($enc)) . ')');
     [, , $err] = offsite_request($cfg, 'PUT', offsite_key($cfg, $name . '.enc'), [], $enc);
     @unlink($enc);
     if ($err !== '') { return ['ok' => false, 'error' => $err]; }
+    $remote = $manifest;
+    unset($remote['offsite_at']);
+    $remote = array_merge($remote, ['file' => $name, 'cipher' => 'openssl ' . OFFSITE_CIPHER_ARGS,
+        'format' => OFFSITE_FORMAT, 'mac_salt' => base64_encode($salt), 'mac' => $mac]);
+    $remote['manifest_mac'] = hash_hmac('sha256', offsite_manifest_canonical($remote), $macKey);
     $meta = tempnam(sys_get_temp_dir(), 'nbm');
-    file_put_contents($meta, json_encode($manifest + ['file' => $name, 'cipher' => 'openssl ' . OFFSITE_CIPHER_ARGS], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+    file_put_contents($meta, json_encode($remote, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
     [, , $err] = offsite_request($cfg, 'PUT', offsite_key($cfg, $name . '.manifest.json'), [], $meta, null, ['content-type' => 'application/json'], 120);
     @unlink($meta);
     if ($err !== '') { return ['ok' => false, 'error' => 'The archive was uploaded but its manifest was not: ' . $err]; }
     $local = backup_manifest($name);
     if ($local) { $local['offsite_at'] = date('c'); write_json_file(backup_store() . '/' . $name . '.manifest.json', $local); }
+    offsite_remember_authenticated($name);
     audit('backup.offsite.upload', $name);
     return ['ok' => true, 'file' => $name];
 }
@@ -317,11 +366,34 @@ function offsite_fetch(string $file, ?callable $onOutput = null): array
     [, $metaBody, $err] = offsite_request($cfg, 'GET', offsite_key($cfg, $name . '.manifest.json'), [], null, null, [], 60);
     $manifest = $err === '' ? json_decode($metaBody, true) : null;
     if (!is_array($manifest) || !preg_match('/^[a-f0-9]{64}$/', (string) ($manifest['sha256'] ?? ''))) { return ['ok' => false, 'error' => 'The archive’s manifest is missing in the bucket. ' . $err]; }
+    $macKey = null;
+    $legacy = (int) ($manifest['format'] ?? 1) < OFFSITE_FORMAT;
+    if ($legacy) {
+        if (isset(offsite_authenticated_names()[$name])) {
+            return ['ok' => false, 'error' => 'The archive’s manifest in the bucket has lost its integrity signature. It was uploaded signed by this server, so it has been tampered with; it was not downloaded.'];
+        }
+    } else {
+        $salt = base64_decode((string) ($manifest['mac_salt'] ?? ''), true);
+        if ($salt === false || strlen($salt) < 16 || !preg_match('/^[a-f0-9]{64}$/', (string) ($manifest['mac'] ?? ''))) {
+            return ['ok' => false, 'error' => 'The archive’s manifest is damaged.'];
+        }
+        $macKey = offsite_mac_key($cfg['passphrase'], $salt);
+        if (!hash_equals(hash_hmac('sha256', offsite_manifest_canonical($manifest), $macKey), (string) ($manifest['manifest_mac'] ?? ''))) {
+            return ['ok' => false, 'error' => 'The archive’s manifest does not verify with this passphrase: wrong passphrase, or it was altered in the bucket.'];
+        }
+    }
     $enc = backup_store() . '/.offsite-' . bin2hex(random_bytes(6)) . '.enc';
     $plain = backup_store() . '/.offsite-' . bin2hex(random_bytes(6)) . '.tar.gz';
     $say('Downloading ' . $name);
     [, , $err] = offsite_request($cfg, 'GET', offsite_key($cfg, $name . '.enc'), [], null, $enc);
     if ($err !== '') { @unlink($enc); return ['ok' => false, 'error' => $err]; }
+    if ($macKey !== null) {
+        $say('Verifying the download');
+        if (!hash_equals((string) $manifest['mac'], (string) hash_hmac_file('sha256', $enc, $macKey))) {
+            @unlink($enc);
+            return ['ok' => false, 'error' => 'The downloaded archive does not match its signature; it was altered or damaged in the bucket, and was not decrypted.'];
+        }
+    }
     $say('Decrypting');
     $error = offsite_crypt(false, $enc, $plain, $cfg['passphrase']);
     @unlink($enc);
@@ -330,11 +402,13 @@ function offsite_fetch(string $file, ?callable $onOutput = null): array
     if (!hash_equals((string) $manifest['sha256'], (string) hash_file('sha256', $plain))) { @unlink($plain); return ['ok' => false, 'error' => 'The downloaded archive does not match its checksum.']; }
     $dest = backup_store() . '/' . $name;
     if (!@rename($plain, $dest)) { @unlink($plain); return ['ok' => false, 'error' => 'Could not place the archive in the backup store.']; }
-    unset($manifest['cipher']);
+    unset($manifest['cipher'], $manifest['format'], $manifest['mac_salt'], $manifest['mac'], $manifest['manifest_mac']);
     $manifest['offsite_at'] = $manifest['offsite_at'] ?? date('c');
     write_json_file($dest . '.manifest.json', $manifest);
-    audit('backup.offsite.fetch', $name);
-    return ['ok' => true, 'file' => $name, 'message' => 'Downloaded and verified. You can now restore it.'];
+    audit('backup.offsite.fetch', $name . ($legacy ? ' (legacy, unsigned)' : ''));
+    return ['ok' => true, 'file' => $name, 'message' => $legacy
+        ? 'Downloaded and checked against its checksum. This archive predates signed off-site copies, so its origin cannot be proven; restore it only if you trust the bucket.'
+        : 'Downloaded and verified. You can now restore it.'];
 }
 
 function offsite_delete(string $file, ?array $cfg = null): array

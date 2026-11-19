@@ -40,6 +40,7 @@ function scheduler_run(?int $now = null): array
         'backups' => static fn() => scheduler_start_backups($now),
         'alerts' => static fn() => alerts_evaluate($now),
         'housekeeping' => static fn() => scheduler_housekeeping($now),
+        'security' => static fn() => scheduler_security_baseline(),
     ];
     $report = [];
     foreach ($jobs as $name => $job) {
@@ -57,6 +58,37 @@ function scheduler_run(?int $now = null): array
     if (!empty($report['housekeeping']['ran'])) { $state['housekeeping_at'] = $now; }
     write_json_file(scheduler_state_file(), array_merge($state, ['last_run' => $now, 'report' => $report]));
     return $report;
+}
+
+/**
+ * Keep the isolation baseline current: once per installed helper version,
+ * apply it to existing sites and web apps (a self-update installs a new
+ * helper without re-running install.sh), and refresh the website-user
+ * loopback guard every run, since firewall rules do not survive a reboot.
+ */
+function scheduler_security_baseline(): array
+{
+    if (!helper_available()) { return ['ok' => true, 'ran' => false]; }
+    $result = ['ok' => true, 'ran' => true];
+    $helperHash = (string) @hash_file('sha256', NEBULA_HELPER);
+    $markerFile = DATA_DIR . '/security-baseline.json';
+    $marker = @json_decode((string) @file_get_contents($markerFile), true);
+    $marker = is_array($marker) ? $marker : [];
+    $retryLater = ($marker['failed_helper'] ?? '') === $helperHash && time() - (int) ($marker['failed_at'] ?? 0) < 3600;
+    if ($helperHash !== '' && ($marker['helper'] ?? '') !== $helperHash && !$retryLater) {
+        [$code, $out] = helper_cmd('security-migrate', 900);
+        if ($code === 0) {
+            write_json_file($markerFile, ['helper' => $helperHash, 'applied_at' => date('c')]);
+            $result['migrated'] = true;
+        } else {
+            write_json_file($markerFile, array_merge($marker, ['failed_helper' => $helperHash, 'failed_at' => time()]));
+            $result['ok'] = false;
+            $result['error'] = 'Security baseline failed: ' . trim(redact_secrets($out));
+        }
+    }
+    [$code] = helper_cmd('loopback-guard', 60);
+    $result['loopback_guard'] = $code === 0;
+    return $result;
 }
 
 /**

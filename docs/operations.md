@@ -10,7 +10,8 @@ as unsupported until validated in disposable infrastructure.
 
 Run `sudo nebula-recovery reset-admin` from the server console to rotate the
 administrator password, turn off their two-factor sign-in, and revoke
-sessions. Before first setup only,
+sessions and that account's API tokens (plus any token without an owner).
+Before first setup only,
 `sudo nebula-recovery issue-bootstrap` issues a new one-hour token. Neither
 workflow requires making setup publicly reachable.
 
@@ -53,8 +54,14 @@ an address. Nebula deliberately does not infer a public address from
   993, and 995. Plaintext 110/143 are not opened.
 - SFTP for websites uses the server's SSH port (22 unless `sshd_config` says
   otherwise).
+- Bundled web apps (phpMyAdmin, Roundcube webmail): 2096, opened when one is
+  installed and closed when the last is removed. They are served on this
+  separate origin, never on the panel's host and port.
 - Compose application ports must bind to loopback. Pi-hole is omitted because it
-  conflicts with the panel-managed BIND service.
+  conflicts with the panel-managed BIND service. Website users (group
+  `nebula-sites`) are refused the loopback ports of App Store containers and
+  the Apache backend by the `NEBULA-LOOPBACK` firewall chain, which the
+  scheduler re-applies every run; MariaDB, Redis and mail stay reachable.
 
 ### Reaching a Compose app
 
@@ -96,10 +103,54 @@ code-server and n8n need. Add HTTPS from Websites → SSL for the hostname.
   `/etc/ssh/sshd_config.d/nebula-sftp.conf` (`Match Group nebula-sftp`).
   Allow the SSH port in the firewall for remote clients.
 - **Clone** copies a site to a new domain: same PHP version and limits, the
-  files (`rsync` within one filesystem, no device files, setuid bits
-  stripped), and optionally copies of its linked databases (`<name>_copy`,
-  linked to the new site). The copy's own configuration (for example
-  `wp-config.php`) still names the original databases until it is edited.
+  files (read as the source site's user and written as the new site's, within
+  one filesystem; symlinks stay links, setuid bits stripped), and optionally
+  copies of its linked databases (`<name>_copy`, linked to the new site). The
+  copy's own configuration (for example `wp-config.php`) still names the
+  original databases until it is edited.
+- **Deploy on push** webhooks use a URL without a secret plus a shared secret
+  the Git host proves with each delivery: an HMAC-SHA256 signature of the body
+  (GitHub, Gitea, Forgejo, Gogs, Bitbucket) or GitLab's secret-token header.
+  Webhooks created by older releases (secret in the URL) keep working until
+  they are replaced from the website's Git panel.
+
+## Website isolation
+
+Every website is its own Unix user and PHP-FPM pool. In addition:
+
+- Nginx serves a symlink only when the link and its target have the same owner
+  (`disable_symlinks if_not_owner`), so one site cannot publish another site's
+  files, or system files, through a link.
+- PHP runs with `open_basedir` limited to the site folder, a private temp
+  folder (`<site>/tmp`, also `sys_temp_dir`), and `putenv`, `pcntl_exec` and
+  the process functions disabled (`putenv` plus `mail()` would otherwise let a
+  site load native code and leave the sandbox).
+- Vhost files are readable by root only and pool files by root and the panel,
+  so sites cannot read each other's IDs or paths.
+- Root never creates, changes ownership of, or ACL-walks a path inside a site
+  folder: those steps run as the site's own user, or refuse symlinks.
+
+`sudo nebula-helper security-migrate` applies this baseline to sites created
+by older releases (idempotent; rolled back if Nginx or PHP-FPM rejects it).
+`install.sh` runs it, and the scheduler runs it once after each new helper
+arrives through a self-update. A hosted application that writes to `/tmp`
+directly, rather than to `sys_get_temp_dir()`, must be pointed at its site's
+`tmp` folder.
+
+## Bundled web apps
+
+phpMyAdmin and Roundcube are copies of their Debian/Ubuntu packages placed
+next to the panel, with root-owned code (only their temp folders belong to
+`nebula-webapps`). An apt hook (`/etc/apt/apt.conf.d/80nebula-webapps`)
+rebuilds a copy from its package after every package run, including unattended
+upgrades, keeping its configuration; `sudo nebula-helper webapps-refresh
+--force` does it by hand. They are served by their own Nginx server
+(`/etc/nginx/sites-available/nebula-webapps`) on port 2096, so script running
+in either can never read panel pages or act with the panel session. An
+`ADMIN_IP` allowlist on the panel also guards phpMyAdmin. Opening phpMyAdmin
+from the panel hands it short-lived, per-database credentials through a
+single-use ticket (`/var/lib/nebula-pma-tickets`) that its sign-on script
+consumes.
 
 ## Data
 
@@ -111,11 +162,20 @@ live below `/srv/nebula/trash`; root-owned resource state lives below
 
 ## Upgrade and rollback
 
-Pin a reviewed release commit. The updater resolves an immutable SHA, rejects
-unsafe archive layouts/types, lints staged PHP, takes a required snapshot, and
-serializes updates with a host lock. It retains five pre-update snapshots,
-enters maintenance mode during the switch, runs a post-copy health check, and
-automatically restores the previous code on failure. If automatic rollback
+Pin a reviewed release commit. The panel resolves the commit; the root helper
+then fetches exactly that commit itself, from the repository named in the
+root-owned `/etc/nebula-panel/update-repo` (written by `install.sh`), so
+nothing the panel stages or configures decides what root installs. It rejects
+unsafe archive layouts/types, lints every PHP file and the new helper, takes a
+required snapshot, and serializes updates with a host lock. It retains five
+pre-update snapshots in root-only `/var/lib/nebula-panel-snapshots`, enters
+maintenance mode during the switch, runs a post-copy health check, and
+automatically restores the previous code on failure.
+
+To require signed releases, list the trusted SSH signing keys in
+`/etc/nebula-panel/update-signers` (Git's allowed-signers format, e.g.
+`release@example.com ssh-ed25519 AAAA…`). The helper then refuses any commit
+whose signature (`git verify-commit`) does not match one of them. If automatic rollback
 itself fails, stop Nginx/PHP-FPM, restore the latest snapshot as root, re-run
 `install.sh` for installer-owned configuration, validate Nginx and all FPM
 pools, then restore service.
@@ -150,7 +210,9 @@ separately.
 **Off-site copies** (Backups → Off-site copies) upload archives to
 S3-compatible storage (AWS S3, Backblaze B2, Wasabi, Cloudflare R2, MinIO). Each
 archive is encrypted on the server first with standard OpenSSL and a
-passphrase the panel generates (shown once, and again only after re-entering
+passphrase the panel generates, then signed: the ciphertext and its manifest
+each carry an HMAC-SHA256 under a key derived from the passphrase, so a copy
+or manifest altered in the bucket is refused before anything is decrypted (shown once, and again only after re-entering
 your password). Keep the passphrase off the server: without it the copies
 cannot be read. Every scheduled run uploads its new archives and keeps the
 newest N automatic copies per website (manual uploads are kept). A failed upload
@@ -163,8 +225,10 @@ openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -in FILE.tar.gz.enc -out FILE.t
 ```
 
 From a working panel, *Browse off-site copies* → *Download to server*
-downloads, decrypts and checks the SHA-256 recorded in the archive's manifest,
-after which it restores like any local archive.
+verifies the signatures, decrypts and checks the SHA-256 recorded in the
+archive's manifest, after which it restores like any local archive. Copies
+uploaded before signing existed still restore, with a warning; one this server
+uploaded signed is refused if its signature has been stripped.
 
 Test clean-host restores regularly and record recovery time and data loss.
 
@@ -211,8 +275,15 @@ passkeys too.
 
 API tokens belong to the person who creates them. A token never acts with more
 access than its owner's current role, and stops working when the owner is
-disabled or deleted. Everyone can manage their own tokens from My account;
+disabled or deleted. A password change (your own or by an administrator), an
+administrator's two-factor reset and `nebula-recovery reset-admin` revoke the
+account's tokens. Everyone can manage their own tokens from My account;
 administrators see and revoke all of them under API Tokens.
+
+Creating tokens and creating, changing or removing panel users need a sign-in
+(or a password re-check) from the last 15 minutes; the browser asks for the
+password, and the two-factor code when the account uses one. Tokens cannot
+create tokens or manage users.
 
 ## Capacity and hardening
 
